@@ -13,7 +13,10 @@ def get_gpu_info() -> dict | None:
 
     try:
         gpu_name = torch.cuda.get_device_name(0)
-        vram_total = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)  # GB
+        props = torch.cuda.get_device_properties(0)
+        # PyTorch >= 2.11 uses total_memory, older versions use total_mem
+        vram_bytes = getattr(props, "total_memory", None) or getattr(props, "total_mem", 0)
+        vram_total = vram_bytes / (1024 ** 3)  # GB
         return {"name": gpu_name, "vram_gb": vram_total}
     except Exception:
         return None
