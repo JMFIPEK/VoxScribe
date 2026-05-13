@@ -94,9 +94,9 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(source_frame, text="Quelle:").grid(
             row=0, column=0, padx=10, pady=10)
-        self.source_var = ctk.StringVar(value="Mikrofon")
+        self.source_var = ctk.StringVar(value="Mikrofon + System")
         self.source_menu = ctk.CTkSegmentedButton(
-            source_frame, values=["Mikrofon", "System-Audio"],
+            source_frame, values=["Mikrofon", "System-Audio", "Mikrofon + System"],
             variable=self.source_var, command=self._on_source_changed)
         self.source_menu.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
 
@@ -331,7 +331,10 @@ class App(ctk.CTk):
         if not hasattr(self, '_all_devices'):
             return
         self._device_map = {}
-        if value == "Mikrofon":
+        if value == "Mikrofon + System":
+            # Mikrofon wählen — System-Audio wird automatisch genutzt
+            devices = self._all_devices["microphones"]
+        elif value == "Mikrofon":
             devices = self._all_devices["microphones"]
         else:
             devices = self._all_devices["loopback"]
@@ -359,7 +362,9 @@ class App(ctk.CTk):
     def _start_recording(self):
         device_name = self.device_var.get()
         device_index = self._device_map.get(device_name)
-        source = "mic" if self.source_var.get() == "Mikrofon" else "system"
+        source_map = {"Mikrofon": "mic", "System-Audio": "system",
+                      "Mikrofon + System": "both"}
+        source = source_map.get(self.source_var.get(), "mic")
 
         out_dir = self.output_dir_var.get() or "recordings"
         os.makedirs(out_dir, exist_ok=True)

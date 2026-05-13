@@ -96,6 +96,12 @@ class AudioRecorder:
         return self._thread is not None and self._thread.is_alive()
 
     def _record(self):
+        if self._source == "both":
+            self._record_both()
+        else:
+            self._record_single()
+
+    def _record_single(self):
         p = pyaudio.PyAudio()
         try:
             if self._source == "system":
@@ -141,6 +147,96 @@ class AudioRecorder:
                   self._sample_rate)
         duration = (len(b"".join(self._frames))
                     / (self._sample_rate * self._channels * SAMPLE_WIDTH))
+        if self._on_done:
+            self._on_done(self._output_path, duration, None)
+
+    def _record_both(self):
+        """Nimmt gleichzeitig Mikrofon + System-Audio auf und mischt beides."""
+        p = pyaudio.PyAudio()
+        mic_frames = []
+        sys_frames = []
+        out_rate = 16000
+
+        try:
+            # Mikrofon einrichten
+            if self._device_index is not None:
+                mic_info = p.get_device_info_by_index(self._device_index)
+            else:
+                mic_info = p.get_default_input_device_info()
+            mic_idx = mic_info["index"]
+            mic_rate = 16000
+            mic_ch = 1
+
+            # System-Audio (Loopback) einrichten
+            loopback = p.get_default_wasapi_loopback()
+            sys_idx = loopback["index"]
+            sys_rate = int(loopback["defaultSampleRate"])
+            sys_ch = loopback["maxInputChannels"]
+
+            mic_stream = p.open(
+                format=FORMAT, channels=mic_ch, rate=mic_rate,
+                input=True, input_device_index=mic_idx,
+                frames_per_buffer=CHUNK)
+
+            sys_stream = p.open(
+                format=FORMAT, channels=sys_ch, rate=sys_rate,
+                input=True, input_device_index=sys_idx,
+                frames_per_buffer=CHUNK)
+
+            while not self._stop_event.is_set():
+                mic_data = mic_stream.read(CHUNK, exception_on_overflow=False)
+                sys_data = sys_stream.read(CHUNK, exception_on_overflow=False)
+                mic_frames.append(mic_data)
+                sys_frames.append(sys_data)
+
+                if self._on_level:
+                    self._on_level(max(compute_rms(mic_data),
+                                      compute_rms(sys_data)))
+
+            mic_stream.stop_stream()
+            mic_stream.close()
+            sys_stream.stop_stream()
+            sys_stream.close()
+        except Exception as e:
+            if self._on_done:
+                self._on_done(None, 0, str(e))
+            return
+        finally:
+            p.terminate()
+
+        # Beide Streams zu Mono 16kHz mischen
+        mic_audio = np.frombuffer(b"".join(mic_frames), dtype=np.int16
+                                  ).astype(np.float64)
+        sys_audio = np.frombuffer(b"".join(sys_frames), dtype=np.int16
+                                  ).astype(np.float64)
+
+        # System-Audio: Multi-Channel → Mono
+        if sys_ch > 1:
+            sys_audio = sys_audio.reshape(-1, sys_ch).mean(axis=1)
+
+        # System-Audio: Resample auf out_rate
+        if sys_rate != out_rate:
+            from scipy.signal import resample_poly
+            from math import gcd
+            g = gcd(out_rate, sys_rate)
+            sys_audio = resample_poly(sys_audio, out_rate // g, sys_rate // g)
+
+        # Auf gleiche Laenge bringen
+        min_len = min(len(mic_audio), len(sys_audio))
+        mic_audio = mic_audio[:min_len]
+        sys_audio = sys_audio[:min_len]
+
+        # Mischen (beide gleich gewichtet) und clippen
+        mixed = mic_audio + sys_audio
+        mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
+
+        os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
+        self._channels = 1
+        self._sample_rate = out_rate
+        self._frames = [mixed.tobytes()]
+        _save_wav(self._output_path, self._frames, 1, out_rate)
+
+        duration = len(mixed) / out_rate
         if self._on_done:
             self._on_done(self._output_path, duration, None)
 
