@@ -47,6 +47,10 @@ load_dotenv()
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+# Windows: eigene AppUserModelID setzen, damit Taskleiste eigenes Icon zeigt
+import ctypes
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("whisperx.recorder.transcriber")
+
 LANGUAGES = {"Deutsch": "de", "English": "en", "Français": "fr",
              "Español": "es", "Italiano": "it"}
 MODELS = ["large-v2", "large-v3", "medium", "base"]
@@ -60,6 +64,18 @@ class App(ctk.CTk):
         self.title("WhisperX Recorder & Transcriber")
         self.geometry("900x700")
         self.minsize(800, 600)
+
+        # App-Icon setzen
+        icon_path = os.path.join(os.path.dirname(__file__), "Logo.png")
+        if os.path.exists(icon_path):
+            from PIL import Image as PILImage
+            import tempfile
+            img = PILImage.open(icon_path)
+            # ICO mit mehreren Größen für Titelleiste + Taskleiste
+            ico_path = os.path.join(tempfile.gettempdir(), "whisperx_icon.ico")
+            img.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (256, 256)])
+            self.iconbitmap(ico_path)
+            self.after(200, lambda: self.iconbitmap(ico_path))
 
         self.recorder = AudioRecorder()
         self._record_start_time = None
