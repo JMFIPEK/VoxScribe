@@ -39,6 +39,7 @@ def transcribe(
     max_speakers: int | None = None,
     batch_size: int = 16,
     device: str | None = None,
+    on_progress=None,
 ) -> dict:
     """Fuehrt die vollstaendige WhisperX-Pipeline aus.
 
@@ -71,19 +72,42 @@ def transcribe(
     print(f"Audio: {audio_path}")
     print()
 
+    # Fortschritts-Bereiche: Transkription 0-40%, Alignment 40-65%, Diarization 65-100%
+    def _prog(pct, msg):
+        if on_progress:
+            on_progress(pct, msg)
+
+    def _transcribe_progress(pct_within):
+        """pct_within: 0-100 vom whisperx callback → mapped auf 0.15-0.40"""
+        mapped = 0.15 + (pct_within / 100) * 0.25
+        _prog(mapped, f"Transkription... {pct_within:.0f}%")
+
+    def _align_progress(pct_within):
+        """pct_within: 0-100 vom whisperx callback → mapped auf 0.50-0.63"""
+        mapped = 0.50 + (pct_within / 100) * 0.13
+        _prog(mapped, f"Alignment... {pct_within:.0f}%")
+
     # --- 1. Transkription ---
     print("1/3  Transkription laeuft...")
+    _prog(0.0, "Whisper-Modell laden...")
     t0 = time.time()
 
     model = whisperx.load_model(
         model_size, device, compute_type=compute_type, language=language
     )
+
+    _prog(0.10, "Audio laden...")
     audio = load_audio_without_ffmpeg(audio_path)
-    result = model.transcribe(audio, batch_size=batch_size)
+
+    _prog(0.15, "Transkription läuft...")
+    result = model.transcribe(audio, batch_size=batch_size,
+                              progress_callback=_transcribe_progress)
 
     t1 = time.time()
+    n_segs = len(result['segments'])
     print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
-    print(f"     {len(result['segments'])} Segmente erkannt")
+    print(f"     {n_segs} Segmente erkannt")
+    _prog(0.40, f"Transkription fertig — {n_segs} Segmente ({t1 - t0:.0f}s)")
 
     # Modell entladen
     del model
@@ -93,18 +117,23 @@ def transcribe(
 
     # --- 2. Alignment ---
     print("2/3  Alignment laeuft...")
+    _prog(0.45, "Alignment-Modell laden...")
     t2 = time.time()
 
     model_a, metadata = whisperx.load_align_model(
         language_code=result["language"], device=device
     )
+
+    _prog(0.50, "Wort-Alignment läuft...")
     result = whisperx.align(
         result["segments"], model_a, metadata, audio, device,
         return_char_alignments=False,
+        progress_callback=_align_progress,
     )
 
     t3 = time.time()
     print(f"     Alignment abgeschlossen ({t3 - t2:.1f}s)")
+    _prog(0.65, f"Alignment fertig ({t3 - t2:.0f}s)")
 
     # Modell entladen
     del model_a
@@ -117,16 +146,22 @@ def transcribe(
         if not hf_token:
             print("3/3  Diarization uebersprungen (kein HF_TOKEN gesetzt)")
             print("     Setze HF_TOKEN in .env fuer Speaker-Erkennung")
+            _prog(1.0, "Fertig (Diarization übersprungen — kein Token)")
         else:
             print("3/3  Speaker Diarization laeuft...")
+            _prog(0.70, "Diarization-Modell laden...")
             t4 = time.time()
 
             diarize_model = DiarizationPipeline(token=hf_token, device=device)
+
+            _prog(0.80, "Speaker Diarization läuft...")
             diarize_segments = diarize_model(
                 audio,
                 min_speakers=min_speakers,
                 max_speakers=max_speakers,
             )
+
+            _prog(0.92, "Sprecher zuordnen...")
             result = whisperx.assign_word_speakers(diarize_segments, result)
 
             t5 = time.time()
@@ -138,6 +173,7 @@ def transcribe(
                 if "speaker" in seg:
                     speakers.add(seg["speaker"])
             print(f"     {len(speakers)} Sprecher erkannt: {', '.join(sorted(speakers))}")
+            _prog(0.98, f"Diarization fertig — {len(speakers)} Sprecher ({t5 - t4:.0f}s)")
 
             del diarize_model
             gc.collect()
@@ -147,6 +183,7 @@ def transcribe(
         print("3/3  Diarization deaktiviert")
 
     total = time.time() - t0
+    _prog(1.0, f"Fertig! (Gesamt: {total:.0f}s)")
     print(f"\nGesamt: {total:.1f}s")
 
     return result

@@ -1,5 +1,6 @@
 """Audio-Aufnahme von Mikrofon und System-Audio (WASAPI Loopback)."""
 
+import os
 import wave
 import threading
 import numpy as np
@@ -9,6 +10,139 @@ import pyaudiowpatch as pyaudio
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
 SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
+
+
+def get_devices():
+    """Gibt alle verfuegbaren Audio-Geraete als strukturierte Listen zurueck."""
+    p = pyaudio.PyAudio()
+    microphones = []
+    loopback = []
+
+    for i in range(p.get_device_count()):
+        info = p.get_device_info_by_index(i)
+        if info["maxInputChannels"] > 0 and "loopback" not in info["name"].lower():
+            microphones.append({
+                "index": i,
+                "name": info["name"],
+                "channels": info["maxInputChannels"],
+                "sample_rate": int(info["defaultSampleRate"]),
+            })
+
+    try:
+        for device in p.get_loopback_device_info_generator():
+            loopback.append({
+                "index": device["index"],
+                "name": device["name"],
+                "channels": device["maxInputChannels"],
+                "sample_rate": int(device["defaultSampleRate"]),
+            })
+    except OSError:
+        pass
+
+    default_loopback = None
+    try:
+        dl = p.get_default_wasapi_loopback()
+        default_loopback = dl["index"]
+    except OSError:
+        pass
+
+    p.terminate()
+    return {"microphones": microphones, "loopback": loopback,
+            "default_loopback": default_loopback}
+
+
+def compute_rms(data: bytes) -> float:
+    """Berechnet den RMS-Pegel eines Audio-Chunks."""
+    samples = np.frombuffer(data, dtype=np.int16)
+    if len(samples) == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+
+
+class AudioRecorder:
+    """Wiederverwendbarer Audio-Recorder mit Callback-Support fuer GUI."""
+
+    def __init__(self):
+        self._stop_event = threading.Event()
+        self._frames = []
+        self._thread = None
+        self._channels = 1
+        self._sample_rate = 16000
+        self._on_level = None
+        self._on_done = None
+
+    def start(self, output_path: str, source: str = "mic",
+              device_index: int | None = None,
+              on_level=None, on_done=None):
+        """Startet die Aufnahme in einem Background-Thread."""
+        self._stop_event.clear()
+        self._frames = []
+        self._output_path = output_path
+        self._on_level = on_level
+        self._on_done = on_done
+        self._source = source
+        self._device_index = device_index
+        self._thread = threading.Thread(target=self._record, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stoppt die Aufnahme."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=3)
+
+    @property
+    def is_recording(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _record(self):
+        p = pyaudio.PyAudio()
+        try:
+            if self._source == "system":
+                loopback = p.get_default_wasapi_loopback()
+                self._channels = loopback["maxInputChannels"]
+                self._sample_rate = int(loopback["defaultSampleRate"])
+                device_idx = loopback["index"]
+            else:
+                if self._device_index is not None:
+                    info = p.get_device_info_by_index(self._device_index)
+                else:
+                    info = p.get_default_input_device_info()
+                device_idx = info["index"]
+                self._channels = 1
+                self._sample_rate = 16000
+
+            stream = p.open(
+                format=FORMAT,
+                channels=self._channels,
+                rate=self._sample_rate,
+                input=True,
+                input_device_index=device_idx,
+                frames_per_buffer=CHUNK,
+            )
+
+            while not self._stop_event.is_set():
+                data = stream.read(CHUNK, exception_on_overflow=False)
+                self._frames.append(data)
+                if self._on_level:
+                    self._on_level(compute_rms(data))
+
+            stream.stop_stream()
+            stream.close()
+        except Exception as e:
+            if self._on_done:
+                self._on_done(None, 0, str(e))
+            return
+        finally:
+            p.terminate()
+
+        os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
+        _save_wav(self._output_path, self._frames, self._channels,
+                  self._sample_rate)
+        duration = (len(b"".join(self._frames))
+                    / (self._sample_rate * self._channels * SAMPLE_WIDTH))
+        if self._on_done:
+            self._on_done(self._output_path, duration, None)
 
 
 def list_devices():

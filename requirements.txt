@@ -4,6 +4,7 @@ PyAudioWPatch>=0.2.12
 soundfile>=0.13
 numpy
 python-dotenv
+customtkinter>=5.2
 
 # PyTorch mit CUDA 12.8 (separat installieren, siehe README)
 # torch>=2.11
