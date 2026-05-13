@@ -239,9 +239,32 @@ class App(ctk.CTk):
         self.transcript_text.grid(
             row=6, column=0, padx=10, pady=(5, 5), sticky="nsew")
 
+        # Speaker renaming frame (hidden until transcription done)
+        self.speaker_frame = ctk.CTkFrame(tab)
+        self.speaker_frame.grid(row=7, column=0, padx=10, pady=(0, 5), sticky="ew")
+        self.speaker_frame.grid_remove()
+        self.speaker_frame.grid_columnconfigure(0, weight=1)
+
+        speaker_header = ctk.CTkFrame(self.speaker_frame, fg_color="transparent")
+        speaker_header.grid(row=0, column=0, sticky="ew")
+        speaker_header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(speaker_header, text="Sprecher umbenennen",
+                     font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, padx=10, pady=5, sticky="w")
+        self.apply_names_btn = ctk.CTkButton(
+            speaker_header, text="Anwenden", width=100,
+            command=self._apply_speaker_names)
+        self.apply_names_btn.grid(row=0, column=1, padx=10, pady=5)
+
+        self.speaker_entries_frame = ctk.CTkFrame(
+            self.speaker_frame, fg_color="transparent")
+        self.speaker_entries_frame.grid(
+            row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+        self._speaker_name_entries = {}
+
         # Bottom buttons
         bottom_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        bottom_frame.grid(row=7, column=0, padx=10, pady=(0, 10), sticky="ew")
+        bottom_frame.grid(row=8, column=0, padx=10, pady=(0, 10), sticky="ew")
         bottom_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.save_btn = ctk.CTkButton(
@@ -542,6 +565,9 @@ class App(ctk.CTk):
         self.save_btn.configure(state="normal")
         self.copy_btn.configure(state="normal")
 
+        # Sprecher-Einträge aufbauen
+        self._populate_speaker_entries()
+
     def _copy_transcript(self):
         text = self.transcript_text.get("1.0", "end").strip()
         if text:
@@ -553,6 +579,9 @@ class App(ctk.CTk):
     def _save_transcript(self):
         if not hasattr(self, '_transcription_result'):
             return
+
+        # Sprecher-Namen anwenden bevor gespeichert wird
+        self._apply_speaker_names_to_result()
 
         formats = [fmt for fmt, var in self.format_vars.items() if var.get()]
         if not formats:
@@ -571,7 +600,72 @@ class App(ctk.CTk):
             self.hf_entry.configure(show="")
         else:
             self.hf_entry.configure(show="•")
+    # ------------------------------------------------- Speaker Renaming
+    def _populate_speaker_entries(self):
+        """Erstellt Eingabefelder für jeden erkannten Sprecher."""
+        # Alte Einträge löschen
+        for w in self.speaker_entries_frame.winfo_children():
+            w.destroy()
+        self._speaker_name_entries = {}
 
+        if not hasattr(self, '_transcription_result'):
+            self.speaker_frame.grid_remove()
+            return
+
+        speakers = set()
+        for seg in self._transcription_result.get("segments", []):
+            if "speaker" in seg:
+                speakers.add(seg["speaker"])
+
+        if not speakers:
+            self.speaker_frame.grid_remove()
+            return
+
+        for col, spk in enumerate(sorted(speakers)):
+            frame = ctk.CTkFrame(self.speaker_entries_frame, fg_color="transparent")
+            frame.pack(side="left", padx=(0, 15), pady=2)
+            ctk.CTkLabel(frame, text=f"{spk}  \u2192",
+                         font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 5))
+            entry = ctk.CTkEntry(frame, width=140,
+                                 placeholder_text="Name eingeben")
+            entry.pack(side="left")
+            self._speaker_name_entries[spk] = entry
+
+        self.speaker_frame.grid()
+
+    def _get_speaker_mapping(self):
+        """Gibt das aktuelle Mapping {SPEAKER_XX: Name} zurück."""
+        mapping = {}
+        for spk, entry in self._speaker_name_entries.items():
+            name = entry.get().strip()
+            if name:
+                mapping[spk] = name
+        return mapping
+
+    def _apply_speaker_names(self):
+        """Wendet die Sprecher-Namen auf den Text im Textfeld an."""
+        mapping = self._get_speaker_mapping()
+        if not mapping:
+            return
+
+        text = self.transcript_text.get("1.0", "end")
+        for spk_id, name in mapping.items():
+            text = text.replace(spk_id, name)
+        self.transcript_text.delete("1.0", "end")
+        self.transcript_text.insert("1.0", text.rstrip())
+
+        self.transcribe_status.configure(
+            text="Sprecher-Namen angewendet!", text_color="#27ae60")
+
+    def _apply_speaker_names_to_result(self):
+        """Wendet die Sprecher-Namen auf das interne Ergebnis an (für Speichern)."""
+        mapping = self._get_speaker_mapping()
+        if not mapping or not hasattr(self, '_transcription_result'):
+            return
+        for seg in self._transcription_result.get("segments", []):
+            spk = seg.get("speaker", "")
+            if spk in mapping:
+                seg["speaker"] = mapping[spk]
 
 def main():
     app = App()
