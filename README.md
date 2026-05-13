@@ -4,13 +4,18 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 
 ## Features
 
+- **GUI (CustomTkinter)** — native Desktop-App mit Dark Mode
 - **Mikrofon-Aufnahme** — direktes Aufnehmen von Gesprächen
 - **System-Audio (Loopback)** — Aufnahme von Teams/Zoom/Webex über WASAPI
+- **Mikrofon + System-Audio** — beide Quellen gleichzeitig für vollständige Meeting-Aufnahmen
 - **WhisperX-Transkription** — schnelle Batch-Inference mit `large-v2` auf GPU
+- **Detaillierter Fortschritt** — Fortschrittsbalken pro Pipeline-Schritt (Transkription, Alignment, Diarization)
 - **Word-Level Timestamps** — exakte Wort-Zeitstempel via Forced Alignment (wav2vec2)
 - **Speaker Diarization** — Sprecherzuordnung via pyannote-audio
+- **Sprecher umbenennen** — nach Transkription können SPEAKER_00 etc. durch echte Namen ersetzt werden
 - **Ausgabeformate** — TXT, SRT (Untertitel), JSON
 - **Live-Pegel** — Lautstärke-Anzeige während der Aufnahme
+- **CLI** — vollständige Kommandozeilen-Bedienung alternativ zur GUI
 
 ## Voraussetzungen
 
@@ -31,7 +36,7 @@ conda activate whisperx
 pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128
 
 # 3. Weitere Abhängigkeiten installieren
-pip install whisperx PyAudioWPatch soundfile numpy python-dotenv
+pip install whisperx PyAudioWPatch soundfile scipy numpy python-dotenv customtkinter
 
 # 4. PyTorch CUDA-Version sicherstellen (whisperx überschreibt manchmal mit CPU-Version)
 pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
@@ -51,6 +56,39 @@ pip install torch torchaudio torchvision --index-url https://download.pytorch.or
 > Nach dem ersten Modell-Download (~3 GB) läuft alles vollständig offline.
 
 ## Verwendung
+
+### GUI starten
+
+```bash
+conda activate whisperx
+python gui.py
+```
+
+Die GUI hat drei Tabs:
+
+#### Tab: Aufnahme
+
+- **Quelle wählen**: Mikrofon, System-Audio oder Mikrofon + System (für vollständige Meetings)
+- **Gerät auswählen**: Dropdown mit erkannten Audio-Geräten
+- **Start/Stop-Button**: Aufnahme starten und stoppen
+- **Live-Pegelanzeige + Timer**: Lautstärke und Aufnahmedauer in Echtzeit
+- **Auto-Transkription**: Optional nach Aufnahme automatisch transkribieren
+
+#### Tab: Transkription
+
+- **Audio-Datei wählen**: Datei-Picker oder automatisch nach Aufnahme
+- **Sprache / Modell**: Deutsch, Englisch, Französisch, ... + Modellauswahl
+- **Speaker Diarization**: Ein/Aus + Min/Max Sprecheranzahl
+- **Fortschrittsanzeige**: Detaillierter Balken pro Pipeline-Schritt
+- **Sprecher umbenennen**: SPEAKER_00 → echter Name zuweisen und auf Text anwenden
+- **Speichern**: TXT, SRT und/oder JSON + Kopieren in Zwischenablage
+
+#### Tab: Einstellungen
+
+- HuggingFace Token
+- Aufnahme-Ordner, Batch Size, Compute-Device
+
+### CLI
 
 ```bash
 conda activate whisperx
@@ -113,8 +151,9 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 ## Projektstruktur
 
 ```
+├── gui.py               # GUI (CustomTkinter)
 ├── main.py              # CLI Entry Point
-├── recorder.py          # Audio-Aufnahme (Mikrofon + WASAPI Loopback)
+├── recorder.py          # Audio-Aufnahme (Mikrofon + WASAPI Loopback + kombiniert)
 ├── transcriber.py       # WhisperX Transkription + Alignment + Diarization
 ├── requirements.txt     # Python-Abhängigkeiten
 ├── .env                 # HuggingFace Token (nicht committen!)
@@ -135,7 +174,7 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 
 | Option | Default | Beschreibung |
 |--------|---------|-------------|
-| `--source` | `mic` | `mic` (Mikrofon) oder `system` (WASAPI Loopback) |
+| `--source` | `mic` | `mic`, `system` (WASAPI Loopback) oder `both` (Mikrofon + System) |
 | `--language`, `-l` | `de` | Sprache (de, en, fr, es, ...) |
 | `--model`, `-m` | `large-v2` | Whisper-Modell (large-v2, large-v3, medium, base) |
 | `--diarize` / `--no-diarize` | `--diarize` | Speaker Diarization an/aus |
@@ -160,9 +199,11 @@ Die Modelle werden sequenziell geladen und entladen (Whisper → Alignment → D
 ## Hinweise
 
 - Beim **ersten Start** werden Modelle von HuggingFace heruntergeladen (~3 GB). Danach läuft alles offline.
+- **Mikrofon + System** nimmt beide Quellen gleichzeitig auf und mischt sie — ideal für vollständige Meeting-Transkription.
 - **System-Audio** nimmt auf, was über die Lautsprecher/Kopfhörer ausgegeben wird — ideal für Teams/Zoom.
-- Die Aufnahme stoppt mit **ENTER** oder **Ctrl+C**.
+- In der GUI stoppt die Aufnahme per **Button**, in der CLI mit **ENTER** oder **Ctrl+C**.
 - Transkripte werden im `recordings/`-Ordner gespeichert.
+- **Sprecher umbenennen**: Nach der Transkription kann man in der GUI SPEAKER_00 etc. durch echte Namen ersetzen.
 
 ## Firmen-Proxy / SSL
 

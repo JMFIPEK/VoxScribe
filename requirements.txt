@@ -2,6 +2,7 @@
 whisperx>=3.8
 PyAudioWPatch>=0.2.12
 soundfile>=0.13
+scipy
 numpy
 python-dotenv
 customtkinter>=5.2
