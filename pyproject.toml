@@ -1,0 +1,14 @@
+[project]
+name = "whisperx-recorder"
+version = "0.1.0"
+description = "Lokale Audio-Aufnahme und Transkription mit WhisperX"
+requires-python = ">=3.10"
+dependencies = [
+    "whisperx>=3.8",
+    "PyAudioWPatch>=0.2.12",
+    "numpy",
+    "python-dotenv",
+]
+
+[project.scripts]
+whisperx-recorder = "main:main"
