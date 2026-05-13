@@ -41,6 +41,7 @@ from dotenv import load_dotenv
 
 from recorder import AudioRecorder, get_devices
 from transcriber import transcribe, format_transcript, save_transcript
+from hardware_detect import recommend_model, get_hardware_summary
 
 load_dotenv()
 
@@ -53,8 +54,11 @@ ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("whisperx.recorder
 
 LANGUAGES = {"Deutsch": "de", "English": "en", "Français": "fr",
              "Español": "es", "Italiano": "it"}
-MODELS = ["large-v2", "large-v3", "medium", "base"]
+MODELS = ["large-v3", "large-v2", "medium", "base"]
 FORMATS = ["txt", "srt", "json"]
+
+# Hardware-basierte Modellempfehlung
+_recommended_model, _recommended_device, _hw_reason = recommend_model()
 
 
 class App(ctk.CTk):
@@ -170,7 +174,7 @@ class App(ctk.CTk):
     def _build_transcribe_tab(self):
         tab = self.tabview.add("Transkription")
         tab.grid_columnconfigure(0, weight=1)
-        tab.grid_rowconfigure(6, weight=1)
+        tab.grid_rowconfigure(7, weight=1)
 
         # File selection
         file_frame = ctk.CTkFrame(tab)
@@ -205,15 +209,24 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(opts_frame, text="Modell:").grid(
             row=0, column=2, padx=(10, 2), pady=10, sticky="e")
-        self.model_var = ctk.StringVar(value="large-v2")
+        self.model_var = ctk.StringVar(value=_recommended_model)
         ctk.CTkOptionMenu(
             opts_frame, variable=self.model_var,
             values=MODELS, width=120
         ).grid(row=0, column=3, padx=(5, 10), pady=10, sticky="w")
 
+        # Hardware-Empfehlung anzeigen
+        hw_hint = ctk.CTkLabel(
+            tab, text=f"⚡ {_hw_reason}",
+            text_color="gray", font=ctk.CTkFont(size=11))
+        hw_hint.grid(row=1, column=0, padx=10, pady=(0, 0), sticky="w")
+        # Shift subsequent rows down
+        opts_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        hw_hint.grid(row=2, column=0, padx=10, pady=(0, 2), sticky="w")
+
         # Diarization + speakers
         diar_frame = ctk.CTkFrame(tab)
-        diar_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        diar_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
 
         self.diarize_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
@@ -238,27 +251,27 @@ class App(ctk.CTk):
             tab, text="Transkription starten", height=45,
             font=ctk.CTkFont(size=15, weight="bold"),
             command=self._start_transcription)
-        self.transcribe_btn.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+        self.transcribe_btn.grid(row=4, column=0, padx=10, pady=5, sticky="ew")
 
         self.progress_bar = ctk.CTkProgressBar(tab)
-        self.progress_bar.grid(row=4, column=0, padx=10, pady=(0, 2), sticky="ew")
+        self.progress_bar.grid(row=5, column=0, padx=10, pady=(0, 2), sticky="ew")
         self.progress_bar.set(0)
         self.progress_bar.grid_remove()
 
         self.transcribe_status = ctk.CTkLabel(
             tab, text="", text_color="gray")
-        self.transcribe_status.grid(row=5, column=0, padx=10, pady=(0, 5))
+        self.transcribe_status.grid(row=6, column=0, padx=10, pady=(0, 5))
         self.transcribe_status.grid_remove()
 
         # Transcript output
         self.transcript_text = ctk.CTkTextbox(
             tab, font=ctk.CTkFont(size=13), wrap="word")
         self.transcript_text.grid(
-            row=6, column=0, padx=10, pady=(5, 5), sticky="nsew")
+            row=7, column=0, padx=10, pady=(5, 5), sticky="nsew")
 
         # Speaker renaming frame (hidden until transcription done)
         self.speaker_frame = ctk.CTkFrame(tab)
-        self.speaker_frame.grid(row=7, column=0, padx=10, pady=(0, 5), sticky="ew")
+        self.speaker_frame.grid(row=8, column=0, padx=10, pady=(0, 5), sticky="ew")
         self.speaker_frame.grid_remove()
         self.speaker_frame.grid_columnconfigure(0, weight=1)
 
@@ -281,7 +294,7 @@ class App(ctk.CTk):
 
         # Bottom buttons
         bottom_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        bottom_frame.grid(row=8, column=0, padx=10, pady=(0, 10), sticky="ew")
+        bottom_frame.grid(row=9, column=0, padx=10, pady=(0, 10), sticky="ew")
         bottom_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.save_btn = ctk.CTkButton(
@@ -359,7 +372,16 @@ class App(ctk.CTk):
         # Version info
         ctk.CTkLabel(tab, text="WhisperX Recorder v0.1.0 — 100% lokal",
                      text_color="gray").grid(
-            row=10, column=0, columnspan=2, padx=10, pady=(40, 10), sticky="w")
+            row=10, column=0, columnspan=2, padx=10, pady=(40, 5), sticky="w")
+
+        # Hardware info
+        hw_summary = get_hardware_summary()
+        ctk.CTkLabel(tab, text=f"Hardware: {hw_summary}",
+                     text_color="gray", justify="left").grid(
+            row=11, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
+        ctk.CTkLabel(tab, text=f"Empfohlenes Modell: {_recommended_model}",
+                     text_color="gray").grid(
+            row=12, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
 
     # --- Tab: Info ---
     def _build_info_tab(self):

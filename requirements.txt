@@ -6,6 +6,7 @@ scipy
 numpy
 python-dotenv
 customtkinter>=5.2
+psutil
 
 # PyTorch mit CUDA 12.8 (separat installieren, siehe README)
 # torch>=2.11
