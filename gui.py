@@ -97,6 +97,7 @@ class App(ctk.CTk):
         self._build_record_tab()
         self._build_transcribe_tab()
         self._build_settings_tab()
+        self._build_info_tab()
 
     # --- Tab: Aufnahme ---
     def _build_record_tab(self):
@@ -359,6 +360,124 @@ class App(ctk.CTk):
         ctk.CTkLabel(tab, text="WhisperX Recorder v0.1.0 — 100% lokal",
                      text_color="gray").grid(
             row=10, column=0, columnspan=2, padx=10, pady=(40, 10), sticky="w")
+
+    # --- Tab: Info ---
+    def _build_info_tab(self):
+        tab = self.tabview.add("Info")
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+
+        info_text = ctk.CTkTextbox(
+            tab, font=ctk.CTkFont(size=13), wrap="word")
+        info_text.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        content = (
+            "═══════════════════════════════════════════════════════════\n"
+            "  WhisperX Recorder & Transcriber — Übersicht\n"
+            "═══════════════════════════════════════════════════════════\n\n"
+            "Diese Anwendung ermöglicht die lokale Aufnahme und automatische\n"
+            "Transkription von Audio mit Sprechererkennung (Speaker Diarization).\n"
+            "Alle Verarbeitungsschritte laufen vollständig lokal auf dem eigenen\n"
+            "Rechner — es werden keine Audio-Daten an externe Server gesendet.\n\n"
+            "─────────────────────────────────────────────────────────────\n"
+            "  Funktionsumfang\n"
+            "─────────────────────────────────────────────────────────────\n\n"
+            "• Aufnahme von Mikrofon, System-Audio oder beidem gleichzeitig\n"
+            "  (WASAPI Loopback unter Windows)\n"
+            "• Automatische Transkription mit wortgenauem Zeitstempel-Alignment\n"
+            "• Speaker Diarization — Erkennung und Zuordnung einzelner Sprecher\n"
+            "• Sprecher-Umbenennung nach der Transkription\n"
+            "• Export in TXT, SRT und JSON\n"
+            "• GPU-Beschleunigung via CUDA (falls verfügbar)\n\n\n"
+            "═══════════════════════════════════════════════════════════\n"
+            "  Verwendete Modelle & Lizenzen\n"
+            "═══════════════════════════════════════════════════════════\n\n"
+            "┌─────────────────────────────────────────────────────────┐\n"
+            "│  1. OpenAI Whisper (via WhisperX)                       │\n"
+            "├─────────────────────────────────────────────────────────┤\n"
+            "│  Zweck:    Sprache-zu-Text Transkription                │\n"
+            "│  Modelle:  large-v2, large-v3, medium, base             │\n"
+            "│  Autor:    OpenAI                                       │\n"
+            "│  Lizenz:   MIT License                                  │\n"
+            "│  Quelle:   https://github.com/openai/whisper            │\n"
+            "│                                                         │\n"
+            "│  Hinweis: Die Whisper-Modelle stehen unter der MIT-     │\n"
+            "│  Lizenz. Die Nutzung ist für kommerzielle und nicht-    │\n"
+            "│  kommerzielle Zwecke gestattet.                         │\n"
+            "└─────────────────────────────────────────────────────────┘\n\n"
+            "┌─────────────────────────────────────────────────────────┐\n"
+            "│  2. WhisperX                                            │\n"
+            "├─────────────────────────────────────────────────────────┤\n"
+            "│  Zweck:    Batched Inference, Forced Alignment,         │\n"
+            "│            Integration der Diarization-Pipeline         │\n"
+            "│  Autor:    Max Bain                                     │\n"
+            "│  Lizenz:   BSD 4-Clause License                         │\n"
+            "│  Quelle:   https://github.com/m-bain/whisperX           │\n"
+            "│                                                         │\n"
+            "│  Hinweis: WhisperX erweitert Whisper um wortgenaues     │\n"
+            "│  Alignment und Speaker Diarization. BSD-4-Clause        │\n"
+            "│  erfordert Namensnennung bei Weitergabe.                │\n"
+            "└─────────────────────────────────────────────────────────┘\n\n"
+            "┌─────────────────────────────────────────────────────────┐\n"
+            "│  3. pyannote.audio (Speaker Diarization)                │\n"
+            "├─────────────────────────────────────────────────────────┤\n"
+            "│  Zweck:    Erkennung & Zuordnung von Sprechern          │\n"
+            "│  Modell:   pyannote/speaker-diarization-3.1             │\n"
+            "│  Autor:    Hervé Bredin (CNRS)                          │\n"
+            "│  Lizenz:   MIT License                                  │\n"
+            "│  Quelle:   https://github.com/pyannote/pyannote-audio   │\n"
+            "│                                                         │\n"
+            "│  ⚠ WICHTIG: Die Nutzung der pyannote-Modelle erfordert │\n"
+            "│  die Zustimmung zu den Nutzungsbedingungen auf          │\n"
+            "│  HuggingFace sowie einen gültigen HF-Token.            │\n"
+            "│  Für kommerzielle Nutzung gelten ggf. separate          │\n"
+            "│  Lizenzbedingungen — siehe pyannote.ai.                 │\n"
+            "└─────────────────────────────────────────────────────────┘\n\n"
+            "┌─────────────────────────────────────────────────────────┐\n"
+            "│  4. PyTorch                                             │\n"
+            "├─────────────────────────────────────────────────────────┤\n"
+            "│  Zweck:    Deep-Learning-Framework für Inferenz         │\n"
+            "│  Autor:    Meta AI (Facebook)                           │\n"
+            "│  Lizenz:   BSD 3-Clause License                         │\n"
+            "│  Quelle:   https://github.com/pytorch/pytorch           │\n"
+            "└─────────────────────────────────────────────────────────┘\n\n"
+            "┌─────────────────────────────────────────────────────────┐\n"
+            "│  5. Forced Alignment Modelle                            │\n"
+            "├─────────────────────────────────────────────────────────┤\n"
+            "│  Zweck:    Wortgenaue Zeitstempel-Zuordnung             │\n"
+            "│  Modelle:  WAV2VEC2-basierte Alignment-Modelle          │\n"
+            "│            (sprachspezifisch, z.B. für DE, EN, FR)      │\n"
+            "│  Autor:    Meta AI / HuggingFace Community              │\n"
+            "│  Lizenz:   Apache 2.0 / MIT (modellabhängig)            │\n"
+            "│  Quelle:   HuggingFace Model Hub                        │\n"
+            "└─────────────────────────────────────────────────────────┘\n\n\n"
+            "═══════════════════════════════════════════════════════════\n"
+            "  Weitere Bibliotheken\n"
+            "═══════════════════════════════════════════════════════════\n\n"
+            "• CustomTkinter (MIT) — GUI-Framework\n"
+            "• PyAudioWPatch (MIT) — Audio-Aufnahme unter Windows\n"
+            "• SoundFile (BSD 3-Clause) — Audio-Datei I/O\n"
+            "• SciPy (BSD 3-Clause) — Signal-Resampling\n"
+            "• NumPy (BSD 3-Clause) — Numerische Berechnungen\n\n\n"
+            "═══════════════════════════════════════════════════════════\n"
+            "  Hinweise zur Nutzung\n"
+            "═══════════════════════════════════════════════════════════\n\n"
+            "• Alle KI-Modelle werden beim ersten Start automatisch von\n"
+            "  HuggingFace heruntergeladen und lokal zwischengespeichert.\n"
+            "• Für Speaker Diarization wird ein kostenloser HuggingFace-\n"
+            "  Account mit akzeptierten Modell-Bedingungen benötigt.\n"
+            "• Die Transkriptionsqualität hängt von der Modellgröße ab:\n"
+            "  large-v3 > large-v2 > medium > base (Qualität vs. Geschwindigkeit)\n"
+            "• GPU (NVIDIA CUDA) wird empfohlen für large-Modelle.\n"
+            "  CPU-Inferenz ist möglich, aber deutlich langsamer.\n\n"
+            "─────────────────────────────────────────────────────────────\n"
+            "  WhisperX Recorder v0.1.0\n"
+            "  Alle Verarbeitung erfolgt lokal — keine Cloud-Dienste.\n"
+            "─────────────────────────────────────────────────────────────\n"
+        )
+
+        info_text.insert("1.0", content)
+        info_text.configure(state="disabled")
 
     # ------------------------------------------------------------ Devices
     def _refresh_devices(self):
