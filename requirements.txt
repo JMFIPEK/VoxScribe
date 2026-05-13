@@ -1,0 +1,11 @@
+# Core
+whisperx>=3.8
+PyAudioWPatch>=0.2.12
+soundfile>=0.13
+numpy
+python-dotenv
+
+# PyTorch mit CUDA 12.8 (separat installieren, siehe README)
+# torch>=2.11
+# torchaudio>=2.11
+# torchvision>=0.26

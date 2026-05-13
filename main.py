@@ -10,6 +10,14 @@ Befehle:
 
 import os
 import ssl
+import warnings
+
+# --- Warnungen unterdruecken ---
+warnings.filterwarnings("ignore")
+os.environ["PYTHONWARNINGS"] = "ignore"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["TORCH_LOGS"] = "-all"
+os.environ["TORCHAUDIO_NO_BACKEND_CHECK"] = "1"
 
 # --- Firmen-Proxy: SSL-Verifikation deaktivieren (vor allen anderen Imports) ---
 os.environ["CURL_CA_BUNDLE"] = ""
@@ -19,6 +27,10 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+import logging
+logging.disable(logging.WARNING)
+logging.getLogger().setLevel(logging.ERROR)
 
 import requests
 _original_send = requests.adapters.HTTPAdapter.send
