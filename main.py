@@ -1,4 +1,4 @@
-"""WhisperX Recorder & Transcriber — CLI Entry Point.
+"""VoxScribe — CLI Entry Point für ORION.
 
 Befehle:
     python main.py devices                      Audio-Geraete auflisten
@@ -125,7 +125,7 @@ def cmd_run(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="WhisperX Recorder & Transcriber — 100%% lokal",
+        description="VoxScribe — 100%% lokal",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", help="Verfuegbare Befehle")

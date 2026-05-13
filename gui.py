@@ -1,8 +1,19 @@
-"""WhisperX Recorder & Transcriber — CustomTkinter GUI."""
+"""VoxScribe — GUI für ORION (Obsidian Retrieval for Information and Organized Notes)."""
 
 import os
 import ssl
 import warnings
+import threading
+import time
+import tkinter as tk
+
+# ═══════════════════════════════════════════════════════════════════════
+#  App-Bezeichnung — hier zentral änderbar
+# ═══════════════════════════════════════════════════════════════════════
+APP_NAME = "VoxScribe"
+APP_SUBTITLE = "for ORION"
+APP_VERSION = "0.1.0"
+APP_ID = "orion.voxscribe"
 
 # --- Warnungen unterdruecken ---
 warnings.filterwarnings("ignore")
@@ -16,6 +27,112 @@ os.environ["CURL_CA_BUNDLE"] = ""
 os.environ["REQUESTS_CA_BUNDLE"] = ""
 os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
 ssl._create_default_https_context = ssl._create_unverified_context
+
+# Windows: eigene AppUserModelID setzen, damit Taskleiste eigenes Icon zeigt
+import ctypes
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Splash Screen — wird sofort angezeigt während Module laden
+# ═══════════════════════════════════════════════════════════════════════
+
+class SplashScreen:
+    """Borderless splash window with logo and animated loading indicator."""
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.overrideredirect(True)  # Kein Fensterrahmen
+        self.root.attributes("-topmost", True)
+        self.root.configure(bg="#1a1a2e")
+
+        # Größe und zentrieren
+        width, height = 480, 380
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = (screen_w - width) // 2
+        y = (screen_h - height) // 2
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+        # Logo laden
+        self._logo_image = None
+        logo_path = os.path.join(os.path.dirname(__file__), "Logo.png")
+        if os.path.exists(logo_path):
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(logo_path)
+                img = img.resize((180, 180), Image.LANCZOS)
+                self._logo_image = ImageTk.PhotoImage(img)
+            except Exception:
+                pass
+
+        # Canvas für schickes Layout
+        canvas = tk.Canvas(self.root, width=width, height=height,
+                           bg="#1a1a2e", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+
+        # Abgerundeter Rahmen (Border-Effekt)
+        canvas.create_rectangle(2, 2, width - 2, height - 2,
+                                outline="#3498db", width=2)
+
+        # Logo
+        if self._logo_image:
+            canvas.create_image(width // 2, 120, image=self._logo_image)
+        else:
+            canvas.create_text(width // 2, 120, text="\U0001f399",
+                               font=("Segoe UI", 60), fill="white")
+
+        # Titel
+        canvas.create_text(width // 2, 240, text=APP_NAME,
+                           font=("Segoe UI Semibold", 20), fill="white")
+        canvas.create_text(width // 2, 270, text=APP_SUBTITLE,
+                           font=("Segoe UI", 14), fill="#8e9aaf")
+
+        # Status-Text
+        self._status_id = canvas.create_text(
+            width // 2, 320, text="Module werden geladen...",
+            font=("Segoe UI", 10), fill="#7f8c8d")
+        self._canvas = canvas
+
+        # Lade-Animation (pulsierende Punkte)
+        self._dots = 0
+        self._animate()
+
+        self.root.update()
+
+    def _animate(self):
+        """Pulsierende Punkte als Lade-Indikator."""
+        self._dots = (self._dots % 3) + 1
+        dots_text = "\u25cf" * self._dots + "\u25cb" * (3 - self._dots)
+        self._canvas.itemconfig(self._status_id,
+                                text=f"Module werden geladen  {dots_text}")
+        self._anim_id = self.root.after(500, self._animate)
+
+    def update_status(self, text):
+        """Status-Text aktualisieren."""
+        self._canvas.itemconfig(self._status_id, text=text)
+        self.root.update()
+
+    def destroy(self):
+        """Splash schließen."""
+        try:
+            self.root.after_cancel(self._anim_id)
+        except Exception:
+            pass
+        self.root.destroy()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Splash starten und schwere Module laden
+# ═══════════════════════════════════════════════════════════════════════
+
+_splash = None
+if __name__ == "__main__":
+    _splash = SplashScreen()
+
+# --- Schwere Imports mit Splash-Updates ---
+if _splash:
+    _splash.update_status("Netzwerk-Module...")
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -31,26 +148,34 @@ def _patched_send(self, request, *args, **kwargs):
     return _original_send(self, request, *args, **kwargs)
 requests.adapters.HTTPAdapter.send = _patched_send
 
-import threading
-import time
+if _splash:
+    _splash.update_status("GUI-Framework...")
+
 from datetime import datetime
 from tkinter import filedialog
 
 import customtkinter as ctk
 from dotenv import load_dotenv
 
+if _splash:
+    _splash.update_status("Audio-Recorder...")
+
 from recorder import AudioRecorder, get_devices
+
+if _splash:
+    _splash.update_status("Transcriber-Engine...")
+
 from transcriber import transcribe, format_transcript, save_transcript
+
+if _splash:
+    _splash.update_status("Hardware-Erkennung...")
+
 from hardware_detect import recommend_model, get_hardware_summary
 
 load_dotenv()
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-
-# Windows: eigene AppUserModelID setzen, damit Taskleiste eigenes Icon zeigt
-import ctypes
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("whisperx.recorder.transcriber")
 
 LANGUAGES = {"Deutsch": "de", "English": "en", "Français": "fr",
              "Español": "es", "Italiano": "it"}
@@ -60,12 +185,16 @@ FORMATS = ["txt", "srt", "json"]
 # Hardware-basierte Modellempfehlung
 _recommended_model, _recommended_device, _hw_reason = recommend_model()
 
+if _splash:
+    _splash.update_status("Bereit!")
+    time.sleep(0.3)
+
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("WhisperX Recorder & Transcriber")
+        self.title(f"{APP_NAME} — {APP_SUBTITLE}")
         self.geometry("900x700")
         self.minsize(800, 600)
 
@@ -370,7 +499,7 @@ class App(ctk.CTk):
         ).grid(row=6, column=1, padx=10, pady=5, sticky="w")
 
         # Version info
-        ctk.CTkLabel(tab, text="WhisperX Recorder v0.1.0 — 100% lokal",
+        ctk.CTkLabel(tab, text=f"{APP_NAME} v{APP_VERSION} — 100% lokal",
                      text_color="gray").grid(
             row=10, column=0, columnspan=2, padx=10, pady=(40, 5), sticky="w")
 
@@ -395,7 +524,7 @@ class App(ctk.CTk):
 
         content = (
             "═══════════════════════════════════════════════════════════\n"
-            "  WhisperX Recorder & Transcriber — Übersicht\n"
+            f"  {APP_NAME} {APP_SUBTITLE} — Übersicht\n"
             "═══════════════════════════════════════════════════════════\n\n"
             "Diese Anwendung ermöglicht die lokale Aufnahme und automatische\n"
             "Transkription von Audio mit Sprechererkennung (Speaker Diarization).\n"
@@ -493,7 +622,7 @@ class App(ctk.CTk):
             "• GPU (NVIDIA CUDA) wird empfohlen für large-Modelle.\n"
             "  CPU-Inferenz ist möglich, aber deutlich langsamer.\n\n"
             "─────────────────────────────────────────────────────────────\n"
-            "  WhisperX Recorder v0.1.0\n"
+            f"  {APP_NAME} v{APP_VERSION}\n"
             "  Alle Verarbeitung erfolgt lokal — keine Cloud-Dienste.\n"
             "─────────────────────────────────────────────────────────────\n"
         )
@@ -825,6 +954,13 @@ class App(ctk.CTk):
                 seg["speaker"] = mapping[spk]
 
 def main():
+    global _splash
+    # Splash schließen
+    if _splash:
+        _splash.destroy()
+        _splash = None
+
+    # Hauptanwendung starten
     app = App()
     app.mainloop()
 

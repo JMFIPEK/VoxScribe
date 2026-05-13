@@ -1,4 +1,6 @@
-# WhisperX Recorder & Transcriber
+# VoxScribe — ORION
+
+**VoxScribe** ist die Spracheingabe-Komponente für **ORION** (Obsidian Retrieval for Information and Organized Notes).
 
 Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain/whisperX). Unterstützt Mikrofon- und System-Audio-Aufnahme (z.B. Teams/Zoom via WASAPI Loopback) mit anschließender Transkription inkl. Speaker Diarization. Läuft 100 % lokal nach einmaligem Modell-Download.
 
