@@ -124,6 +124,22 @@ def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
     return np.pad(audio, (0, length - len(audio)), mode="constant")
 
 
+def _get_loopback_device(p: pyaudio.PyAudio, device_index: int | None = None):
+    if device_index is None:
+        return p.get_default_wasapi_loopback()
+
+    try:
+        for device in p.get_loopback_device_info_generator():
+            if int(device["index"]) == int(device_index):
+                return device
+    except OSError as e:
+        raise RuntimeError("Keine WASAPI Loopback-Geraete gefunden.") from e
+
+    raise RuntimeError(
+        f"Geraet [{device_index}] ist kein WASAPI Loopback-Geraet."
+    )
+
+
 def get_devices():
     """Gibt alle verfuegbaren Audio-Geraete als strukturierte Listen zurueck."""
     p = pyaudio.PyAudio()
@@ -226,10 +242,7 @@ class AudioRecorder:
         p = pyaudio.PyAudio()
         try:
             if self._source == "system":
-                if self._device_index is not None:
-                    loopback = p.get_device_info_by_index(self._device_index)
-                else:
-                    loopback = p.get_default_wasapi_loopback()
+                loopback = _get_loopback_device(p, self._device_index)
                 self._channels = loopback["maxInputChannels"]
                 self._sample_rate = int(loopback["defaultSampleRate"])
                 device_idx = loopback["index"]
@@ -240,7 +253,7 @@ class AudioRecorder:
                     info = p.get_default_input_device_info()
                 device_idx = info["index"]
                 self._channels = 1
-                self._sample_rate = 16000
+                self._sample_rate = int(info["defaultSampleRate"])
 
             stream = p.open(
                 format=FORMAT,
@@ -443,7 +456,7 @@ def _level_bar(data: bytes, channels: int) -> str:
 
 
 def record_microphone(output_path: str, device_index: int | None = None,
-                      sample_rate: int = 16000, channels: int = 1):
+                      sample_rate: int | None = None, channels: int = 1):
     """Nimmt Audio vom Mikrofon auf und speichert es als WAV.
 
     Stoppt bei Enter-Tastendruck.
@@ -457,6 +470,10 @@ def record_microphone(output_path: str, device_index: int | None = None,
         info = p.get_default_input_device_info()
         device_index = info["index"]
         print(f"Standard-Mikrofon: [{device_index}] {info['name']}")
+
+    if sample_rate is None:
+        sample_rate = int(info["defaultSampleRate"])
+    print(f"  Kanaele: {channels}, Samplerate: {sample_rate} Hz")
 
     stream = p.open(
         format=FORMAT,
@@ -497,7 +514,7 @@ def record_microphone(output_path: str, device_index: int | None = None,
     return output_path
 
 
-def record_system_audio(output_path: str):
+def record_system_audio(output_path: str, device_index: int | None = None):
     """Nimmt System-Audio (WASAPI Loopback) auf und speichert es als WAV.
 
     Ideal fuer Teams/Zoom-Aufnahmen.
@@ -506,9 +523,11 @@ def record_system_audio(output_path: str):
     p = pyaudio.PyAudio()
 
     try:
-        loopback = p.get_default_wasapi_loopback()
-    except OSError as e:
+        loopback = _get_loopback_device(p, device_index)
+    except (OSError, RuntimeError) as e:
         p.terminate()
+        if isinstance(e, RuntimeError):
+            raise
         raise RuntimeError(
             "Kein WASAPI Loopback-Geraet gefunden. "
             "Stelle sicher, dass ein Audio-Ausgabegeraet aktiv ist."
@@ -557,6 +576,54 @@ def record_system_audio(output_path: str):
 
     _save_wav(output_path, frames, channels, sample_rate)
     return output_path
+
+
+def record_microphone_and_system(output_path: str,
+                                 device_index: int | None = None):
+    """Nimmt Mikrofon + System-Audio auf und speichert den Mix als WAV."""
+    recorder = AudioRecorder()
+    done_event = threading.Event()
+    stop_requested = threading.Event()
+    result = {"path": None, "duration": 0, "error": None}
+
+    def on_done(path, duration, error):
+        result["path"] = path
+        result["duration"] = duration
+        result["error"] = error
+        done_event.set()
+
+    def wait_for_enter():
+        input()
+        stop_requested.set()
+
+    print("Mikrofon + System-Audio")
+    recorder.start(
+        output_path=output_path,
+        source="both",
+        device_index=device_index,
+        on_done=on_done,
+    )
+
+    listener = threading.Thread(target=wait_for_enter, daemon=True)
+    listener.start()
+
+    print("Aufnahme laeuft... Druecke ENTER zum Stoppen.\n")
+    try:
+        while not stop_requested.is_set() and not done_event.is_set():
+            done_event.wait(0.1)
+    except KeyboardInterrupt:
+        pass
+
+    if not done_event.is_set():
+        print("\n\nAufnahme beendet. Speichere...")
+        recorder.stop()
+        if not done_event.wait(timeout=120):
+            raise RuntimeError("Aufnahme konnte nicht abgeschlossen werden.")
+
+    if result["error"]:
+        raise RuntimeError(result["error"])
+
+    return result["path"] or output_path
 
 
 def _save_wav(output_path: str, frames: list[bytes], channels: int,

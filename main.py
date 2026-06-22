@@ -4,6 +4,7 @@ Befehle:
     python main.py devices                      Audio-Geraete auflisten
     python main.py record --source mic           Mikrofon-Aufnahme
     python main.py record --source system        System-Audio (Teams/Zoom)
+    python main.py record --source both          Mikrofon + System-Audio
     python main.py transcribe --input audio.wav  Transkription starten
     python main.py run --source mic              Aufnahme + Transkription
 """
@@ -56,7 +57,11 @@ def cmd_devices(_args):
 
 def cmd_record(args):
     """Startet eine Audio-Aufnahme."""
-    from recorder import record_microphone, record_system_audio
+    from recorder import (
+        record_microphone,
+        record_microphone_and_system,
+        record_system_audio,
+    )
 
     output = args.output
     if not output:
@@ -67,7 +72,9 @@ def cmd_record(args):
     if args.source == "mic":
         record_microphone(output, device_index=args.device)
     elif args.source == "system":
-        record_system_audio(output)
+        record_system_audio(output, device_index=args.device)
+    elif args.source == "both":
+        record_microphone_and_system(output, device_index=args.device)
     else:
         print(f"Unbekannte Quelle: {args.source}")
         sys.exit(1)
@@ -137,8 +144,9 @@ def main():
     # --- record ---
     sub_record = subparsers.add_parser("record", help="Audio aufnehmen")
     sub_record.add_argument(
-        "--source", choices=["mic", "system"], default="mic",
-        help="Audio-Quelle: mic (Mikrofon) oder system (WASAPI Loopback fuer Teams/Zoom)"
+        "--source", choices=["mic", "system", "both"], default="mic",
+        help=("Audio-Quelle: mic, system (WASAPI Loopback) oder "
+              "both (Mikrofon + System)")
     )
     sub_record.add_argument("--output", "-o", help="Ausgabe-Pfad (WAV)")
     sub_record.add_argument(
@@ -192,8 +200,8 @@ def main():
         "run", help="Aufnahme + sofortige Transkription"
     )
     sub_run.add_argument(
-        "--source", choices=["mic", "system"], default="mic",
-        help="Audio-Quelle: mic oder system"
+        "--source", choices=["mic", "system", "both"], default="mic",
+        help="Audio-Quelle: mic, system oder both"
     )
     sub_run.add_argument("--output", "-o", default=None)
     sub_run.add_argument("--device", type=int, default=None)

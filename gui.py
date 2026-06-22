@@ -718,6 +718,15 @@ class App(ctk.CTk):
     def _on_recording_done(self, path, duration, error):
         def _update():
             if error:
+                if self._timer_id:
+                    self.after_cancel(self._timer_id)
+                    self._timer_id = None
+                self.record_btn.configure(
+                    text="⏺  Aufnahme starten",
+                    fg_color="#c0392b", hover_color="#e74c3c")
+                self.level_bar.set(0)
+                self.timer_label.configure(text="00:00")
+                self._record_start_time = None
                 self.record_status.configure(
                     text=f"Fehler: {error}", text_color="#e74c3c")
                 return
@@ -830,7 +839,11 @@ class App(ctk.CTk):
             self._transcription_result = result
             self.after(0, lambda: self._on_transcription_done(text, None))
         except Exception as e:
-            self.after(0, lambda: self._on_transcription_done(None, str(e)))
+            error = str(e)
+            self.after(
+                0,
+                lambda error=error: self._on_transcription_done(None, error),
+            )
 
     def _on_transcribe_progress(self, pct, message):
         """Callback from transcriber thread — schedule UI update on main thread."""
@@ -957,6 +970,15 @@ class App(ctk.CTk):
             spk = seg.get("speaker", "")
             if spk in mapping:
                 seg["speaker"] = mapping[spk]
+            for word in seg.get("words", []) or []:
+                word_spk = word.get("speaker", "")
+                if word_spk in mapping:
+                    word["speaker"] = mapping[word_spk]
+
+        for word in self._transcription_result.get("word_segments", []) or []:
+            word_spk = word.get("speaker", "")
+            if word_spk in mapping:
+                word["speaker"] = mapping[word_spk]
 
 def main():
     global _splash
