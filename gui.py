@@ -649,8 +649,13 @@ class App(ctk.CTk):
             devices = self._all_devices["loopback"]
 
         names = []
+        seen_labels = set()
         for d in devices:
             label = d["name"]
+            if label in seen_labels:
+                host_api = d.get("host_api") or "Audio"
+                label = f"{label} ({host_api}, #{d['index']})"
+            seen_labels.add(label)
             names.append(label)
             self._device_map[label] = d["index"]
 

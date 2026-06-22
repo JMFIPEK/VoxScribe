@@ -10,6 +10,118 @@ import pyaudiowpatch as pyaudio
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
 SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
+OUT_RATE = 16000
+
+_GENERIC_INPUT_ALIASES = (
+    "microsoft soundmapper - input",
+    "microsoft sound mapper - input",
+    "primaerer soundaufnahmetreiber",
+    "primarer soundaufnahmetreiber",
+    "primärer soundaufnahmetreiber",
+    "primary sound capture driver",
+)
+
+
+def _host_api_name(p: pyaudio.PyAudio, info: dict) -> str:
+    try:
+        host_api = p.get_host_api_info_by_index(info["hostApi"])
+        return host_api.get("name", "")
+    except Exception:
+        return ""
+
+
+def _device_score(device: dict) -> tuple[int, int, int]:
+    host_api = device.get("host_api", "").lower()
+    if "wasapi" in host_api:
+        api_score = 4
+    elif "directsound" in host_api:
+        api_score = 3
+    elif "wdm" in host_api:
+        api_score = 2
+    elif "mme" in host_api:
+        api_score = 1
+    else:
+        api_score = 0
+
+    default_score = 1 if device.get("is_default") else 0
+    channel_score = min(int(device.get("channels", 0)), 2)
+    return (api_score, default_score, channel_score)
+
+
+def _normalize_device_name(name: str) -> str:
+    return " ".join(name.casefold().split())
+
+
+def _is_generic_input_alias(name: str) -> bool:
+    normalized = _normalize_device_name(name)
+    return any(alias in normalized for alias in _GENERIC_INPUT_ALIASES)
+
+
+def _looks_like_truncated_alias(candidate: str, existing: str) -> bool:
+    if len(candidate) >= 36:
+        return False
+    return existing.startswith(candidate) and len(existing) > len(candidate) + 6
+
+
+def _dedupe_audio_devices(devices: list[dict]) -> list[dict]:
+    """Collapse Windows host-API aliases while keeping a real device index."""
+    filtered = [d for d in devices if not _is_generic_input_alias(d["name"])]
+    if not filtered:
+        filtered = devices
+
+    by_name = {}
+    for device in filtered:
+        key = _normalize_device_name(device["name"])
+        previous = by_name.get(key)
+        if previous is None or _device_score(device) > _device_score(previous):
+            by_name[key] = device
+
+    chosen = sorted(by_name.values(), key=_device_score, reverse=True)
+    result = []
+    for device in chosen:
+        name = _normalize_device_name(device["name"])
+        if any(
+            _looks_like_truncated_alias(name, _normalize_device_name(existing["name"]))
+            or _looks_like_truncated_alias(_normalize_device_name(existing["name"]), name)
+            for existing in result
+        ):
+            continue
+        result.append(device)
+
+    return sorted(result, key=lambda d: (not d.get("is_default"), d["name"].casefold()))
+
+
+def _chunk_size_for_rate(sample_rate: int) -> int:
+    return max(256, int(round(CHUNK * sample_rate / OUT_RATE)))
+
+
+def _frames_to_mono_float(frames: list[bytes], channels: int) -> np.ndarray:
+    if not frames:
+        return np.array([], dtype=np.float64)
+
+    audio = np.frombuffer(b"".join(frames), dtype=np.int16).astype(np.float64)
+    if channels > 1:
+        usable_len = len(audio) - (len(audio) % channels)
+        audio = audio[:usable_len].reshape(-1, channels).mean(axis=1)
+    return audio
+
+
+def _resample_to_rate(audio: np.ndarray, source_rate: int,
+                      target_rate: int) -> np.ndarray:
+    if source_rate == target_rate or len(audio) == 0:
+        return audio
+
+    from math import gcd
+    from scipy.signal import resample_poly
+
+    divisor = gcd(target_rate, source_rate)
+    return resample_poly(audio, target_rate // divisor, source_rate // divisor)
+
+
+def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
+    if len(audio) >= length:
+        return audio[:length]
+    return np.pad(audio, (0, length - len(audio)), mode="constant")
 
 
 def get_devices():
@@ -17,6 +129,11 @@ def get_devices():
     p = pyaudio.PyAudio()
     microphones = []
     loopback = []
+    default_input_index = None
+    try:
+        default_input_index = int(p.get_default_input_device_info()["index"])
+    except OSError:
+        pass
 
     for i in range(p.get_device_count()):
         info = p.get_device_info_by_index(i)
@@ -24,8 +141,10 @@ def get_devices():
             microphones.append({
                 "index": i,
                 "name": info["name"],
+                "host_api": _host_api_name(p, info),
                 "channels": info["maxInputChannels"],
                 "sample_rate": int(info["defaultSampleRate"]),
+                "is_default": i == default_input_index,
             })
 
     try:
@@ -33,6 +152,7 @@ def get_devices():
             loopback.append({
                 "index": device["index"],
                 "name": device["name"],
+                "host_api": _host_api_name(p, device),
                 "channels": device["maxInputChannels"],
                 "sample_rate": int(device["defaultSampleRate"]),
             })
@@ -47,7 +167,8 @@ def get_devices():
         pass
 
     p.terminate()
-    return {"microphones": microphones, "loopback": loopback,
+    return {"microphones": _dedupe_audio_devices(microphones),
+            "loopback": _dedupe_audio_devices(loopback),
             "default_loopback": default_loopback}
 
 
@@ -105,7 +226,10 @@ class AudioRecorder:
         p = pyaudio.PyAudio()
         try:
             if self._source == "system":
-                loopback = p.get_default_wasapi_loopback()
+                if self._device_index is not None:
+                    loopback = p.get_device_info_by_index(self._device_index)
+                else:
+                    loopback = p.get_default_wasapi_loopback()
                 self._channels = loopback["maxInputChannels"]
                 self._sample_rate = int(loopback["defaultSampleRate"])
                 device_idx = loopback["index"]
@@ -155,7 +279,9 @@ class AudioRecorder:
         p = pyaudio.PyAudio()
         mic_frames = []
         sys_frames = []
-        out_rate = 16000
+        mic_stream = None
+        sys_stream = None
+        read_errors = []
 
         try:
             # Mikrofon einrichten
@@ -164,113 +290,143 @@ class AudioRecorder:
             else:
                 mic_info = p.get_default_input_device_info()
             mic_idx = mic_info["index"]
-            mic_rate = 16000
+            mic_rate = int(mic_info["defaultSampleRate"])
             mic_ch = 1
+            mic_chunk = _chunk_size_for_rate(mic_rate)
 
             # System-Audio (Loopback) einrichten
             loopback = p.get_default_wasapi_loopback()
             sys_idx = loopback["index"]
             sys_rate = int(loopback["defaultSampleRate"])
             sys_ch = loopback["maxInputChannels"]
+            sys_chunk = _chunk_size_for_rate(sys_rate)
 
             mic_stream = p.open(
                 format=FORMAT, channels=mic_ch, rate=mic_rate,
                 input=True, input_device_index=mic_idx,
-                frames_per_buffer=CHUNK)
+                frames_per_buffer=mic_chunk)
 
             sys_stream = p.open(
                 format=FORMAT, channels=sys_ch, rate=sys_rate,
                 input=True, input_device_index=sys_idx,
-                frames_per_buffer=CHUNK)
+                frames_per_buffer=sys_chunk)
+
+            def read_loop(stream, frames, chunk_size):
+                while not self._stop_event.is_set():
+                    try:
+                        data = stream.read(chunk_size, exception_on_overflow=False)
+                    except Exception as e:
+                        read_errors.append(e)
+                        self._stop_event.set()
+                        break
+
+                    frames.append(data)
+                    if self._on_level:
+                        self._on_level(compute_rms(data))
+
+            mic_thread = threading.Thread(
+                target=read_loop, args=(mic_stream, mic_frames, mic_chunk),
+                daemon=True)
+            sys_thread = threading.Thread(
+                target=read_loop, args=(sys_stream, sys_frames, sys_chunk),
+                daemon=True)
+            mic_thread.start()
+            sys_thread.start()
 
             while not self._stop_event.is_set():
-                mic_data = mic_stream.read(CHUNK, exception_on_overflow=False)
-                sys_data = sys_stream.read(CHUNK, exception_on_overflow=False)
-                mic_frames.append(mic_data)
-                sys_frames.append(sys_data)
+                self._stop_event.wait(0.05)
 
-                if self._on_level:
-                    self._on_level(max(compute_rms(mic_data),
-                                      compute_rms(sys_data)))
+            mic_thread.join(timeout=2)
+            sys_thread.join(timeout=2)
 
-            mic_stream.stop_stream()
-            mic_stream.close()
-            sys_stream.stop_stream()
-            sys_stream.close()
+            if read_errors:
+                raise read_errors[0]
         except Exception as e:
             if self._on_done:
                 self._on_done(None, 0, str(e))
             return
         finally:
+            for stream in (mic_stream, sys_stream):
+                if stream is None:
+                    continue
+                try:
+                    if stream.is_active():
+                        stream.stop_stream()
+                    stream.close()
+                except Exception:
+                    pass
             p.terminate()
 
+        if not mic_frames:
+            if self._on_done:
+                self._on_done(None, 0, "Mikrofon hat keine Audiodaten geliefert.")
+            return
+        if not sys_frames:
+            if self._on_done:
+                self._on_done(None, 0, "System-Audio hat keine Audiodaten geliefert.")
+            return
+
         # Beide Streams zu Mono 16kHz mischen
-        mic_audio = np.frombuffer(b"".join(mic_frames), dtype=np.int16
-                                  ).astype(np.float64)
-        sys_audio = np.frombuffer(b"".join(sys_frames), dtype=np.int16
-                                  ).astype(np.float64)
+        mic_audio = _frames_to_mono_float(mic_frames, mic_ch)
+        sys_audio = _frames_to_mono_float(sys_frames, sys_ch)
 
-        # System-Audio: Multi-Channel → Mono
-        if sys_ch > 1:
-            sys_audio = sys_audio.reshape(-1, sys_ch).mean(axis=1)
+        # Resample both sources to the output format.
+        mic_audio = _resample_to_rate(mic_audio, mic_rate, OUT_RATE)
+        sys_audio = _resample_to_rate(sys_audio, sys_rate, OUT_RATE)
 
-        # System-Audio: Resample auf out_rate
-        if sys_rate != out_rate:
-            from scipy.signal import resample_poly
-            from math import gcd
-            g = gcd(out_rate, sys_rate)
-            sys_audio = resample_poly(sys_audio, out_rate // g, sys_rate // g)
+        # Keep the full duration and pad the shorter hardware stream.
+        out_len = max(len(mic_audio), len(sys_audio))
+        mic_audio = _pad_to_length(mic_audio, out_len)
+        sys_audio = _pad_to_length(sys_audio, out_len)
 
-        # Auf gleiche Laenge bringen
-        min_len = min(len(mic_audio), len(sys_audio))
-        mic_audio = mic_audio[:min_len]
-        sys_audio = sys_audio[:min_len]
-
-        # Mischen (beide gleich gewichtet) und clippen
-        mixed = mic_audio + sys_audio
+        # Mix with headroom and clip only as a final guard.
+        mixed = (mic_audio * 0.65) + (sys_audio * 0.65)
+        peak = np.max(np.abs(mixed)) if len(mixed) else 0
+        if peak > 32767:
+            mixed = mixed * (32767 / peak)
         mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
 
         os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
         self._channels = 1
-        self._sample_rate = out_rate
+        self._sample_rate = OUT_RATE
         self._frames = [mixed.tobytes()]
-        _save_wav(self._output_path, self._frames, 1, out_rate)
+        _save_wav(self._output_path, self._frames, 1, OUT_RATE)
 
-        duration = len(mixed) / out_rate
+        duration = len(mixed) / OUT_RATE
         if self._on_done:
             self._on_done(self._output_path, duration, None)
 
 
 def list_devices():
     """Zeigt alle verfuegbaren Audio-Geraete (Mikrofone + WASAPI Loopback)."""
-    p = pyaudio.PyAudio()
+    devices = get_devices()
     print("\n=== Verfuegbare Audio-Geraete ===\n")
 
     print("--- Mikrofone (Eingabegeraete) ---")
-    for i in range(p.get_device_count()):
-        info = p.get_device_info_by_index(i)
-        if info["maxInputChannels"] > 0 and "loopback" not in info["name"].lower():
-            print(f"  [{i}] {info['name']}")
-            print(f"      Kanaele: {info['maxInputChannels']}, "
-                  f"Samplerate: {int(info['defaultSampleRate'])} Hz")
+    if devices["microphones"]:
+        for device in devices["microphones"]:
+            host_api = f", API: {device['host_api']}" if device.get("host_api") else ""
+            print(f"  [{device['index']}] {device['name']}")
+            print(f"      Kanaele: {device['channels']}, "
+                  f"Samplerate: {device['sample_rate']} Hz{host_api}")
+    else:
+        print("  Keine Mikrofone gefunden.")
 
     print("\n--- System-Audio (WASAPI Loopback) ---")
-    try:
-        for device in p.get_loopback_device_info_generator():
+    if devices["loopback"]:
+        for device in devices["loopback"]:
+            host_api = f", API: {device['host_api']}" if device.get("host_api") else ""
             print(f"  [{device['index']}] {device['name']}")
-            print(f"      Kanaele: {device['maxInputChannels']}, "
-                  f"Samplerate: {int(device['defaultSampleRate'])} Hz")
-    except OSError:
+            print(f"      Kanaele: {device['channels']}, "
+                  f"Samplerate: {device['sample_rate']} Hz{host_api}")
+    else:
         print("  Keine WASAPI Loopback-Geraete gefunden.")
 
-    try:
-        default_lb = p.get_default_wasapi_loopback()
-        print(f"\n  Standard-Loopback: [{default_lb['index']}] {default_lb['name']}")
-    except OSError:
-        pass
+    default_loopback = devices.get("default_loopback")
+    if default_loopback is not None:
+        print(f"\n  Standard-Loopback: [{default_loopback}]")
 
     print()
-    p.terminate()
 
 
 def _level_bar(data: bytes, channels: int) -> str:
