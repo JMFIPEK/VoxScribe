@@ -3,4 +3,7 @@ recordings/
 __pycache__/
 *.pyc
 .venv/
-.conda/
+dist/
+build/
+bundled_models/
+*.ico

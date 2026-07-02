@@ -25,22 +25,44 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 - Python 3.11
 - NVIDIA GPU mit CUDA 12.8 (z.B. RTX 5000, RTX 4090, ...)
 - [CUDA Toolkit 12.8](https://developer.nvidia.com/cuda-12-8-1-download-archive)
-- [Miniconda](https://docs.anaconda.com/miniconda/)
+- **[uv](https://docs.astral.sh/uv/)** — schneller Python-Paketmanager (optional, aber empfohlen)
 
 ## Installation
 
+### Option 1: Mit uv (empfohlen)
+
 ```bash
-# 1. Conda-Umgebung erstellen
-conda create -n whisperx python=3.11 -y
-conda activate whisperx
+# 1. uv installieren (falls noch nicht vorhanden)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. Virtuelle Umgebung erstellen und aktivieren
+uv venv --python 3.11
+.\.venv\Scripts\activate
+
+# 3. PyTorch mit CUDA 12.8 installieren
+uv pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# 4. Weitere Abhängigkeiten installieren
+uv pip install -r requirements.txt
+
+# 5. PyTorch CUDA-Version sicherstellen (whisperx überschreibt manchmal mit CPU-Version)
+uv pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
+```
+
+### Option 2: Mit venv (Standard Python)
+
+```bash
+# 1. Virtuelle Umgebung erstellen
+python -m venv .venv
+.\.venv\Scripts\activate
 
 # 2. PyTorch mit CUDA 12.8 installieren
 pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128
 
 # 3. Weitere Abhängigkeiten installieren
-pip install whisperx PyAudioWPatch soundfile scipy numpy python-dotenv customtkinter
+pip install -r requirements.txt
 
-# 4. PyTorch CUDA-Version sicherstellen (whisperx überschreibt manchmal mit CPU-Version)
+# 4. PyTorch CUDA-Version sicherstellen
 pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
 ```
 
@@ -62,8 +84,13 @@ pip install torch torchaudio torchvision --index-url https://download.pytorch.or
 ### GUI starten
 
 ```bash
-conda activate whisperx
+.\.venv\Scripts\activate
 python gui.py
+```
+
+Oder mit uv (ohne manuelle Aktivierung):
+```bash
+uv run python gui.py
 ```
 
 Die GUI hat drei Tabs:
@@ -92,8 +119,14 @@ Die GUI hat drei Tabs:
 
 ### CLI
 
+Virtuelle Umgebung aktivieren:
 ```bash
-conda activate whisperx
+.\.venv\Scripts\activate
+```
+
+Oder mit uv (ohne Aktivierung):
+```bash
+uv run python main.py <befehl>
 ```
 
 ### Audio-Geräte anzeigen
