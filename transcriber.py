@@ -3,6 +3,7 @@
 import gc
 import json
 import os
+import sys
 import time
 
 import numpy as np
@@ -12,6 +13,23 @@ import whisperx
 from whisperx.diarize import DiarizationPipeline
 
 SAMPLE_RATE = 16000
+
+
+def _get_base_dir() -> str:
+    """Gibt das Basisverzeichnis der Anwendung zurueck (PyInstaller-kompatibel)."""
+    if getattr(sys, "frozen", False):
+        # PyInstaller --onedir: exe liegt in dist/WhisperX/
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _get_bundled_models_dir() -> str | None:
+    """Gibt den Pfad zum bundled_models Ordner zurueck, falls vorhanden."""
+    base = _get_base_dir()
+    models_dir = os.path.join(base, "bundled_models")
+    if os.path.isdir(models_dir):
+        return models_dir
+    return None
 
 
 def load_audio_without_ffmpeg(audio_path: str) -> np.ndarray:
@@ -92,8 +110,19 @@ def transcribe(
     _prog(0.0, "Whisper-Modell laden...")
     t0 = time.time()
 
+    # Bundled model path verwenden falls vorhanden
+    bundled = _get_bundled_models_dir()
+    whisper_download_root = None
+    whisper_local_only = False
+    if bundled:
+        whisper_path = os.path.join(bundled, "whisper", model_size)
+        if os.path.isdir(whisper_path):
+            whisper_download_root = whisper_path
+            whisper_local_only = True
+
     model = whisperx.load_model(
-        model_size, device, compute_type=compute_type, language=language
+        model_size, device, compute_type=compute_type, language=language,
+        download_root=whisper_download_root, local_files_only=whisper_local_only,
     )
 
     _prog(0.10, "Audio laden...")
@@ -120,8 +149,18 @@ def transcribe(
     _prog(0.45, "Alignment-Modell laden...")
     t2 = time.time()
 
+    # Bundled alignment model path
+    align_model_dir = None
+    align_cache_only = False
+    if bundled:
+        align_path = os.path.join(bundled, "align")
+        if os.path.isdir(align_path):
+            align_model_dir = align_path
+            align_cache_only = True
+
     model_a, metadata = whisperx.load_align_model(
-        language_code=result["language"], device=device
+        language_code=result["language"], device=device,
+        model_dir=align_model_dir, model_cache_only=align_cache_only,
     )
 
     _prog(0.50, "Wort-Alignment läuft...")
@@ -152,7 +191,16 @@ def transcribe(
             _prog(0.70, "Diarization-Modell laden...")
             t4 = time.time()
 
-            diarize_model = DiarizationPipeline(token=hf_token, device=device)
+            # Bundled diarization model path
+            diarize_cache = None
+            if bundled:
+                diarize_path = os.path.join(bundled, "diarize")
+                if os.path.isdir(diarize_path):
+                    diarize_cache = diarize_path
+
+            diarize_model = DiarizationPipeline(
+                token=hf_token, device=device, cache_dir=diarize_cache
+            )
 
             _prog(0.80, "Speaker Diarization läuft...")
             diarize_segments = diarize_model(

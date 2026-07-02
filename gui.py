@@ -165,7 +165,7 @@ from recorder import AudioRecorder, get_devices
 if _splash:
     _splash.update_status("Transcriber-Engine...")
 
-from transcriber import transcribe, format_transcript, save_transcript
+from transcriber import transcribe, format_transcript, save_transcript, _get_bundled_models_dir
 
 if _splash:
     _splash.update_status("Hardware-Erkennung...")
@@ -452,6 +452,10 @@ class App(ctk.CTk):
         tab = self.tabview.add("Einstellungen")
         tab.grid_columnconfigure(1, weight=1)
 
+        # HF Token Hinweis anpassen je nach Bundled-Status
+        _bundled = _get_bundled_models_dir()
+        _diarize_bundled = _bundled and os.path.isdir(os.path.join(_bundled, "diarize"))
+
         ctk.CTkLabel(tab, text="HuggingFace Token:",
                      font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, padx=10, pady=(20, 5), sticky="w")
@@ -466,8 +470,12 @@ class App(ctk.CTk):
             command=self._toggle_token_visibility
         ).grid(row=1, column=1, padx=10, pady=5, sticky="w")
 
-        ctk.CTkLabel(tab, text="Für Speaker Diarization benötigt.\n"
-                     "Erstelle einen Read-Token auf huggingface.co/settings/tokens",
+        if _diarize_bundled:
+            hf_hint = "Diarization-Modelle sind integriert — kein Token nötig."
+        else:
+            hf_hint = ("Für Speaker Diarization benötigt.\n"
+                       "Erstelle einen Read-Token auf huggingface.co/settings/tokens")
+        ctk.CTkLabel(tab, text=hf_hint,
                      text_color="gray").grid(
             row=2, column=0, columnspan=2, padx=10, pady=(0, 20), sticky="w")
 
