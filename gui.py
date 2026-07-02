@@ -165,7 +165,13 @@ from recorder import AudioRecorder, get_devices
 if _splash:
     _splash.update_status("Transcriber-Engine...")
 
-from transcriber import transcribe, format_transcript, save_transcript, _get_bundled_models_dir
+from transcriber import (
+    DEFAULT_API_BASE_URL,
+    transcribe,
+    format_transcript,
+    save_transcript,
+    _get_bundled_models_dir,
+)
 
 if _splash:
     _splash.update_status("Hardware-Erkennung...")
@@ -177,9 +183,17 @@ load_dotenv()
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-LANGUAGES = {"Deutsch": "de", "English": "en", "Français": "fr",
-             "Español": "es", "Italiano": "it"}
-MODELS = ["large-v3", "large-v2", "medium", "base"]
+LANGUAGES = {"Automatisch erkennen": None, "Deutsch": "de", "English": "en",
+             "Français": "fr", "Español": "es", "Italiano": "it"}
+MODEL_DISPLAY_NAMES = {
+    "large-v3": "large-v3",
+    "large-v2": "large-v2",
+    "medium": "medium",
+    "base": "base",
+    "server:kit.whisper-large-v3": "KIT ToolBox (Server)",
+}
+MODEL_IDS_BY_DISPLAY = {v: k for k, v in MODEL_DISPLAY_NAMES.items()}
+MODELS = list(MODEL_DISPLAY_NAMES.values())
 FORMATS = ["txt", "srt", "json"]
 
 # Hardware-basierte Modellempfehlung
@@ -338,10 +352,11 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(opts_frame, text="Modell:").grid(
             row=0, column=2, padx=(10, 2), pady=10, sticky="e")
-        self.model_var = ctk.StringVar(value=_recommended_model)
+        self.model_var = ctk.StringVar(
+            value=MODEL_DISPLAY_NAMES.get(_recommended_model, _recommended_model))
         ctk.CTkOptionMenu(
             opts_frame, variable=self.model_var,
-            values=MODELS, width=120
+            values=MODELS, width=160
         ).grid(row=0, column=3, padx=(5, 10), pady=10, sticky="w")
 
         # Hardware-Empfehlung anzeigen
@@ -483,42 +498,76 @@ class App(ctk.CTk):
         sep = ctk.CTkFrame(tab, height=2)
         sep.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
 
-        ctk.CTkLabel(tab, text="Aufnahme-Ordner:",
+        # KIT ToolBox (Server-Modell) Zugangsdaten
+        ctk.CTkLabel(tab, text="KIT ToolBox API-Key:",
                      font=ctk.CTkFont(weight="bold")).grid(
             row=4, column=0, padx=10, pady=5, sticky="w")
+        self.api_key_var = ctk.StringVar(value=os.getenv("KIT_TOOLBOX_API_KEY", ""))
+        self.api_key_entry = ctk.CTkEntry(
+            tab, textvariable=self.api_key_var, show="•", width=400)
+        self.api_key_entry.grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+
+        self.show_api_key_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            tab, text="API-Key anzeigen", variable=self.show_api_key_var,
+            command=self._toggle_api_key_visibility
+        ).grid(row=5, column=1, padx=10, pady=5, sticky="w")
+
+        ctk.CTkLabel(tab, text="KIT ToolBox Basis-URL:",
+                     font=ctk.CTkFont(weight="bold")).grid(
+            row=6, column=0, padx=10, pady=5, sticky="w")
+        self.api_base_url_var = ctk.StringVar(
+            value=os.getenv("KIT_TOOLBOX_BASE_URL", DEFAULT_API_BASE_URL))
+        ctk.CTkEntry(tab, textvariable=self.api_base_url_var, width=400).grid(
+            row=6, column=1, padx=10, pady=5, sticky="ew")
+
+        ctk.CTkLabel(
+            tab,
+            text="Für das Server-Modell „KIT ToolBox“ benötigt. Audio wird\n"
+                 "dafür an den KIT-Server übertragen (nicht mehr 100% lokal).",
+            text_color="gray").grid(
+            row=7, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
+
+        # Separator
+        sep2 = ctk.CTkFrame(tab, height=2)
+        sep2.grid(row=8, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+
+        ctk.CTkLabel(tab, text="Aufnahme-Ordner:",
+                     font=ctk.CTkFont(weight="bold")).grid(
+            row=9, column=0, padx=10, pady=5, sticky="w")
         self.output_dir_var = ctk.StringVar(value="recordings")
         ctk.CTkEntry(tab, textvariable=self.output_dir_var).grid(
-            row=4, column=1, padx=10, pady=5, sticky="ew")
+            row=9, column=1, padx=10, pady=5, sticky="ew")
 
         ctk.CTkLabel(tab, text="Batch Size:",
                      font=ctk.CTkFont(weight="bold")).grid(
-            row=5, column=0, padx=10, pady=5, sticky="w")
+            row=10, column=0, padx=10, pady=5, sticky="w")
         self.batch_size_var = ctk.StringVar(value="16")
         ctk.CTkEntry(tab, textvariable=self.batch_size_var, width=80).grid(
-            row=5, column=1, padx=10, pady=5, sticky="w")
+            row=10, column=1, padx=10, pady=5, sticky="w")
 
         ctk.CTkLabel(tab, text="Compute:",
                      font=ctk.CTkFont(weight="bold")).grid(
-            row=6, column=0, padx=10, pady=5, sticky="w")
+            row=11, column=0, padx=10, pady=5, sticky="w")
         self.compute_var = ctk.StringVar(value="Auto (CUDA wenn verfügbar)")
         ctk.CTkOptionMenu(
             tab, variable=self.compute_var,
             values=["Auto (CUDA wenn verfügbar)", "cuda", "cpu"], width=250
-        ).grid(row=6, column=1, padx=10, pady=5, sticky="w")
+        ).grid(row=11, column=1, padx=10, pady=5, sticky="w")
 
         # Version info
         ctk.CTkLabel(tab, text=f"{APP_NAME} v{APP_VERSION} — 100% lokal",
                      text_color="gray").grid(
-            row=10, column=0, columnspan=2, padx=10, pady=(40, 5), sticky="w")
+            row=20, column=0, columnspan=2, padx=10, pady=(40, 5), sticky="w")
 
         # Hardware info
         hw_summary = get_hardware_summary()
         ctk.CTkLabel(tab, text=f"Hardware: {hw_summary}",
                      text_color="gray", justify="left").grid(
-            row=11, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
+            row=21, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
         ctk.CTkLabel(tab, text=f"Empfohlenes Modell: {_recommended_model}",
                      text_color="gray").grid(
-            row=12, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
+            row=22, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
 
     # --- Tab: Info ---
     def _build_info_tab(self):
@@ -769,8 +818,10 @@ class App(ctk.CTk):
     # ------------------------------------------------------- Transcription
     def _browse_file(self):
         path = filedialog.askopenfilename(
-            title="Audio-Datei auswählen",
-            filetypes=[("Audio", "*.wav *.mp3 *.m4a *.flac *.ogg"),
+            title="Audio- oder Video-Datei auswählen",
+            filetypes=[("Audio & Video", "*.wav *.mp3 *.m4a *.flac *.ogg *.mkv *.mp4 *.mov *.webm *.avi"),
+                       ("Audio", "*.wav *.mp3 *.m4a *.flac *.ogg"),
+                       ("Video", "*.mkv *.mp4 *.mov *.webm *.avi"),
                        ("Alle Dateien", "*.*")],
             initialdir=self.output_dir_var.get() or "recordings")
         if path:
@@ -797,9 +848,12 @@ class App(ctk.CTk):
         self.copy_btn.configure(state="disabled")
 
         lang_code = LANGUAGES.get(self.lang_var.get(), "de")
-        model = self.model_var.get()
+        model_display = self.model_var.get()
+        model = MODEL_IDS_BY_DISPLAY.get(model_display, model_display)
         do_diarize = self.diarize_var.get()
         hf_token = self.hf_token_var.get().strip() or None
+        api_key = self.api_key_var.get().strip() or os.getenv("KIT_TOOLBOX_API_KEY") or None
+        api_base_url = self.api_base_url_var.get().strip() or DEFAULT_API_BASE_URL
         compute = self.compute_var.get()
         device = None
         if compute in ("cuda", "cpu"):
@@ -824,12 +878,13 @@ class App(ctk.CTk):
         thread = threading.Thread(
             target=self._run_transcription,
             args=(audio_path, lang_code, model, do_diarize, hf_token,
-                  min_spk, max_spk, batch_size, device),
+                  min_spk, max_spk, batch_size, device, api_key, api_base_url),
             daemon=True)
         thread.start()
 
     def _run_transcription(self, audio_path, lang_code, model, do_diarize,
-                           hf_token, min_spk, max_spk, batch_size, device):
+                           hf_token, min_spk, max_spk, batch_size, device,
+                           api_key, api_base_url):
         try:
             result = transcribe(
                 audio_path=audio_path,
@@ -841,6 +896,8 @@ class App(ctk.CTk):
                 max_speakers=max_spk,
                 batch_size=batch_size,
                 device=device,
+                api_key=api_key,
+                api_base_url=api_base_url,
                 on_progress=self._on_transcribe_progress,
             )
             text = format_transcript(result, include_speakers=do_diarize)
@@ -912,6 +969,12 @@ class App(ctk.CTk):
             self.hf_entry.configure(show="")
         else:
             self.hf_entry.configure(show="•")
+
+    def _toggle_api_key_visibility(self):
+        if self.show_api_key_var.get():
+            self.api_key_entry.configure(show="")
+        else:
+            self.api_key_entry.configure(show="•")
     # ------------------------------------------------- Speaker Renaming
     def _populate_speaker_entries(self):
         """Erstellt Eingabefelder für jeden erkannten Sprecher."""

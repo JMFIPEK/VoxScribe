@@ -49,7 +49,7 @@ python build_exe.py
 | `main.py` | CLI entry point with subcommands: `devices`, `record`, `transcribe`, `run` |
 | `gui.py` | CustomTkinter GUI with tabs: Aufnahme, Transkription, Einstellungen, Info |
 | `recorder.py` | Audio recording via PyAudioWPatch: microphone, WASAPI loopback, or mixed |
-| `transcriber.py` | WhisperX pipeline: transcription → alignment → diarization (sequential loading) |
+| `transcriber.py` | WhisperX pipeline: transcription → alignment → diarization (sequential loading); also handles video-container audio extraction (PyAV) and the remote/server model |
 | `hardware_detect.py` | GPU/CPU detection and model recommendations based on VRAM/RAM |
 | `download_models.py` | Pre-download models to `bundled_models/` for offline operation |
 | `build_exe.py` | PyInstaller build script for creating standalone .exe |
@@ -75,13 +75,17 @@ Output: TXT, SRT, JSON
 - **SSL bypass for corporate proxy**: All HTTPS verification is disabled at module load to work behind corporate proxies
 - **Bundled models support**: Models can be pre-downloaded to `bundled_models/` and used offline without HF_TOKEN
 - **Threaded recording**: Audio recording runs in background threads with callbacks for GUI updates
+- **Universal audio input**: `transcriber.load_audio_universal()` tries `soundfile` first (fast path for WAV/FLAC/OGG), then falls back to PyAV (`av` package) to demux just the audio stream out of video containers (MKV, MP4, MOV, ...) — no ffmpeg CLI required
+- **Remote/server model**: model IDs prefixed with `server:` (e.g. `server:kit.whisper-large-v3`) skip local WhisperX inference and instead POST the audio to an OpenAI-compatible `/audio/transcriptions` endpoint (`transcriber.transcribe_remote`); alignment and diarization still run locally on top of the returned segments. Selectable in the GUI as "KIT ToolBox (Server)" — note this sends audio off-machine, breaking the "100% local" guarantee for that model only
 
 ## Configuration
 
 ### Environment Variables (.env)
 
 ```
-HF_TOKEN=hf_xxx  # Required for speaker diarization (pyannote models)
+HF_TOKEN=hf_xxx                     # Required for speaker diarization (pyannote models)
+KIT_TOOLBOX_API_KEY=xxx             # Required for the "KIT ToolBox (Server)" remote model
+KIT_TOOLBOX_BASE_URL=https://...    # Optional override (default: https://ki-toolbox.scc.kit.edu/api/v1)
 ```
 
 ### Hardware Requirements
