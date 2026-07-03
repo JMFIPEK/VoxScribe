@@ -240,6 +240,7 @@ class AudioRecorder:
 
     def _record_single(self):
         p = pyaudio.PyAudio()
+        level_channel = "system" if self._source == "system" else "mic"
         try:
             if self._source == "system":
                 loopback = _get_loopback_device(p, self._device_index)
@@ -265,10 +266,16 @@ class AudioRecorder:
             )
 
             while not self._stop_event.is_set():
+                if self._source == "system" and stream.get_read_available() < CHUNK:
+                    # WASAPI-Loopback liefert bei Systemstille keine Pakete -
+                    # ohne dieses Polling wuerde read() beliebig lange
+                    # blockieren und "Stoppen" wuerde nicht reagieren.
+                    self._stop_event.wait(0.02)
+                    continue
                 data = stream.read(CHUNK, exception_on_overflow=False)
                 self._frames.append(data)
                 if self._on_level:
-                    self._on_level(compute_rms(data))
+                    self._on_level(level_channel, compute_rms(data))
 
             stream.stop_stream()
             stream.close()
@@ -294,6 +301,8 @@ class AudioRecorder:
         sys_frames = []
         mic_stream = None
         sys_stream = None
+        mic_thread = None
+        sys_thread = None
         read_errors = []
 
         try:
@@ -324,8 +333,28 @@ class AudioRecorder:
                 input=True, input_device_index=sys_idx,
                 frames_per_buffer=sys_chunk)
 
-            def read_loop(stream, frames, chunk_size):
+            def read_loop(stream, frames, chunk_size, level_channel):
+                # WASAPI-Loopback-Streams liefern keine Pakete, solange auf dem
+                # System nichts wiedergegeben wird - ein blockierender read()
+                # kann dadurch beliebig lange haengen. Wuerde man in diesem
+                # Zustand stoppen und den Stream aus einem anderen Thread
+                # schliessen, waehrend read() noch blockiert, stuerzt der
+                # Prozess nativ ab (kein Python-Traceback, keine Ausgabe).
+                # Deshalb per get_read_available() pollen und read() nur
+                # aufrufen, wenn wirklich genug Daten bereitstehen - so bleibt
+                # die Schleife jederzeit auf stop_event reaktionsfaehig.
                 while not self._stop_event.is_set():
+                    try:
+                        available = stream.get_read_available()
+                    except Exception as e:
+                        read_errors.append(e)
+                        self._stop_event.set()
+                        break
+
+                    if available < chunk_size:
+                        self._stop_event.wait(0.02)
+                        continue
+
                     try:
                         data = stream.read(chunk_size, exception_on_overflow=False)
                     except Exception as e:
@@ -335,13 +364,13 @@ class AudioRecorder:
 
                     frames.append(data)
                     if self._on_level:
-                        self._on_level(compute_rms(data))
+                        self._on_level(level_channel, compute_rms(data))
 
             mic_thread = threading.Thread(
-                target=read_loop, args=(mic_stream, mic_frames, mic_chunk),
+                target=read_loop, args=(mic_stream, mic_frames, mic_chunk, "mic"),
                 daemon=True)
             sys_thread = threading.Thread(
-                target=read_loop, args=(sys_stream, sys_frames, sys_chunk),
+                target=read_loop, args=(sys_stream, sys_frames, sys_chunk, "system"),
                 daemon=True)
             mic_thread.start()
             sys_thread.start()
@@ -359,8 +388,14 @@ class AudioRecorder:
                 self._on_done(None, 0, str(e))
             return
         finally:
-            for stream in (mic_stream, sys_stream):
+            # Defensiv: einen Stream NIE schliessen, solange sein Lese-Thread
+            # theoretisch noch in stream.read() haengen koennte (siehe
+            # Kommentar in read_loop) - das ist ein nativer Absturz, kein
+            # abfangbarer Python-Fehler.
+            for stream, thread in ((mic_stream, mic_thread), (sys_stream, sys_thread)):
                 if stream is None:
+                    continue
+                if thread is not None and thread.is_alive():
                     continue
                 try:
                     if stream.is_active():
@@ -368,7 +403,9 @@ class AudioRecorder:
                     stream.close()
                 except Exception:
                     pass
-            p.terminate()
+            if (mic_thread is None or not mic_thread.is_alive()) and \
+               (sys_thread is None or not sys_thread.is_alive()):
+                p.terminate()
 
         if not mic_frames:
             if self._on_done:

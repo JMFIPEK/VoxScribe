@@ -242,7 +242,6 @@ class App(ctk.CTk):
         self.recorder = AudioRecorder()
         self._record_start_time = None
         self._timer_id = None
-        self._current_rms = 0.0
         self._last_audio_path = None
 
         self._build_ui()
@@ -289,7 +288,8 @@ class App(ctk.CTk):
             row=0, column=0, padx=10, pady=10)
         self.device_var = ctk.StringVar()
         self.device_menu = ctk.CTkOptionMenu(
-            device_frame, variable=self.device_var, values=["Lade..."])
+            device_frame, variable=self.device_var, values=["Lade..."],
+            width=460, dynamic_resizing=False, anchor="w")
         self.device_menu.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
         self._device_map = {}
 
@@ -297,18 +297,27 @@ class App(ctk.CTk):
             device_frame, text="↻", width=35, command=self._refresh_devices)
         btn_refresh.grid(row=0, column=2, padx=(0, 10), pady=10)
 
-        # Level meter + Timer
+        # Level meter (pro Kanal) + Timer
         meter_frame = ctk.CTkFrame(tab)
         meter_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
-        meter_frame.grid_columnconfigure(0, weight=1)
+        meter_frame.grid_columnconfigure(1, weight=1)
 
-        self.level_bar = ctk.CTkProgressBar(meter_frame)
-        self.level_bar.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
-        self.level_bar.set(0)
+        self._level_bars = {}
+        self._level_rows = {}
+        self._current_rms = {"mic": 0.0, "system": 0.0}
+
+        for row, (channel, label) in enumerate((("mic", "Mikrofon"), ("system", "System"))):
+            lbl = ctk.CTkLabel(meter_frame, text=label, width=70, anchor="w")
+            lbl.grid(row=row, column=0, padx=(10, 5), pady=(10 if row == 0 else 2, 2), sticky="w")
+            bar = ctk.CTkProgressBar(meter_frame)
+            bar.grid(row=row, column=1, padx=(0, 10), pady=(10 if row == 0 else 2, 2), sticky="ew")
+            bar.set(0)
+            self._level_bars[channel] = bar
+            self._level_rows[channel] = (lbl, bar)
 
         self.timer_label = ctk.CTkLabel(
             meter_frame, text="00:00", font=ctk.CTkFont(size=28, weight="bold"))
-        self.timer_label.grid(row=1, column=0, pady=(0, 10))
+        self.timer_label.grid(row=2, column=0, columnspan=2, pady=(5, 10))
 
         # Record button
         self.record_btn = ctk.CTkButton(
@@ -762,6 +771,18 @@ class App(ctk.CTk):
             self.device_menu.configure(values=["Kein Gerät gefunden"])
             self.device_var.set("Kein Gerät gefunden")
 
+        # Pegelanzeige an gewaehlte Quelle anpassen (nur relevante Kanaele zeigen)
+        show_mic = value in ("Mikrofon", "Mikrofon + System")
+        show_sys = value in ("System-Audio", "Mikrofon + System")
+        for channel, visible in (("mic", show_mic), ("system", show_sys)):
+            lbl, bar = self._level_rows[channel]
+            if visible:
+                lbl.grid()
+                bar.grid()
+            else:
+                lbl.grid_remove()
+                bar.grid_remove()
+
     # ---------------------------------------------------------- Recording
     def _toggle_recording(self):
         if self.recorder.is_recording:
@@ -782,7 +803,7 @@ class App(ctk.CTk):
         output_path = os.path.join(out_dir, f"{timestamp}.wav")
 
         self._record_start_time = time.time()
-        self._current_rms = 0.0
+        self._current_rms = {"mic": 0.0, "system": 0.0}
 
         self.recorder.start(
             output_path=output_path,
@@ -806,10 +827,11 @@ class App(ctk.CTk):
         self.record_btn.configure(
             text="⏺  Aufnahme starten",
             fg_color="#c0392b", hover_color="#e74c3c")
-        self.level_bar.set(0)
+        for bar in self._level_bars.values():
+            bar.set(0)
 
-    def _on_level_update(self, rms):
-        self._current_rms = rms
+    def _on_level_update(self, channel, rms):
+        self._current_rms[channel] = rms
 
     def _on_recording_done(self, path, duration, error):
         def _update():
@@ -820,7 +842,8 @@ class App(ctk.CTk):
                 self.record_btn.configure(
                     text="⏺  Aufnahme starten",
                     fg_color="#c0392b", hover_color="#e74c3c")
-                self.level_bar.set(0)
+                for bar in self._level_bars.values():
+                    bar.set(0)
                 self.timer_label.configure(text="00:00")
                 self._record_start_time = None
                 self.record_status.configure(
@@ -848,9 +871,10 @@ class App(ctk.CTk):
         mins, secs = divmod(int(elapsed), 60)
         self.timer_label.configure(text=f"{mins:02d}:{secs:02d}")
 
-        # Update level bar
-        level = min(self._current_rms / 15000, 1.0)
-        self.level_bar.set(level)
+        # Pegel pro Kanal aktualisieren
+        for channel, bar in self._level_bars.items():
+            level = min(self._current_rms.get(channel, 0.0) / 15000, 1.0)
+            bar.set(level)
 
         self._timer_id = self.after(100, self._update_timer)
 
