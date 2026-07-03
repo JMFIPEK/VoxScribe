@@ -168,7 +168,6 @@ if _splash:
 from transcriber import (
     DEFAULT_API_BASE_URL,
     transcribe,
-    format_transcript,
     save_transcript,
     _get_bundled_models_dir,
 )
@@ -177,6 +176,7 @@ if _splash:
     _splash.update_status("Hardware-Erkennung...")
 
 from hardware_detect import recommend_model, get_hardware_summary
+import speaker_profiles
 
 load_dotenv()
 
@@ -195,6 +195,21 @@ MODEL_DISPLAY_NAMES = {
 MODEL_IDS_BY_DISPLAY = {v: k for k, v in MODEL_DISPLAY_NAMES.items()}
 MODELS = list(MODEL_DISPLAY_NAMES.values())
 FORMATS = ["txt", "srt", "json"]
+
+# Gut unterscheidbare Farben fuer die Sprecher-Einfaerbung im Transkript (dunkles Theme)
+SPEAKER_COLOR_PALETTE = [
+    "#e74c3c", "#3498db", "#2ecc71", "#f1c40f", "#9b59b6",
+    "#1abc9c", "#e67e22", "#00bcd4", "#ff6b9d", "#95a5a6",
+]
+
+
+def _format_time_short(seconds: float) -> str:
+    """Formatiert Sekunden als MM:SS (bzw. HH:MM:SS bei >= 1h) fuer die Anzeige."""
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
 # Hardware-basierte Modellempfehlung
 _recommended_model, _recommended_device, _hw_reason = recommend_model()
@@ -232,6 +247,7 @@ class App(ctk.CTk):
 
         self._build_ui()
         self._refresh_devices()
+        self._on_diarize_toggled()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -317,105 +333,128 @@ class App(ctk.CTk):
     def _build_transcribe_tab(self):
         tab = self.tabview.add("Transkription")
         tab.grid_columnconfigure(0, weight=1)
-        tab.grid_rowconfigure(7, weight=1)
+        tab.grid_rowconfigure(5, weight=1)
 
-        # File selection
-        file_frame = ctk.CTkFrame(tab)
-        file_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
-        file_frame.grid_columnconfigure(1, weight=1)
+        # --- Karte: Audio-Datei ---
+        file_card = ctk.CTkFrame(tab, corner_radius=10)
+        file_card.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
+        file_card.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(file_frame, text="Audio:").grid(
-            row=0, column=0, padx=10, pady=10)
+        ctk.CTkLabel(
+            file_card, text="AUDIO-DATEI", text_color="gray",
+            font=ctk.CTkFont(size=11, weight="bold")
+        ).grid(row=0, column=0, padx=14, pady=(10, 0), sticky="w")
+
+        file_row = ctk.CTkFrame(file_card, fg_color="transparent")
+        file_row.grid(row=1, column=0, padx=14, pady=(4, 12), sticky="ew")
+        file_row.grid_columnconfigure(0, weight=1)
+
         self.file_var = ctk.StringVar(value="Keine Datei ausgewählt")
+        self.file_var.trace_add("write", self._on_file_selected)
         self.file_label = ctk.CTkLabel(
-            file_frame, textvariable=self.file_var, anchor="w")
-        self.file_label.grid(row=0, column=1, padx=5, pady=10, sticky="ew")
+            file_row, textvariable=self.file_var, anchor="w",
+            text_color="gray")
+        self.file_label.grid(row=0, column=0, padx=(0, 10), sticky="ew")
 
         btn_browse = ctk.CTkButton(
-            file_frame, text="Datei wählen", width=120,
+            file_row, text="Datei wählen...", width=140,
             command=self._browse_file)
-        btn_browse.grid(row=0, column=2, padx=(0, 10), pady=10)
+        btn_browse.grid(row=0, column=1)
 
-        # Options row
-        opts_frame = ctk.CTkFrame(tab)
-        opts_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        # --- Karte: Optionen (Sprache/Modell + Diarization) ---
+        opts_card = ctk.CTkFrame(tab, corner_radius=10)
+        opts_card.grid(row=1, column=0, padx=10, pady=6, sticky="ew")
+        opts_card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            opts_card, text="EINSTELLUNGEN", text_color="gray",
+            font=ctk.CTkFont(size=11, weight="bold")
+        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
+
+        opts_frame = ctk.CTkFrame(opts_card, fg_color="transparent")
+        opts_frame.grid(row=1, column=0, padx=14, pady=0, sticky="ew")
         for i in range(4):
             opts_frame.grid_columnconfigure(i, weight=1)
 
         ctk.CTkLabel(opts_frame, text="Sprache:").grid(
-            row=0, column=0, padx=(10, 2), pady=10, sticky="e")
-        self.lang_var = ctk.StringVar(value="Deutsch")
+            row=0, column=0, padx=(0, 2), pady=8, sticky="e")
+        self.lang_var = ctk.StringVar(value="Automatisch erkennen")
         ctk.CTkOptionMenu(
             opts_frame, variable=self.lang_var,
-            values=list(LANGUAGES.keys()), width=120
-        ).grid(row=0, column=1, padx=5, pady=10, sticky="w")
+            values=list(LANGUAGES.keys()), width=140
+        ).grid(row=0, column=1, padx=5, pady=8, sticky="w")
 
         ctk.CTkLabel(opts_frame, text="Modell:").grid(
-            row=0, column=2, padx=(10, 2), pady=10, sticky="e")
+            row=0, column=2, padx=(10, 2), pady=8, sticky="e")
         self.model_var = ctk.StringVar(
-            value=MODEL_DISPLAY_NAMES.get(_recommended_model, _recommended_model))
+            value=MODEL_DISPLAY_NAMES["server:kit.whisper-large-v3"])
         ctk.CTkOptionMenu(
             opts_frame, variable=self.model_var,
-            values=MODELS, width=160
-        ).grid(row=0, column=3, padx=(5, 10), pady=10, sticky="w")
+            values=MODELS, width=170
+        ).grid(row=0, column=3, padx=(5, 0), pady=8, sticky="w")
 
-        # Hardware-Empfehlung anzeigen
-        hw_hint = ctk.CTkLabel(
-            tab, text=f"⚡ {_hw_reason}",
-            text_color="gray", font=ctk.CTkFont(size=11))
-        hw_hint.grid(row=1, column=0, padx=10, pady=(0, 0), sticky="w")
-        # Shift subsequent rows down
-        opts_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
-        hw_hint.grid(row=2, column=0, padx=10, pady=(0, 2), sticky="w")
+        # Hardware-Empfehlung anzeigen (nur relevant bei lokalen Modellen)
+        ctk.CTkLabel(
+            opts_card, text=f"⚡ Bei lokalem Modell empfohlen: {_hw_reason}",
+            text_color="gray", font=ctk.CTkFont(size=11)
+        ).grid(row=2, column=0, padx=14, pady=(0, 8), sticky="w")
 
-        # Diarization + speakers
-        diar_frame = ctk.CTkFrame(tab)
-        diar_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+        sep = ctk.CTkFrame(opts_card, height=1, fg_color=("gray80", "gray30"))
+        sep.grid(row=3, column=0, padx=14, pady=(2, 8), sticky="ew")
+
+        diar_frame = ctk.CTkFrame(opts_card, fg_color="transparent")
+        diar_frame.grid(row=4, column=0, padx=14, pady=(0, 12), sticky="ew")
 
         self.diarize_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
             diar_frame, text="Speaker Diarization",
-            variable=self.diarize_var
-        ).grid(row=0, column=0, padx=10, pady=10)
+            variable=self.diarize_var, command=self._on_diarize_toggled
+        ).grid(row=0, column=0, padx=(0, 10), pady=4)
 
-        ctk.CTkLabel(diar_frame, text="Min Sprecher:").grid(
-            row=0, column=1, padx=(20, 2), pady=10)
+        self.min_spk_label = ctk.CTkLabel(diar_frame, text="Min Sprecher:")
+        self.min_spk_label.grid(row=0, column=1, padx=(20, 2), pady=4)
         self.min_spk_var = ctk.StringVar(value="")
-        ctk.CTkEntry(diar_frame, textvariable=self.min_spk_var, width=50
-                     ).grid(row=0, column=2, padx=5, pady=10)
+        self.min_spk_entry = ctk.CTkEntry(
+            diar_frame, textvariable=self.min_spk_var, width=50,
+            placeholder_text="auto")
+        self.min_spk_entry.grid(row=0, column=2, padx=5, pady=4)
 
-        ctk.CTkLabel(diar_frame, text="Max Sprecher:").grid(
-            row=0, column=3, padx=(20, 2), pady=10)
+        self.max_spk_label = ctk.CTkLabel(diar_frame, text="Max Sprecher:")
+        self.max_spk_label.grid(row=0, column=3, padx=(20, 2), pady=4)
         self.max_spk_var = ctk.StringVar(value="")
-        ctk.CTkEntry(diar_frame, textvariable=self.max_spk_var, width=50
-                     ).grid(row=0, column=4, padx=(5, 10), pady=10)
+        self.max_spk_entry = ctk.CTkEntry(
+            diar_frame, textvariable=self.max_spk_var, width=50,
+            placeholder_text="auto")
+        self.max_spk_entry.grid(row=0, column=4, padx=5, pady=4)
 
-        # Transcribe button + progress
+        # --- Start-Button + Fortschritt ---
         self.transcribe_btn = ctk.CTkButton(
-            tab, text="Transkription starten", height=45,
+            tab, text="▶  Transkription starten", height=45,
             font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color="#27ae60", hover_color="#2ecc71", text_color="white",
+            state="disabled",
             command=self._start_transcription)
-        self.transcribe_btn.grid(row=4, column=0, padx=10, pady=5, sticky="ew")
+        self.transcribe_btn.grid(row=2, column=0, padx=10, pady=(6, 5), sticky="ew")
 
         self.progress_bar = ctk.CTkProgressBar(tab)
-        self.progress_bar.grid(row=5, column=0, padx=10, pady=(0, 2), sticky="ew")
+        self.progress_bar.grid(row=3, column=0, padx=10, pady=(0, 2), sticky="ew")
         self.progress_bar.set(0)
         self.progress_bar.grid_remove()
 
         self.transcribe_status = ctk.CTkLabel(
             tab, text="", text_color="gray")
-        self.transcribe_status.grid(row=6, column=0, padx=10, pady=(0, 5))
+        self.transcribe_status.grid(row=4, column=0, padx=10, pady=(0, 5))
         self.transcribe_status.grid_remove()
 
         # Transcript output
         self.transcript_text = ctk.CTkTextbox(
-            tab, font=ctk.CTkFont(size=13), wrap="word")
+            tab, font=ctk.CTkFont(size=13), wrap="word", corner_radius=10)
         self.transcript_text.grid(
-            row=7, column=0, padx=10, pady=(5, 5), sticky="nsew")
+            row=5, column=0, padx=10, pady=(5, 5), sticky="nsew")
 
         # Speaker renaming frame (hidden until transcription done)
-        self.speaker_frame = ctk.CTkFrame(tab)
-        self.speaker_frame.grid(row=8, column=0, padx=10, pady=(0, 5), sticky="ew")
+        self.speaker_frame = ctk.CTkFrame(tab, corner_radius=10)
+        self.speaker_frame.grid(row=6, column=0, padx=10, pady=(0, 5), sticky="ew")
         self.speaker_frame.grid_remove()
         self.speaker_frame.grid_columnconfigure(0, weight=1)
 
@@ -438,7 +477,7 @@ class App(ctk.CTk):
 
         # Bottom buttons
         bottom_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        bottom_frame.grid(row=9, column=0, padx=10, pady=(0, 10), sticky="ew")
+        bottom_frame.grid(row=7, column=0, padx=10, pady=(0, 10), sticky="ew")
         bottom_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.save_btn = ctk.CTkButton(
@@ -826,7 +865,25 @@ class App(ctk.CTk):
             initialdir=self.output_dir_var.get() or "recordings")
         if path:
             self.file_var.set(path)
-            self.transcribe_status.grid_remove()
+
+    def _on_file_selected(self, *_args):
+        """Wird bei jeder Aenderung von file_var aufgerufen — steuert, ob der
+        Start-Button aktiv ist. Die Transkription startet NIE automatisch,
+        nur per Klick auf 'Transkription starten'."""
+        path = self.file_var.get()
+        valid = bool(path) and os.path.isfile(path)
+        self.transcribe_btn.configure(state="normal" if valid else "disabled")
+        self.transcribe_status.grid_remove()
+        self.file_label.configure(text_color=("black", "white") if valid else "gray")
+
+    def _on_diarize_toggled(self):
+        """Min/Max-Sprecher-Felder nur aktiv, wenn Diarization eingeschaltet ist."""
+        state = "normal" if self.diarize_var.get() else "disabled"
+        self.min_spk_entry.configure(state=state)
+        self.max_spk_entry.configure(state=state)
+        text_color = ("gray10", "gray90") if state == "normal" else "gray"
+        self.min_spk_label.configure(text_color=text_color)
+        self.max_spk_label.configure(text_color=text_color)
 
     def _start_transcription(self):
         audio_path = self.file_var.get()
@@ -900,9 +957,8 @@ class App(ctk.CTk):
                 api_base_url=api_base_url,
                 on_progress=self._on_transcribe_progress,
             )
-            text = format_transcript(result, include_speakers=do_diarize)
             self._transcription_result = result
-            self.after(0, lambda: self._on_transcription_done(text, None))
+            self.after(0, lambda: self._on_transcription_done(result, None))
         except Exception as e:
             error = str(e)
             self.after(
@@ -918,7 +974,7 @@ class App(ctk.CTk):
         self.progress_bar.set(pct)
         self.transcribe_status.configure(text=message, text_color="#3498db")
 
-    def _on_transcription_done(self, text, error):
+    def _on_transcription_done(self, result, error):
         self.progress_bar.grid_remove()
         self.transcribe_btn.grid()
 
@@ -929,13 +985,56 @@ class App(ctk.CTk):
 
         self.transcribe_status.configure(
             text="Transkription abgeschlossen!", text_color="#27ae60")
-        self.transcript_text.delete("1.0", "end")
-        self.transcript_text.insert("1.0", text)
+        self._render_transcript(result)
         self.save_btn.configure(state="normal")
         self.copy_btn.configure(state="normal")
 
         # Sprecher-Einträge aufbauen
         self._populate_speaker_entries()
+
+    def _render_transcript(self, result, speaker_names=None):
+        """Baut den Transkript-Text auf und faerbt jede Zeile nach Sprecher ein.
+
+        Farben/Tags sind an die rohe Diarization-ID gekoppelt (ueber
+        result["speaker_id_map"]), nicht an den gerade angezeigten Namen —
+        dadurch bleibt die Farbe erhalten, auch wenn ein Sprecher schon
+        automatisch per Voice-Print erkannt oder spaeter umbenannt wurde.
+        """
+        speaker_names = speaker_names or {}
+        speaker_id_map = result.get("speaker_id_map") or {}
+        label_to_raw_id = {label: raw_id for raw_id, label in speaker_id_map.items()}
+
+        labels = sorted({
+            seg.get("speaker") for seg in result.get("segments", [])
+            if seg.get("speaker")
+        })
+        self._speaker_colors = {
+            label_to_raw_id.get(label, label): SPEAKER_COLOR_PALETTE[i % len(SPEAKER_COLOR_PALETTE)]
+            for i, label in enumerate(labels)
+        }
+
+        self.transcript_text.delete("1.0", "end")
+        for seg in result.get("segments", []):
+            start = _format_time_short(seg.get("start", 0))
+            end = _format_time_short(seg.get("end", 0))
+            text = seg.get("text", "").strip()
+            speaker = seg.get("speaker", "")
+
+            if speaker:
+                display_name = speaker_names.get(speaker, speaker)
+                line = f"[{start} - {end}] {display_name}: {text}\n"
+            else:
+                line = f"[{start} - {end}] {text}\n"
+
+            insert_start = self.transcript_text.index("end-1c")
+            self.transcript_text.insert("end", line)
+            if speaker:
+                raw_id = label_to_raw_id.get(speaker, speaker)
+                tag = f"speaker_{raw_id}"
+                color = self._speaker_colors.get(raw_id, "#ffffff")
+                self.transcript_text.tag_config(tag, foreground=color)
+                self.transcript_text.tag_add(
+                    tag, insert_start, self.transcript_text.index("end-1c"))
 
     def _copy_transcript(self):
         text = self.transcript_text.get("1.0", "end").strip()
@@ -950,7 +1049,7 @@ class App(ctk.CTk):
             return
 
         # Sprecher-Namen anwenden bevor gespeichert wird
-        self._apply_speaker_names_to_result()
+        self._apply_speaker_names()
 
         formats = [fmt for fmt, var in self.format_vars.items() if var.get()]
         if not formats:
@@ -977,79 +1076,132 @@ class App(ctk.CTk):
             self.api_key_entry.configure(show="•")
     # ------------------------------------------------- Speaker Renaming
     def _populate_speaker_entries(self):
-        """Erstellt Eingabefelder für jeden erkannten Sprecher."""
-        # Alte Einträge löschen
+        """Erstellt Eingabefelder fuer jeden erkannten Sprecher.
+
+        Eintraege sind ueber die rohe Diarization-ID (nicht den angezeigten
+        Namen) indiziert, damit "merken" das richtige Voice-Print-Embedding
+        findet, auch wenn der Sprecher schon automatisch erkannt und
+        umbenannt wurde.
+        """
         for w in self.speaker_entries_frame.winfo_children():
             w.destroy()
         self._speaker_name_entries = {}
+        self._speaker_remember_vars = {}
 
         if not hasattr(self, '_transcription_result'):
             self.speaker_frame.grid_remove()
             return
 
-        speakers = set()
-        for seg in self._transcription_result.get("segments", []):
-            if "speaker" in seg:
-                speakers.add(seg["speaker"])
+        result = self._transcription_result
+        speaker_id_map = result.get("speaker_id_map")
+        embeddings = result.get("speaker_embeddings") or {}
 
-        if not speakers:
+        if speaker_id_map:
+            rows = sorted(speaker_id_map.items(), key=lambda kv: kv[1])
+        else:
+            # Kein Voice-Print verfuegbar (z.B. Diarization ohne HF-Token) -
+            # Fallback auf die reinen Labels aus den Segmenten.
+            labels = sorted({
+                seg.get("speaker") for seg in result.get("segments", [])
+                if seg.get("speaker")
+            })
+            rows = [(label, label) for label in labels]
+
+        if not rows:
             self.speaker_frame.grid_remove()
             return
 
-        for col, spk in enumerate(sorted(speakers)):
+        for raw_id, current_label in rows:
             frame = ctk.CTkFrame(self.speaker_entries_frame, fg_color="transparent")
             frame.pack(side="left", padx=(0, 15), pady=2)
-            ctk.CTkLabel(frame, text=f"{spk}  \u2192",
-                         font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 5))
-            entry = ctk.CTkEntry(frame, width=140,
-                                 placeholder_text="Name eingeben")
+
+            color = self._speaker_colors.get(raw_id) if hasattr(self, "_speaker_colors") else None
+            ctk.CTkLabel(frame, text=f"{current_label}  →",
+                         font=ctk.CTkFont(size=12),
+                         text_color=color or ("gray10", "gray90")).pack(side="left", padx=(0, 5))
+
+            entry = ctk.CTkEntry(frame, width=130, placeholder_text="Name eingeben")
+            if raw_id != current_label:
+                entry.insert(0, current_label)
             entry.pack(side="left")
-            self._speaker_name_entries[spk] = entry
+            self._speaker_name_entries[raw_id] = entry
+
+            if raw_id in embeddings:
+                remember_var = ctk.BooleanVar(value=True)
+                ctk.CTkCheckBox(frame, text="merken", variable=remember_var,
+                                width=20, font=ctk.CTkFont(size=11)
+                                ).pack(side="left", padx=(5, 0))
+                self._speaker_remember_vars[raw_id] = remember_var
 
         self.speaker_frame.grid()
 
     def _get_speaker_mapping(self):
-        """Gibt das aktuelle Mapping {SPEAKER_XX: Name} zurück."""
+        """Gibt das aktuelle Mapping {rohe_Diarization_ID: neuer_Name} zurueck."""
         mapping = {}
-        for spk, entry in self._speaker_name_entries.items():
+        for raw_id, entry in self._speaker_name_entries.items():
             name = entry.get().strip()
             if name:
-                mapping[spk] = name
+                mapping[raw_id] = name
         return mapping
 
+
     def _apply_speaker_names(self):
-        """Wendet die Sprecher-Namen auf den Text im Textfeld an."""
-        mapping = self._get_speaker_mapping()
-        if not mapping:
+        """Wendet die eingegebenen Sprecher-Namen auf Textfeld UND internes
+        Ergebnis an und merkt sich optional die Stimme fuer zukuenftige
+        Erkennung.
+
+        Einzige Stelle, die Umbenennungen vornimmt - wird sowohl vom
+        "Anwenden"-Button als auch automatisch vor dem Speichern aufgerufen,
+        damit Textfeld-Anzeige und das gespeicherte Ergebnis nie auseinander-
+        laufen koennen. Ersetzt im Textfeld gezielt nur die Label-Vorkommen
+        (per Suche), statt den ganzen Text neu aufzubauen - dadurch bleiben
+        sowohl die Sprecherfarben als auch etwaige manuelle Korrekturen im
+        Transkript-Text erhalten.
+        """
+        mapping = self._get_speaker_mapping()  # {rohe_ID: neuer_Name}
+        if not mapping or not hasattr(self, "_transcription_result"):
             return
 
-        text = self.transcript_text.get("1.0", "end")
-        for spk_id, name in mapping.items():
-            text = text.replace(spk_id, name)
-        self.transcript_text.delete("1.0", "end")
-        self.transcript_text.insert("1.0", text.rstrip())
+        result = self._transcription_result
+        speaker_id_map = result.setdefault("speaker_id_map", {})
+        embeddings = result.get("speaker_embeddings") or {}
+
+        for raw_id, new_name in mapping.items():
+            old_label = speaker_id_map.get(raw_id, raw_id)
+            if old_label == new_name:
+                continue
+
+            # Textfeld: gezielt ersetzen (Farbe/Tag bleibt erhalten)
+            tag = f"speaker_{raw_id}"
+            search_from = "1.0"
+            while True:
+                pos = self.transcript_text.search(old_label, search_from, stopindex="end")
+                if not pos:
+                    break
+                end_pos = f"{pos}+{len(old_label)}c"
+                self.transcript_text.delete(pos, end_pos)
+                self.transcript_text.insert(pos, new_name, tag)
+                search_from = f"{pos}+{len(new_name)}c"
+
+            # Internes Ergebnis (fuer Speichern) synchron mitziehen
+            for seg in result.get("segments", []):
+                if seg.get("speaker") == old_label:
+                    seg["speaker"] = new_name
+                for word in seg.get("words", []) or []:
+                    if word.get("speaker") == old_label:
+                        word["speaker"] = new_name
+            for word in result.get("word_segments", []) or []:
+                if word.get("speaker") == old_label:
+                    word["speaker"] = new_name
+
+            speaker_id_map[raw_id] = new_name
+
+            remember_var = self._speaker_remember_vars.get(raw_id)
+            if remember_var is not None and remember_var.get() and raw_id in embeddings:
+                speaker_profiles.enroll_speaker(new_name, embeddings[raw_id])
 
         self.transcribe_status.configure(
             text="Sprecher-Namen angewendet!", text_color="#27ae60")
-
-    def _apply_speaker_names_to_result(self):
-        """Wendet die Sprecher-Namen auf das interne Ergebnis an (für Speichern)."""
-        mapping = self._get_speaker_mapping()
-        if not mapping or not hasattr(self, '_transcription_result'):
-            return
-        for seg in self._transcription_result.get("segments", []):
-            spk = seg.get("speaker", "")
-            if spk in mapping:
-                seg["speaker"] = mapping[spk]
-            for word in seg.get("words", []) or []:
-                word_spk = word.get("speaker", "")
-                if word_spk in mapping:
-                    word["speaker"] = mapping[word_spk]
-
-        for word in self._transcription_result.get("word_segments", []) or []:
-            word_spk = word.get("speaker", "")
-            if word_spk in mapping:
-                word["speaker"] = mapping[word_spk]
 
 def main():
     global _splash

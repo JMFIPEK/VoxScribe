@@ -7,6 +7,8 @@ numpy
 python-dotenv
 customtkinter>=5.2
 psutil
+av                    # Video-container audio extraction (MKV, MP4, ...)
+requests              # KIT ToolBox (Server) remote transcription
 
 # PyTorch mit CUDA 12.8 (separat installieren, siehe README)
 # torch>=2.11

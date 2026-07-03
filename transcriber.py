@@ -433,14 +433,38 @@ def transcribe(
             )
 
             _prog(0.80, "Speaker Diarization laeuft...")
-            diarize_segments = diarize_model(
+            diarize_segments, speaker_embeddings = diarize_model(
                 audio,
                 min_speakers=min_speakers,
                 max_speakers=max_speakers,
+                return_embeddings=True,
             )
 
             _prog(0.92, "Sprecher zuordnen...")
-            result = whisperx.assign_word_speakers(diarize_segments, result)
+            result = whisperx.assign_word_speakers(
+                diarize_segments, result, speaker_embeddings=speaker_embeddings)
+
+            # Bekannte Sprecher (Voice-Prints) automatisch erkennen und
+            # Segmente/Woerter direkt mit dem erkannten Namen beschriften.
+            # speaker_id_map merkt sich die Zuordnung roher Diarization-ID ->
+            # aktuell angezeigtes Label (Name oder unveraendert), damit die GUI
+            # spaeter das passende Embedding zum "Sprecher merken" findet.
+            speaker_id_map = {spk: spk for spk in (speaker_embeddings or {})}
+            if speaker_embeddings:
+                try:
+                    from speaker_profiles import match_speakers
+                    suggestions = match_speakers(speaker_embeddings)
+                except Exception:
+                    suggestions = {}
+                for spk_id, name in suggestions.items():
+                    speaker_id_map[spk_id] = name
+                    for seg in result.get("segments", []):
+                        if seg.get("speaker") == spk_id:
+                            seg["speaker"] = name
+                    for word in result.get("word_segments", []) or []:
+                        if word.get("speaker") == spk_id:
+                            word["speaker"] = name
+            result["speaker_id_map"] = speaker_id_map
 
             t5 = time.time()
             print(f"     Diarization abgeschlossen ({t5 - t4:.1f}s)")
