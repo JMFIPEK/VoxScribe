@@ -11,8 +11,23 @@ import soundfile as sf
 import torch
 import whisperx
 from whisperx.diarize import DiarizationPipeline
+from whisperx.utils import LANGUAGES as _WHISPER_LANGUAGE_NAMES
 
 SAMPLE_RATE = 16000
+
+# Volle Sprachnamen (z.B. "german", wie von OpenAI-kompatiblen APIs zurueckgegeben)
+# auf ISO-639-1-Codes (z.B. "de") abbilden, wie sie whisperx fuer Alignment erwartet.
+_LANGUAGE_NAME_TO_CODE = {name.lower(): code for code, name in _WHISPER_LANGUAGE_NAMES.items()}
+
+
+def _normalize_language_code(raw: str | None, fallback: str | None = None) -> str | None:
+    """Normalisiert einen von einer Server-API zurueckgegebenen Sprachbezeichner (Name oder Code)."""
+    if not raw:
+        return fallback
+    raw = raw.strip().lower()
+    if raw in _WHISPER_LANGUAGE_NAMES:
+        return raw
+    return _LANGUAGE_NAME_TO_CODE.get(raw, fallback)
 
 
 def _get_base_dir() -> str:
@@ -47,9 +62,196 @@ def load_audio_without_ffmpeg(audio_path: str) -> np.ndarray:
     return data
 
 
+def _load_audio_via_container(audio_path: str) -> np.ndarray:
+    """Extrahiert die Audiospur aus einem beliebigen Container (MKV, MP4, MOV, ...) via PyAV.
+
+    Wird als Fallback genutzt, wenn soundfile das Format nicht direkt lesen kann
+    (z.B. Video-Container wie MKV, bei denen nur die Audiospur benoetigt wird).
+    """
+    import av
+
+    container = av.open(audio_path)
+    stream = next((s for s in container.streams if s.type == "audio"), None)
+    if stream is None:
+        container.close()
+        raise ValueError(f"Keine Audiospur gefunden in: {audio_path}")
+
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+    chunks = []
+    for frame in container.decode(stream):
+        for resampled in resampler.resample(frame):
+            chunks.append(resampled.to_ndarray())
+    for resampled in resampler.resample(None):
+        chunks.append(resampled.to_ndarray())
+    container.close()
+
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+
+    data = np.concatenate(chunks, axis=1).reshape(-1)
+    return (data.astype(np.float32) / 32768.0)
+
+
+def load_audio_universal(audio_path: str) -> np.ndarray:
+    """Laedt eine Audio- oder Video-Datei als 16kHz Mono float32 Array.
+
+    Versucht zuerst soundfile (schnell, fuer WAV/FLAC/OGG etc.). Schlaegt das
+    fehl (z.B. bei Video-Containern wie MKV/MP4 oder komprimierten Formaten,
+    die libsndfile nicht kennt), wird per PyAV nur die Audiospur dekodiert.
+    """
+    try:
+        return load_audio_without_ffmpeg(audio_path)
+    except Exception:
+        return _load_audio_via_container(audio_path)
+
+
+DEFAULT_API_BASE_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
+REMOTE_MODEL_PREFIX = "server:"
+
+
+def is_remote_model(model_size: str) -> bool:
+    """Prueft, ob es sich um ein serverseitig gehostetes Modell handelt."""
+    return model_size.startswith(REMOTE_MODEL_PREFIX)
+
+
+class _PayloadTooLarge(Exception):
+    """Interner Marker: Server hat den Upload mit 413 abgelehnt."""
+
+
+REMOTE_CHUNK_SECONDS = 180.0
+REMOTE_MIN_CHUNK_SECONDS = 5.0
+
+
+def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
+                       api_key: str, base_url: str) -> tuple[list[dict], str | None]:
+    """Schickt einen einzelnen Audio-Chunk an den Server.
+
+    Gibt (segmente, roher_sprachname_aus_der_antwort) zurueck.
+    """
+    import io
+    import requests
+
+    # FLAC statt WAV: verlustfrei, aber deutlich kleinere Uploads (~50-60%),
+    # damit auch lange Aufnahmen nicht an Server-Upload-Limits scheitern.
+    buf = io.BytesIO()
+    sf.write(buf, chunk, SAMPLE_RATE, format="FLAC")
+    buf.seek(0)
+
+    url = base_url.rstrip("/") + "/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    data = {"model": model_name, "response_format": "verbose_json"}
+    if language:
+        data["language"] = language
+    files = {"file": ("audio.flac", buf, "audio/flac")}
+
+    resp = requests.post(url, headers=headers, data=data, files=files, timeout=1800)
+    if resp.status_code == 413:
+        raise _PayloadTooLarge()
+    resp.raise_for_status()
+    payload = resp.json()
+
+    segments = []
+    for seg in payload.get("segments", []):
+        segments.append({
+            "start": seg.get("start", 0.0),
+            "end": seg.get("end", 0.0),
+            "text": seg.get("text", ""),
+        })
+    if not segments and payload.get("text"):
+        duration = len(chunk) / SAMPLE_RATE
+        segments = [{"start": 0.0, "end": duration, "text": payload["text"]}]
+    return segments, payload.get("language")
+
+
+def _transcribe_chunk_with_backoff(chunk: np.ndarray, language: str | None, model_name: str,
+                                    api_key: str, base_url: str) -> tuple[list[dict], str | None]:
+    """Sendet einen Chunk; wird er mit 413 abgelehnt, wird er rekursiv halbiert."""
+    try:
+        return _post_audio_chunk(chunk, language, model_name, api_key, base_url)
+    except _PayloadTooLarge:
+        duration = len(chunk) / SAMPLE_RATE
+        if duration <= REMOTE_MIN_CHUNK_SECONDS:
+            raise ValueError(
+                "Server lehnt Uploads mit 413 (Request Entity Too Large) ab, "
+                "selbst fuer sehr kurze Audio-Chunks. Server-Konfiguration pruefen."
+            )
+        mid = len(chunk) // 2
+        left, lang_left = _transcribe_chunk_with_backoff(chunk[:mid], language, model_name, api_key, base_url)
+        right, lang_right = _transcribe_chunk_with_backoff(chunk[mid:], language, model_name, api_key, base_url)
+        offset = mid / SAMPLE_RATE
+        for seg in right:
+            seg["start"] += offset
+            seg["end"] += offset
+        return left + right, (lang_left or lang_right)
+
+
+def transcribe_remote(
+    audio: np.ndarray,
+    language: str | None,
+    model_name: str,
+    api_key: str,
+    base_url: str = DEFAULT_API_BASE_URL,
+    chunk_seconds: float = REMOTE_CHUNK_SECONDS,
+    on_progress=None,
+) -> dict:
+    """Schickt Audio in Chunks an einen OpenAI-kompatiblen Transkriptions-Endpoint (z.B. KIT ToolBox).
+
+    Lange Aufnahmen werden in Stuecke von `chunk_seconds` zerlegt (und bei einem
+    413-Fehler des Servers automatisch weiter halbiert), da Server-Endpoints
+    typischerweise ein Upload-Groessenlimit haben.
+
+    Ist `language` None/leer, wird keine Sprache mitgeschickt (Server erkennt sie
+    selbst). Die vom ersten Chunk erkannte Sprache wird anschliessend fuer alle
+    weiteren Chunks fest verwendet, damit die Spracherkennung nicht pro Chunk
+    hin- und herspringt (kurze/stille Chunks erkennen sonst leicht die falsche
+    Sprache).
+
+    Gibt ein Dict im WhisperX-Format zurueck ({"segments": [...], "language": ...}),
+    das anschliessend fuer Alignment und Diarization weiterverwendet werden kann.
+    """
+    if not api_key:
+        raise ValueError(
+            "Kein API-Key fuer das Server-Modell gesetzt "
+            "(KIT_TOOLBOX_API_KEY in .env oder in den Einstellungen eintragen)."
+        )
+
+    total_samples = len(audio)
+    chunk_samples = max(1, int(chunk_seconds * SAMPLE_RATE))
+    n_chunks = max(1, -(-total_samples // chunk_samples))  # ceil division
+
+    all_segments = []
+    detected_language_code = None
+    offset = 0
+    chunk_idx = 0
+    request_language = language
+    while offset < total_samples:
+        chunk = audio[offset: offset + chunk_samples]
+        chunk_start_time = offset / SAMPLE_RATE
+
+        chunk_segments, raw_language = _transcribe_chunk_with_backoff(
+            chunk, request_language, model_name, api_key, base_url)
+        for seg in chunk_segments:
+            seg["start"] += chunk_start_time
+            seg["end"] += chunk_start_time
+            all_segments.append(seg)
+
+        if detected_language_code is None:
+            detected_language_code = _normalize_language_code(raw_language, fallback=language)
+            if not request_language and detected_language_code:
+                # Sprache fuer die restlichen Chunks fixieren (siehe Docstring)
+                request_language = detected_language_code
+
+        chunk_idx += 1
+        if on_progress:
+            on_progress(min(chunk_idx / n_chunks, 1.0))
+        offset += chunk_samples
+
+    return {"segments": all_segments, "language": detected_language_code or language or "de"}
+
+
 def transcribe(
     audio_path: str,
-    language: str = "de",
+    language: str | None = "de",
     model_size: str = "large-v2",
     diarize: bool = True,
     hf_token: str | None = None,
@@ -58,6 +260,8 @@ def transcribe(
     batch_size: int = 16,
     device: str | None = None,
     on_progress=None,
+    api_key: str | None = None,
+    api_base_url: str = DEFAULT_API_BASE_URL,
 ) -> dict:
     """Fuehrt die vollstaendige WhisperX-Pipeline aus.
 
@@ -67,7 +271,7 @@ def transcribe(
 
     Args:
         audio_path: Pfad zur Audio-Datei (WAV, MP3, etc.)
-        language: Sprache des Audios (z.B. "de", "en")
+        language: Sprache des Audios (z.B. "de", "en"). None = automatische Erkennung
         model_size: Whisper-Modellgroesse ("large-v2", "large-v3", "medium", "base")
         diarize: Speaker Diarization aktivieren
         hf_token: HuggingFace Token fuer pyannote (nur beim ersten Download noetig)
@@ -83,10 +287,11 @@ def transcribe(
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     compute_type = "float16" if device == "cuda" else "int8"
+    remote = is_remote_model(model_size)
 
     print(f"Device: {device} ({compute_type})")
     print(f"Modell: {model_size}")
-    print(f"Sprache: {language}")
+    print(f"Sprache: {language or 'automatisch erkennen'}")
     print(f"Audio: {audio_path}")
     print()
 
@@ -106,43 +311,68 @@ def transcribe(
         _prog(mapped, f"Alignment... {pct_within:.0f}%")
 
     # --- 1. Transkription ---
-    print("1/3  Transkription laeuft...")
-    _prog(0.0, "Whisper-Modell laden...")
     t0 = time.time()
 
     # Bundled model path verwenden falls vorhanden
     bundled = _get_bundled_models_dir()
-    whisper_download_root = None
-    whisper_local_only = False
-    if bundled:
-        whisper_path = os.path.join(bundled, "whisper", model_size)
-        if os.path.isdir(whisper_path):
-            whisper_download_root = whisper_path
-            whisper_local_only = True
 
-    model = whisperx.load_model(
-        model_size, device, compute_type=compute_type, language=language,
-        download_root=whisper_download_root, local_files_only=whisper_local_only,
-    )
+    if remote:
+        remote_model_name = model_size[len(REMOTE_MODEL_PREFIX):]
+        print(f"1/3  Transkription via Server-Modell ({remote_model_name})...")
+        _prog(0.0, "Audio laden...")
+        audio = load_audio_universal(audio_path)
 
-    _prog(0.10, "Audio laden...")
-    audio = load_audio_without_ffmpeg(audio_path)
+        def _remote_progress(frac):
+            mapped = 0.10 + frac * 0.30
+            _prog(mapped, f"Sende Audio an Server... {frac * 100:.0f}%")
 
-    _prog(0.15, "Transkription läuft...")
-    result = model.transcribe(audio, batch_size=batch_size,
-                              progress_callback=_transcribe_progress)
+        _prog(0.10, f"Sende Audio an Server ({remote_model_name})...")
+        result = transcribe_remote(
+            audio, language, remote_model_name,
+            api_key=api_key, base_url=api_base_url,
+            on_progress=_remote_progress,
+        )
 
-    t1 = time.time()
-    n_segs = len(result['segments'])
-    print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
-    print(f"     {n_segs} Segmente erkannt")
-    _prog(0.40, f"Transkription fertig — {n_segs} Segmente ({t1 - t0:.0f}s)")
+        t1 = time.time()
+        n_segs = len(result["segments"])
+        print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} Segmente erkannt")
+        _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
+    else:
+        print("1/3  Transkription laeuft...")
+        _prog(0.0, "Whisper-Modell laden...")
 
-    # Modell entladen
-    del model
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
+        whisper_download_root = None
+        whisper_local_only = False
+        if bundled:
+            whisper_path = os.path.join(bundled, "whisper", model_size)
+            if os.path.isdir(whisper_path):
+                whisper_download_root = whisper_path
+                whisper_local_only = True
+
+        model = whisperx.load_model(
+            model_size, device, compute_type=compute_type, language=language,
+            download_root=whisper_download_root, local_files_only=whisper_local_only,
+        )
+
+        _prog(0.10, "Audio laden...")
+        audio = load_audio_universal(audio_path)
+
+        _prog(0.15, "Transkription laeuft...")
+        result = model.transcribe(audio, batch_size=batch_size,
+                                  progress_callback=_transcribe_progress)
+
+        t1 = time.time()
+        n_segs = len(result['segments'])
+        print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} Segmente erkannt")
+        _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
+
+        # Modell entladen
+        del model
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
     # --- 2. Alignment ---
     print("2/3  Alignment laeuft...")
@@ -163,7 +393,7 @@ def transcribe(
         model_dir=align_model_dir, model_cache_only=align_cache_only,
     )
 
-    _prog(0.50, "Wort-Alignment läuft...")
+    _prog(0.50, "Wort-Alignment laeuft...")
     result = whisperx.align(
         result["segments"], model_a, metadata, audio, device,
         return_char_alignments=False,
@@ -185,7 +415,7 @@ def transcribe(
         if not hf_token:
             print("3/3  Diarization uebersprungen (kein HF_TOKEN gesetzt)")
             print("     Setze HF_TOKEN in .env fuer Speaker-Erkennung")
-            _prog(1.0, "Fertig (Diarization übersprungen — kein Token)")
+            _prog(1.0, "Fertig (Diarization uebersprungen - kein Token)")
         else:
             print("3/3  Speaker Diarization laeuft...")
             _prog(0.70, "Diarization-Modell laden...")
@@ -202,15 +432,39 @@ def transcribe(
                 token=hf_token, device=device, cache_dir=diarize_cache
             )
 
-            _prog(0.80, "Speaker Diarization läuft...")
-            diarize_segments = diarize_model(
+            _prog(0.80, "Speaker Diarization laeuft...")
+            diarize_segments, speaker_embeddings = diarize_model(
                 audio,
                 min_speakers=min_speakers,
                 max_speakers=max_speakers,
+                return_embeddings=True,
             )
 
             _prog(0.92, "Sprecher zuordnen...")
-            result = whisperx.assign_word_speakers(diarize_segments, result)
+            result = whisperx.assign_word_speakers(
+                diarize_segments, result, speaker_embeddings=speaker_embeddings)
+
+            # Bekannte Sprecher (Voice-Prints) automatisch erkennen und
+            # Segmente/Woerter direkt mit dem erkannten Namen beschriften.
+            # speaker_id_map merkt sich die Zuordnung roher Diarization-ID ->
+            # aktuell angezeigtes Label (Name oder unveraendert), damit die GUI
+            # spaeter das passende Embedding zum "Sprecher merken" findet.
+            speaker_id_map = {spk: spk for spk in (speaker_embeddings or {})}
+            if speaker_embeddings:
+                try:
+                    from speaker_profiles import match_speakers
+                    suggestions = match_speakers(speaker_embeddings)
+                except Exception:
+                    suggestions = {}
+                for spk_id, name in suggestions.items():
+                    speaker_id_map[spk_id] = name
+                    for seg in result.get("segments", []):
+                        if seg.get("speaker") == spk_id:
+                            seg["speaker"] = name
+                    for word in result.get("word_segments", []) or []:
+                        if word.get("speaker") == spk_id:
+                            word["speaker"] = name
+            result["speaker_id_map"] = speaker_id_map
 
             t5 = time.time()
             print(f"     Diarization abgeschlossen ({t5 - t4:.1f}s)")
@@ -221,7 +475,7 @@ def transcribe(
                 if "speaker" in seg:
                     speakers.add(seg["speaker"])
             print(f"     {len(speakers)} Sprecher erkannt: {', '.join(sorted(speakers))}")
-            _prog(0.98, f"Diarization fertig — {len(speakers)} Sprecher ({t5 - t4:.0f}s)")
+            _prog(0.98, f"Diarization fertig - {len(speakers)} Sprecher ({t5 - t4:.0f}s)")
 
             del diarize_model
             gc.collect()

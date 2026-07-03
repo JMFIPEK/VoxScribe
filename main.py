@@ -82,19 +82,40 @@ def cmd_record(args):
     return output
 
 
+def _cli_progress(state):
+    """Erstellt einen on_progress-Callback, der eine einzeilige Fortschrittsanzeige
+    ausgibt (per \\r ueberschrieben), damit lange Schritte (v.a. Diarization) nicht
+    wie ein Haenger aussehen."""
+    def _callback(pct, message):
+        # Nur alle ~0.5% aktualisieren, um das Terminal nicht zu fluten
+        shown = int(pct * 200)
+        if shown == state.get("last") and pct < 1.0:
+            return
+        state["last"] = shown
+        bar_width = 30
+        filled = int(bar_width * pct)
+        bar = "#" * filled + "-" * (bar_width - filled)
+        end = "\n" if pct >= 1.0 else ""
+        print(f"\r     [{bar}] {pct * 100:5.1f}%  {message}", end=end, flush=True)
+    return _callback
+
+
 def cmd_transcribe(args):
     """Transkribiert eine Audio-Datei."""
-    from transcriber import transcribe, save_transcript
+    from transcriber import DEFAULT_API_BASE_URL, transcribe, save_transcript
 
     if not os.path.isfile(args.input):
         print(f"Datei nicht gefunden: {args.input}")
         sys.exit(1)
 
     hf_token = args.hf_token or os.getenv("HF_TOKEN") or None
+    api_key = args.api_key or os.getenv("KIT_TOOLBOX_API_KEY") or None
+    api_base_url = args.api_base_url or os.getenv("KIT_TOOLBOX_BASE_URL") or DEFAULT_API_BASE_URL
+    language = None if args.language.lower() in ("auto", "automatisch") else args.language
 
     result = transcribe(
         audio_path=args.input,
-        language=args.language,
+        language=language,
         model_size=args.model,
         diarize=args.diarize,
         hf_token=hf_token,
@@ -102,6 +123,9 @@ def cmd_transcribe(args):
         max_speakers=args.max_speakers,
         batch_size=args.batch_size,
         device=args.device_compute,
+        api_key=api_key,
+        api_base_url=api_base_url,
+        on_progress=_cli_progress({}),
     )
 
     # Output-Pfad bestimmen
@@ -160,11 +184,12 @@ def main():
     sub_transcribe.add_argument("--input", "-i", required=True, help="Audio-Datei")
     sub_transcribe.add_argument(
         "--language", "-l", default="de",
-        help="Sprache (z.B. de, en). Default: de"
+        help="Sprache (z.B. de, en) oder 'auto' fuer automatische Erkennung. Default: de"
     )
     sub_transcribe.add_argument(
         "--model", "-m", default="large-v2",
-        help="Whisper-Modell (large-v2, large-v3, medium, base). Default: large-v2"
+        help=("Whisper-Modell (large-v2, large-v3, medium, base) oder "
+              "Server-Modell (z.B. server:kit.whisper-large-v3). Default: large-v2")
     )
     sub_transcribe.add_argument(
         "--diarize", action="store_true", default=True,
@@ -177,6 +202,14 @@ def main():
     sub_transcribe.add_argument(
         "--hf-token", default=None,
         help="HuggingFace Token (alternativ: HF_TOKEN in .env)"
+    )
+    sub_transcribe.add_argument(
+        "--api-key", default=None,
+        help="API-Key fuer Server-Modelle (alternativ: KIT_TOOLBOX_API_KEY in .env)"
+    )
+    sub_transcribe.add_argument(
+        "--api-base-url", default=None,
+        help="Basis-URL fuer Server-Modelle (alternativ: KIT_TOOLBOX_BASE_URL in .env)"
     )
     sub_transcribe.add_argument("--min-speakers", type=int, default=None)
     sub_transcribe.add_argument("--max-speakers", type=int, default=None)
@@ -210,6 +243,8 @@ def main():
     sub_run.add_argument("--diarize", action="store_true", default=True)
     sub_run.add_argument("--no-diarize", dest="diarize", action="store_false")
     sub_run.add_argument("--hf-token", default=None)
+    sub_run.add_argument("--api-key", default=None)
+    sub_run.add_argument("--api-base-url", default=None)
     sub_run.add_argument("--min-speakers", type=int, default=None)
     sub_run.add_argument("--max-speakers", type=int, default=None)
     sub_run.add_argument("--batch-size", type=int, default=16)
