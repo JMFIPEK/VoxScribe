@@ -284,19 +284,32 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(source_frame, text="Quelle:").grid(
             row=0, column=0, padx=10, pady=10)
-        # System-Audio (WASAPI Loopback) gibt es nur unter Windows.
-        source_values = (["Mikrofon", "System-Audio", "Mikrofon + System"]
-                         if sys.platform == "win32" else ["Mikrofon"])
-        self.source_var = ctk.StringVar(value=source_values[0] if sys.platform != "win32"
-                                        else "Mikrofon + System")
+        # System-Audio: unter Windows vollstaendig (WASAPI Loopback, inkl.
+        # Kombination mit Mikrofon). Unter macOS experimentell via
+        # ScreenCaptureKit (siehe macos/README.md) - nur einzeln, noch nicht
+        # kombiniert mit Mikrofon. Unter Linux gar nicht verfuegbar.
+        if sys.platform == "win32":
+            source_values = ["Mikrofon", "System-Audio", "Mikrofon + System"]
+            default_source = "Mikrofon + System"
+            source_hint = None
+        elif sys.platform == "darwin":
+            source_values = ["Mikrofon", "System-Audio"]
+            default_source = "Mikrofon"
+            source_hint = ("⚠ System-Audio ist auf macOS experimentell (ScreenCaptureKit) - "
+                          "erfordert die Berechtigung „Bildschirm- und Systemaudioaufnahme“.")
+        else:
+            source_values = ["Mikrofon"]
+            default_source = "Mikrofon"
+            source_hint = "System-Audio (Meeting-Mitschnitt) ist auf diesem Betriebssystem noch nicht verfügbar."
+
+        self.source_var = ctk.StringVar(value=default_source)
         self.source_menu = ctk.CTkSegmentedButton(
             source_frame, values=source_values,
             variable=self.source_var, command=self._on_source_changed)
         self.source_menu.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        if sys.platform != "win32":
+        if source_hint:
             ctk.CTkLabel(
-                source_frame,
-                text="System-Audio (Meeting-Mitschnitt) ist auf diesem Betriebssystem noch nicht verfügbar.",
+                source_frame, text=source_hint,
                 text_color="gray", font=ctk.CTkFont(size=11)
             ).grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
 
@@ -808,31 +821,41 @@ class App(ctk.CTk):
         if not hasattr(self, '_all_devices'):
             return
         self._device_map = {}
-        if value == "Mikrofon + System":
-            # Mikrofon wählen — System-Audio wird automatisch genutzt
-            devices = self._all_devices["microphones"]
-        elif value == "Mikrofon":
-            devices = self._all_devices["microphones"]
-        else:
-            devices = self._all_devices["loopback"]
 
-        names = []
-        seen_labels = set()
-        for d in devices:
-            label = d["name"]
-            if label in seen_labels:
-                host_api = d.get("host_api") or "Audio"
-                label = f"{label} ({host_api}, #{d['index']})"
-            seen_labels.add(label)
-            names.append(label)
-            self._device_map[label] = d["index"]
-
-        if names:
-            self.device_menu.configure(values=names)
-            self.device_var.set(names[0])
+        # macOS System-Audio (ScreenCaptureKit) hat keine Geraeteauswahl - es
+        # wird immer die gesamte System-Wiedergabe aufgenommen.
+        if value == "System-Audio" and sys.platform == "darwin":
+            label = "Gesamte System-Wiedergabe (keine Geräteauswahl)"
+            self.device_menu.configure(values=[label], state="disabled")
+            self.device_var.set(label)
+            self._device_map[label] = None
         else:
-            self.device_menu.configure(values=["Kein Gerät gefunden"])
-            self.device_var.set("Kein Gerät gefunden")
+            self.device_menu.configure(state="normal")
+            if value == "Mikrofon + System":
+                # Mikrofon wählen — System-Audio wird automatisch genutzt
+                devices = self._all_devices["microphones"]
+            elif value == "Mikrofon":
+                devices = self._all_devices["microphones"]
+            else:
+                devices = self._all_devices["loopback"]
+
+            names = []
+            seen_labels = set()
+            for d in devices:
+                label = d["name"]
+                if label in seen_labels:
+                    host_api = d.get("host_api") or "Audio"
+                    label = f"{label} ({host_api}, #{d['index']})"
+                seen_labels.add(label)
+                names.append(label)
+                self._device_map[label] = d["index"]
+
+            if names:
+                self.device_menu.configure(values=names)
+                self.device_var.set(names[0])
+            else:
+                self.device_menu.configure(values=["Kein Gerät gefunden"])
+                self.device_var.set("Kein Gerät gefunden")
 
         # Pegelanzeige an gewaehlte Quelle anpassen (nur relevante Kanaele zeigen)
         show_mic = value in ("Mikrofon", "Mikrofon + System")
