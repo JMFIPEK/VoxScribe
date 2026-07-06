@@ -69,6 +69,10 @@ ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/test.raw /tmp/test.wav
   (`signal(...)`-Handler + `exit(0)`), `subprocess.terminate()` von
   `recorder.py` aus fuehrt zu keinem haengenden Prozess und `stop()` kehrt in
   ~10ms zurueck.
-- **Nur "System-Audio" allein implementiert**: Die kombinierte Aufnahme
-  "Mikrofon + System" (wie unter Windows) ist auf macOS noch NICHT umgesetzt -
-  bewusste Scope-Entscheidung, um zuerst den Basis-Fall zu verifizieren.
+- **Kombinierte Aufnahme "Mikrofon + System"**: Umgesetzt in
+  `recorder.py::AudioRecorder._record_both_macos()` (Mikrofon via
+  `sounddevice`, System-Audio via dieser Subprozess-Pipe, danach wie unter
+  Windows gemischt). Anders als der reine System-Audio-Pfad oben aber noch
+  NICHT auf echter Hardware getestet - beim ersten echten Test besonders auf
+  Sync-Drift zwischen den beiden Quellen und auf das Verhalten bei fehlender
+  Aufnahme-Berechtigung fuer eine der beiden Seiten achten.

@@ -293,7 +293,7 @@ class App(ctk.CTk):
             default_source = "Mikrofon + System"
             source_hint = None
         elif sys.platform == "darwin":
-            source_values = ["Mikrofon", "System-Audio"]
+            source_values = ["Mikrofon", "System-Audio", "Mikrofon + System"]
             default_source = "Mikrofon"
             source_hint = ("⚠ System-Audio ist auf macOS experimentell (ScreenCaptureKit) - "
                           "erfordert die Berechtigung „Bildschirm- und Systemaudioaufnahme“.")

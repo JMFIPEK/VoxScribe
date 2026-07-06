@@ -5,10 +5,10 @@ experimentell macOS).
   Mitschnitt, inkl. kombinierter "Mikrofon + System"-Aufnahme).
 - macOS: `sounddevice` fuers Mikrofon; System-Audio-Aufnahme laeuft ueber einen
   kleinen nativen Helfer (macos/SystemAudioCapture, ScreenCaptureKit), der als
-  Subprozess gestartet wird - siehe macos/README.md. EXPERIMENTELL: wurde ohne
-  Zugriff auf echte Mac-Hardware geschrieben und muss dort noch gebaut,
-  getestet und ggf. gefixt werden. Kombinierte "Mikrofon + System"-Aufnahme ist
-  auf macOS noch NICHT implementiert (bewusste Scope-Entscheidung).
+  Subprozess gestartet wird - siehe macos/README.md. Kombinierte "Mikrofon +
+  System"-Aufnahme (_record_both_macos()) mischt beide Quellen wie unter
+  Windows. EXPERIMENTELL: der System-Audio-Pfad ist auf echter Apple-Silicon-
+  Hardware getestet, die kombinierte Mikrofon+System-Variante bislang nicht.
 - Linux: nur Mikrofon via `sounddevice`, kein System-Audio-Weg vorhanden.
 """
 
@@ -288,12 +288,7 @@ class AudioRecorder:
             if IS_MACOS and source == "system":
                 pass  # experimentell unterstuetzt, siehe _record_system_macos()
             elif IS_MACOS and source == "both":
-                if on_done:
-                    on_done(None, 0,
-                             "Mikrofon + System gleichzeitig ist auf macOS noch "
-                             "nicht implementiert. Bitte 'Mikrofon' oder "
-                             "'System-Audio' einzeln waehlen.")
-                return
+                pass  # experimentell unterstuetzt, siehe _record_both_macos()
             else:
                 # System-Audio (WASAPI Loopback) gibt es sonst nur unter Windows.
                 if on_done:
@@ -326,6 +321,8 @@ class AudioRecorder:
     def _record(self):
         if IS_MACOS and self._source == "system":
             self._record_system_macos()
+        elif IS_MACOS and self._source == "both":
+            self._record_both_macos()
         elif not IS_WINDOWS:
             # start() garantiert bereits source == "mic" auf Nicht-Windows
             # (ausser dem macOS-System-Audio-Zweig oben).
@@ -449,6 +446,141 @@ class AudioRecorder:
         _save_wav(self._output_path, self._frames, self._channels, self._sample_rate)
         duration = (len(b"".join(self._frames))
                     / (self._sample_rate * self._channels * SAMPLE_WIDTH))
+        if self._on_done:
+            self._on_done(self._output_path, duration, None)
+
+    def _record_both_macos(self):
+        """Nimmt gleichzeitig Mikrofon (sounddevice) und System-Audio
+        (ScreenCaptureKit-Subprozess, siehe _record_system_macos()) auf und
+        mischt beides - macOS-Aequivalent zu _record_both() unter Windows.
+
+        Das Mikrofon laeuft ueber sounddevice's eigenen Callback-Thread, die
+        System-Audio-Seite wird blockierend im aktuellen Thread gelesen
+        (identisch zu _record_system_macos()); beide Frame-Listen werden erst
+        nach dem Stop gemischt.
+        """
+        binary = _macos_system_audio_binary_path()
+        if not os.path.isfile(binary):
+            if self._on_done:
+                self._on_done(
+                    None, 0,
+                    "System-Audio-Helfer nicht gefunden. Bitte zuerst in "
+                    "macos/ './build.sh' ausfuehren (siehe macos/README.md)."
+                )
+            return
+
+        try:
+            if self._device_index is not None:
+                mic_info = sd.query_devices(self._device_index)
+            else:
+                mic_info = sd.query_devices(kind="input")
+        except Exception as e:
+            if self._on_done:
+                self._on_done(None, 0, str(e))
+            return
+
+        mic_ch = 1
+        mic_rate = int(mic_info["default_samplerate"])
+        sys_ch = 1
+        sys_rate = OUT_RATE  # SystemAudioCapture ist fest auf 16kHz/mono konfiguriert
+        chunk_bytes = CHUNK * SAMPLE_WIDTH
+
+        mic_frames = []
+        sys_frames = []
+
+        def mic_callback(indata, frames, time_info, status):
+            data = indata.tobytes()
+            mic_frames.append(data)
+            if self._on_level:
+                self._on_level("mic", compute_rms(data))
+
+        proc = None
+        mic_stream = None
+        try:
+            mic_stream = sd.InputStream(
+                samplerate=mic_rate, channels=mic_ch, dtype="int16",
+                device=self._device_index, blocksize=CHUNK, callback=mic_callback)
+            mic_stream.start()
+
+            proc = subprocess.Popen(
+                [binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            def _watch_stop():
+                self._stop_event.wait()
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+            watcher = threading.Thread(target=_watch_stop, daemon=True)
+            watcher.start()
+
+            while True:
+                data = proc.stdout.read(chunk_bytes)
+                if not data:
+                    break
+                sys_frames.append(data)
+                if self._on_level:
+                    self._on_level("system", compute_rms(data))
+
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+            # -15/-2 = per SIGTERM/SIGINT sauber beendet (erwarteter Stop-Weg)
+            if proc.returncode not in (0, None, -15, -2):
+                stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
+                raise RuntimeError(
+                    stderr_output or f"SystemAudioCapture beendet mit Code {proc.returncode}")
+        except Exception as e:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+            if self._on_done:
+                self._on_done(None, 0, str(e))
+            return
+        finally:
+            if mic_stream is not None:
+                try:
+                    mic_stream.stop()
+                    mic_stream.close()
+                except Exception:
+                    pass
+
+        if not mic_frames:
+            if self._on_done:
+                self._on_done(None, 0, "Mikrofon hat keine Audiodaten geliefert.")
+            return
+        if not sys_frames:
+            if self._on_done:
+                self._on_done(None, 0, "System-Audio hat keine Audiodaten geliefert.")
+            return
+
+        # Beide Streams zu Mono 16kHz mischen (identisch zu _record_both())
+        mic_audio = _frames_to_mono_float(mic_frames, mic_ch)
+        sys_audio = _frames_to_mono_float(sys_frames, sys_ch)
+
+        mic_audio = _resample_to_rate(mic_audio, mic_rate, OUT_RATE)
+        sys_audio = _resample_to_rate(sys_audio, sys_rate, OUT_RATE)
+
+        out_len = max(len(mic_audio), len(sys_audio))
+        mic_audio = _pad_to_length(mic_audio, out_len)
+        sys_audio = _pad_to_length(sys_audio, out_len)
+
+        mixed = (mic_audio * 0.65) + (sys_audio * 0.65)
+        peak = np.max(np.abs(mixed)) if len(mixed) else 0
+        if peak > 32767:
+            mixed = mixed * (32767 / peak)
+        mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
+
+        os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
+        self._channels = 1
+        self._sample_rate = OUT_RATE
+        self._frames = [mixed.tobytes()]
+        _save_wav(self._output_path, self._frames, 1, OUT_RATE)
+
+        duration = len(mixed) / OUT_RATE
         if self._on_done:
             self._on_done(self._output_path, duration, None)
 
