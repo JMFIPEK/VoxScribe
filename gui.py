@@ -2,6 +2,7 @@
 
 import os
 import ssl
+import sys
 import warnings
 import threading
 import time
@@ -29,8 +30,10 @@ os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # Windows: eigene AppUserModelID setzen, damit Taskleiste eigenes Icon zeigt
-import ctypes
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+# (ctypes.windll existiert nur unter Windows - auf macOS/Linux ueberspringen)
+if sys.platform == "win32":
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -231,13 +234,21 @@ class App(ctk.CTk):
         icon_path = os.path.join(os.path.dirname(__file__), "Logo.png")
         if os.path.exists(icon_path):
             from PIL import Image as PILImage
-            import tempfile
-            img = PILImage.open(icon_path)
-            # ICO mit mehreren Größen für Titelleiste + Taskleiste
-            ico_path = os.path.join(tempfile.gettempdir(), "whisperx_icon.ico")
-            img.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (256, 256)])
-            self.iconbitmap(ico_path)
-            self.after(200, lambda: self.iconbitmap(ico_path))
+            if sys.platform == "win32":
+                import tempfile
+                # ICO mit mehreren Größen für Titelleiste + Taskleiste
+                ico_path = os.path.join(tempfile.gettempdir(), "whisperx_icon.ico")
+                img = PILImage.open(icon_path)
+                img.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (256, 256)])
+                self.iconbitmap(ico_path)
+                self.after(200, lambda: self.iconbitmap(ico_path))
+            else:
+                # macOS/Linux: iconbitmap() erwartet .ico (Windows) bzw. .xbm
+                # (X11) und schlaegt fuer unser PNG fehl - iconphoto ist der
+                # plattformuebergreifende Tk-Weg fuer beliebige Bildformate.
+                icon_img = tk.PhotoImage(file=icon_path)
+                self.iconphoto(True, icon_img)
+                self._icon_img_ref = icon_img  # Referenz halten (sonst GC'd)
 
         self.recorder = AudioRecorder()
         self._record_start_time = None
@@ -273,11 +284,21 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(source_frame, text="Quelle:").grid(
             row=0, column=0, padx=10, pady=10)
-        self.source_var = ctk.StringVar(value="Mikrofon + System")
+        # System-Audio (WASAPI Loopback) gibt es nur unter Windows.
+        source_values = (["Mikrofon", "System-Audio", "Mikrofon + System"]
+                         if sys.platform == "win32" else ["Mikrofon"])
+        self.source_var = ctk.StringVar(value=source_values[0] if sys.platform != "win32"
+                                        else "Mikrofon + System")
         self.source_menu = ctk.CTkSegmentedButton(
-            source_frame, values=["Mikrofon", "System-Audio", "Mikrofon + System"],
+            source_frame, values=source_values,
             variable=self.source_var, command=self._on_source_changed)
         self.source_menu.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        if sys.platform != "win32":
+            ctk.CTkLabel(
+                source_frame,
+                text="System-Audio (Meeting-Mitschnitt) ist auf diesem Betriebssystem noch nicht verfügbar.",
+                text_color="gray", font=ctk.CTkFont(size=11)
+            ).grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
 
         # Device selection
         device_frame = ctk.CTkFrame(tab)
@@ -478,10 +499,52 @@ class App(ctk.CTk):
             command=self._apply_speaker_names)
         self.apply_names_btn.grid(row=0, column=1, padx=10, pady=5)
 
+        # Beliebig viele Sprecher (nicht auf eine feste Spalten-/Zeilenzahl
+        # hartkodiert): ein fest-hoher, scrollbarer Bereich mit einer Zeile
+        # pro Sprecher. CTkScrollableFrame wurde bewusst NICHT verwendet - es
+        # bringt die Geometrie des restlichen Tabs durcheinander und macht den
+        # Transkript-Textbereich unsichtbar (siehe Kommentar dort). Stattdessen
+        # ein simples, manuelles Canvas+Scrollbar-Konstrukt: die Hoehe ist
+        # fest (SPEAKER_SCROLL_HEIGHT), damit der Transkript-Bereich beim
+        # Zuordnen der Sprecher immer sichtbar bleibt, egal wie viele
+        # Sprecher es sind.
+        SPEAKER_SCROLL_HEIGHT = 150
+        scroll_outer = ctk.CTkFrame(self.speaker_frame, fg_color="transparent")
+        scroll_outer.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+        scroll_outer.grid_columnconfigure(0, weight=1)
+
+        canvas_bg = self.speaker_frame.cget("fg_color")
+        if isinstance(canvas_bg, (list, tuple)):
+            canvas_bg = canvas_bg[1 if ctk.get_appearance_mode() == "Dark" else 0]
+        self._speaker_canvas = tk.Canvas(
+            scroll_outer, height=SPEAKER_SCROLL_HEIGHT,
+            highlightthickness=0, bg=canvas_bg)
+        self._speaker_canvas.grid(row=0, column=0, sticky="ew")
+        speaker_scrollbar = ctk.CTkScrollbar(
+            scroll_outer, orientation="vertical", command=self._speaker_canvas.yview)
+        speaker_scrollbar.grid(row=0, column=1, sticky="ns")
+        self._speaker_canvas.configure(yscrollcommand=speaker_scrollbar.set)
+
         self.speaker_entries_frame = ctk.CTkFrame(
-            self.speaker_frame, fg_color="transparent")
-        self.speaker_entries_frame.grid(
-            row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+            self._speaker_canvas, fg_color="transparent")
+        self._speaker_canvas_window = self._speaker_canvas.create_window(
+            (0, 0), window=self.speaker_entries_frame, anchor="nw")
+
+        def _on_entries_configure(_event=None):
+            self._speaker_canvas.configure(scrollregion=self._speaker_canvas.bbox("all"))
+        self.speaker_entries_frame.bind("<Configure>", _on_entries_configure)
+
+        def _on_canvas_configure(event):
+            self._speaker_canvas.itemconfig(self._speaker_canvas_window, width=event.width)
+        self._speaker_canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            self._speaker_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._speaker_canvas.bind(
+            "<Enter>", lambda e: self._speaker_canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        self._speaker_canvas.bind(
+            "<Leave>", lambda e: self._speaker_canvas.unbind_all("<MouseWheel>"))
+
         self._speaker_name_entries = {}
 
         # Bottom buttons
@@ -1135,16 +1198,19 @@ class App(ctk.CTk):
             self.speaker_frame.grid_remove()
             return
 
-        for raw_id, current_label in rows:
+        # Eine Zeile pro Sprecher, im scrollbaren Bereich - egal wie viele
+        # es sind (kein hartkodiertes Spalten-/Zeilenlimit), der sichtbare
+        # Bereich bleibt durch die feste Canvas-Hoehe konstant.
+        for row_idx, (raw_id, current_label) in enumerate(rows):
             frame = ctk.CTkFrame(self.speaker_entries_frame, fg_color="transparent")
-            frame.pack(side="left", padx=(0, 15), pady=2)
+            frame.grid(row=row_idx, column=0, sticky="w", pady=2)
 
             color = self._speaker_colors.get(raw_id) if hasattr(self, "_speaker_colors") else None
-            ctk.CTkLabel(frame, text=f"{current_label}  →",
+            ctk.CTkLabel(frame, text=f"{current_label}  →", width=160, anchor="w",
                          font=ctk.CTkFont(size=12),
                          text_color=color or ("gray10", "gray90")).pack(side="left", padx=(0, 5))
 
-            entry = ctk.CTkEntry(frame, width=130, placeholder_text="Name eingeben")
+            entry = ctk.CTkEntry(frame, width=160, placeholder_text="Name eingeben")
             if raw_id != current_label:
                 entry.insert(0, current_label)
             entry.pack(side="left")
@@ -1154,10 +1220,13 @@ class App(ctk.CTk):
                 remember_var = ctk.BooleanVar(value=True)
                 ctk.CTkCheckBox(frame, text="merken", variable=remember_var,
                                 width=20, font=ctk.CTkFont(size=11)
-                                ).pack(side="left", padx=(5, 0))
+                                ).pack(side="left", padx=(10, 0))
                 self._speaker_remember_vars[raw_id] = remember_var
 
         self.speaker_frame.grid()
+        self._speaker_canvas.update_idletasks()
+        self._speaker_canvas.configure(scrollregion=self._speaker_canvas.bbox("all"))
+        self._speaker_canvas.yview_moveto(0)
 
     def _get_speaker_mapping(self):
         """Gibt das aktuelle Mapping {rohe_Diarization_ID: neuer_Name} zurueck."""

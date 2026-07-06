@@ -1,14 +1,27 @@
-"""Audio-Aufnahme von Mikrofon und System-Audio (WASAPI Loopback)."""
+"""Audio-Aufnahme von Mikrofon (alle Plattformen) und System-Audio (WASAPI
+Loopback, nur Windows).
+
+Unter Windows wird PyAudioWPatch genutzt (Mikrofon + WASAPI-Loopback fuer
+System-Audio/Meeting-Mitschnitt). Auf macOS/Linux gibt es kein WASAPI-Aequivalent
+in dieser Form, daher laeuft dort nur Mikrofon-Aufnahme - ueber `sounddevice`,
+das echte macOS/Linux-Wheels hat (PyAudioWPatch nicht).
+"""
 
 import os
+import sys
 import wave
 import threading
 import numpy as np
 
-import pyaudiowpatch as pyaudio
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    import pyaudiowpatch as pyaudio
+else:
+    import sounddevice as sd
 
 CHUNK = 1024
-FORMAT = pyaudio.paInt16
+FORMAT = pyaudio.paInt16 if IS_WINDOWS else None
 SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
 OUT_RATE = 16000
 
@@ -142,6 +155,9 @@ def _get_loopback_device(p: pyaudio.PyAudio, device_index: int | None = None):
 
 def get_devices():
     """Gibt alle verfuegbaren Audio-Geraete als strukturierte Listen zurueck."""
+    if not IS_WINDOWS:
+        return _get_devices_sounddevice()
+
     p = pyaudio.PyAudio()
     microphones = []
     loopback = []
@@ -188,6 +204,47 @@ def get_devices():
             "default_loopback": default_loopback}
 
 
+def _get_devices_sounddevice():
+    """get_devices()-Aequivalent fuer macOS/Linux via sounddevice.
+
+    Liefert nur Mikrofone - System-Audio (Loopback) hat auf diesen Plattformen
+    kein WASAPI-Aequivalent und wird hier bewusst nicht unterstuetzt.
+    """
+    microphones = []
+    default_input_index = None
+    try:
+        default_input_index = sd.default.device[0]
+        if default_input_index is not None and default_input_index < 0:
+            default_input_index = None
+    except Exception:
+        pass
+
+    try:
+        hostapis = sd.query_hostapis()
+    except Exception:
+        hostapis = []
+
+    for i, info in enumerate(sd.query_devices()):
+        if info.get("max_input_channels", 0) > 0:
+            host_api_name = ""
+            try:
+                host_api_name = hostapis[info["hostapi"]]["name"]
+            except Exception:
+                pass
+            microphones.append({
+                "index": i,
+                "name": info["name"],
+                "host_api": host_api_name,
+                "channels": info["max_input_channels"],
+                "sample_rate": int(info["default_samplerate"]),
+                "is_default": i == default_input_index,
+            })
+
+    return {"microphones": _dedupe_audio_devices(microphones),
+            "loopback": [],
+            "default_loopback": None}
+
+
 def compute_rms(data: bytes) -> float:
     """Berechnet den RMS-Pegel eines Audio-Chunks."""
     samples = np.frombuffer(data, dtype=np.int16)
@@ -212,6 +269,15 @@ class AudioRecorder:
               device_index: int | None = None,
               on_level=None, on_done=None):
         """Startet die Aufnahme in einem Background-Thread."""
+        if not IS_WINDOWS and source != "mic":
+            # System-Audio (WASAPI Loopback) gibt es nur unter Windows.
+            if on_done:
+                on_done(None, 0,
+                         "System-Audio-Aufnahme wird auf diesem Betriebssystem "
+                         "noch nicht unterstuetzt (nur Windows/WASAPI). "
+                         "Bitte Quelle 'Mikrofon' waehlen.")
+            return
+
         self._stop_event.clear()
         self._frames = []
         self._output_path = output_path
@@ -233,10 +299,47 @@ class AudioRecorder:
         return self._thread is not None and self._thread.is_alive()
 
     def _record(self):
-        if self._source == "both":
+        if not IS_WINDOWS:
+            # start() garantiert bereits source == "mic" auf Nicht-Windows.
+            self._record_single_sounddevice()
+        elif self._source == "both":
             self._record_both()
         else:
             self._record_single()
+
+    def _record_single_sounddevice(self):
+        """Mikrofon-Aufnahme via sounddevice (macOS/Linux)."""
+        level_channel = "mic"
+        try:
+            if self._device_index is not None:
+                info = sd.query_devices(self._device_index)
+            else:
+                info = sd.query_devices(kind="input")
+            self._channels = 1
+            self._sample_rate = int(info["default_samplerate"])
+
+            def callback(indata, frames, time_info, status):
+                data = indata.tobytes()
+                self._frames.append(data)
+                if self._on_level:
+                    self._on_level(level_channel, compute_rms(data))
+
+            with sd.InputStream(samplerate=self._sample_rate, channels=self._channels,
+                                 dtype="int16", device=self._device_index,
+                                 blocksize=CHUNK, callback=callback):
+                while not self._stop_event.is_set():
+                    self._stop_event.wait(0.05)
+        except Exception as e:
+            if self._on_done:
+                self._on_done(None, 0, str(e))
+            return
+
+        os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
+        _save_wav(self._output_path, self._frames, self._channels, self._sample_rate)
+        duration = (len(b"".join(self._frames))
+                    / (self._sample_rate * self._channels * SAMPLE_WIDTH))
+        if self._on_done:
+            self._on_done(self._output_path, duration, None)
 
     def _record_single(self):
         p = pyaudio.PyAudio()
@@ -463,7 +566,9 @@ def list_devices():
         print("  Keine Mikrofone gefunden.")
 
     print("\n--- System-Audio (WASAPI Loopback) ---")
-    if devices["loopback"]:
+    if not IS_WINDOWS:
+        print("  Nicht unterstuetzt auf diesem Betriebssystem (nur Windows/WASAPI).")
+    elif devices["loopback"]:
         for device in devices["loopback"]:
             host_api = f", API: {device['host_api']}" if device.get("host_api") else ""
             print(f"  [{device['index']}] {device['name']}")
@@ -498,6 +603,59 @@ def record_microphone(output_path: str, device_index: int | None = None,
 
     Stoppt bei Enter-Tastendruck.
     """
+    if IS_WINDOWS:
+        return _record_microphone_pyaudio(output_path, device_index, sample_rate, channels)
+    return _record_microphone_sounddevice(output_path, device_index, sample_rate, channels)
+
+
+def _record_microphone_sounddevice(output_path: str, device_index: int | None = None,
+                                   sample_rate: int | None = None, channels: int = 1):
+    """Mikrofon-Aufnahme via sounddevice (macOS/Linux). Stoppt bei ENTER."""
+    if device_index is not None:
+        info = sd.query_devices(device_index)
+        print(f"Mikrofon: [{device_index}] {info['name']}")
+    else:
+        info = sd.query_devices(kind="input")
+        device_index = None
+        print(f"Standard-Mikrofon: {info['name']}")
+
+    if sample_rate is None:
+        sample_rate = int(info["default_samplerate"])
+    print(f"  Kanaele: {channels}, Samplerate: {sample_rate} Hz")
+
+    frames = []
+    stop_event = threading.Event()
+
+    def callback(indata, frame_count, time_info, status):
+        data = indata.tobytes()
+        frames.append(data)
+        print(_level_bar(data, channels), end="", flush=True)
+
+    def wait_for_enter():
+        input()
+        stop_event.set()
+
+    listener = threading.Thread(target=wait_for_enter, daemon=True)
+    listener.start()
+
+    print("Aufnahme laeuft... Druecke ENTER zum Stoppen.\n")
+
+    with sd.InputStream(samplerate=sample_rate, channels=channels, dtype="int16",
+                        device=device_index, blocksize=CHUNK, callback=callback):
+        try:
+            while not stop_event.is_set():
+                stop_event.wait(0.05)
+        except KeyboardInterrupt:
+            pass
+
+    print("\n\nAufnahme beendet.")
+
+    _save_wav(output_path, frames, channels, sample_rate)
+    return output_path
+
+
+def _record_microphone_pyaudio(output_path: str, device_index: int | None = None,
+                               sample_rate: int | None = None, channels: int = 1):
     p = pyaudio.PyAudio()
 
     if device_index is not None:
@@ -557,6 +715,12 @@ def record_system_audio(output_path: str, device_index: int | None = None):
     Ideal fuer Teams/Zoom-Aufnahmen.
     Stoppt bei Enter-Tastendruck.
     """
+    if not IS_WINDOWS:
+        raise RuntimeError(
+            "System-Audio-Aufnahme (WASAPI Loopback) wird auf diesem "
+            "Betriebssystem noch nicht unterstuetzt (nur Windows). "
+            "Nutze --source mic."
+        )
     p = pyaudio.PyAudio()
 
     try:

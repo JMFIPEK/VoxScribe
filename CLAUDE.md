@@ -81,6 +81,7 @@ Output: TXT, SRT, JSON
 - **Automatic language detection**: passing `language=None` to `transcribe()` makes WhisperX auto-detect from the first 30s of audio (local models) or omits the `language` field so the remote server auto-detects (which is then normalized from a full name like `"german"` to an ISO code like `"de"` for the alignment step). Exposed in the GUI/CLI as "Automatisch erkennen" / `--language auto`
 - **Speaker recognition (voice-prints)**: diarization requests per-speaker embeddings (`DiarizationPipeline(..., return_embeddings=True)`); `transcriber.py` matches them against `speaker_profiles.py`'s stored profiles and relabels recognized speakers' segments directly with their name instead of `SPEAKER_00` (CLI output benefits automatically). `result["speaker_id_map"]` tracks raw diarization ID → currently-displayed label so the GUI can find the right embedding when the user confirms/corrects a name via the "merken" (remember) checkbox, which enrolls/updates that speaker's profile as a running average
 - **Speaker color-coding**: `gui.py`'s `_render_transcript()` tags each line in the transcript textbox by the *raw* diarization ID (not the display label), so colors and renames stay correctly associated even after a speaker gets auto-recognized or manually renamed. `_apply_speaker_names()` is the single place that mutates the textbox, `result["segments"]`, and `speaker_id_map` together — it must stay merged; a previous version had this split across two functions and the two representations could silently drift out of sync
+- **Cross-platform recording (partial)**: `recorder.py` branches on `IS_WINDOWS = sys.platform == "win32"`. Windows uses `PyAudioWPatch` for both microphone and WASAPI-loopback system-audio capture; non-Windows has no WASAPI equivalent, so it falls back to `sounddevice` for **microphone-only** recording. `AudioRecorder.start()` immediately calls `on_done` with a friendly (non-crashing) error if `source != "mic"` is requested on non-Windows, and `gui.py`'s source selector only offers "Mikrofon" there. `pyproject.toml`/`requirements.txt` use PEP 508 markers (`sys_platform == 'win32'` / `!= 'win32'`) so the right backend installs per platform. The CUDA torch index in `[tool.uv.sources]` is similarly marker-gated to win32/linux only — macOS has no CUDA and gets plain PyPI torch (MPS backend) instead. Note: this was implemented and code-reviewed on Windows without access to real Apple Silicon hardware for final verification — the non-Windows path was validated by mocking `sounddevice`, not by running on an actual Mac.
 
 ## Configuration
 
@@ -94,8 +95,9 @@ KIT_TOOLBOX_BASE_URL=https://...    # Optional override (default: https://ki-too
 
 ### Hardware Requirements
 
-- Windows 10/11
-- NVIDIA GPU with CUDA 12.8 (recommended for large-v2/v3 models)
+- Windows 10/11 — primary target, full feature set (mic + system-audio/WASAPI recording)
+- macOS (Apple Silicon) / Linux — experimental, microphone-only (no WASAPI-equivalent system-audio capture yet); transcription runs on CPU/MPS instead of CUDA
+- NVIDIA GPU with CUDA 12.8 (recommended for large-v2/v3 models on Windows/Linux)
 - Python 3.11+ (managed via `uv` or system installation)
 
 ### PyTorch / CUDA install

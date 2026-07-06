@@ -1,6 +1,7 @@
 # Core
 whisperx>=3.8
-PyAudioWPatch>=0.2.12
+PyAudioWPatch>=0.2.12; sys_platform == 'win32'  # Mikrofon + WASAPI-Loopback (nur Windows)
+sounddevice>=0.4; sys_platform != 'win32'       # Mikrofon (macOS/Linux) - kein System-Audio
 soundfile>=0.13
 scipy
 numpy
