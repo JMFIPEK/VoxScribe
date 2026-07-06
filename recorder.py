@@ -12,6 +12,8 @@ experimentell macOS).
 - Linux: nur Mikrofon via `sounddevice`, kein System-Audio-Weg vorhanden.
 """
 
+from __future__ import annotations
+
 import os
 import subprocess
 import sys
@@ -370,8 +372,9 @@ class AudioRecorder:
     def _record_system_macos(self):
         """System-Audio-Aufnahme unter macOS via ScreenCaptureKit-Subprozess.
 
-        EXPERIMENTELL/ungetestet (siehe macos/README.md) - der Helfer
-        (macos/SystemAudioCapture) streamt rohe 16kHz-Mono-Int16-PCM-Bytes
+        Auf echter Apple-Silicon-Hardware getestet und debuggt (siehe
+        macos/README.md) - der Helfer (macos/SystemAudioCapture) streamt rohe
+        16kHz-Mono-Int16-PCM-Bytes
         nach stdout, die hier blockierend gelesen werden. Ein separater
         Watcher-Thread beendet den Subprozess sofort, sobald stop() aufgerufen
         wird - dadurch schliesst sich stdout (EOF) und der blockierende read()

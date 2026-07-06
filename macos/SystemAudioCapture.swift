@@ -6,10 +6,8 @@
 // die Bytes wie einen Audio-Stream - genau wie es unter Windows PyAudioWPatch
 // und unter macOS/Linux `sounddevice` fuers Mikrofon tut.
 //
-// WICHTIG (unkompiliert/ungetestet): Dieser Code wurde ohne Zugriff auf eine
-// echte Mac-/Xcode-Umgebung geschrieben und muss auf einem echten Mac gebaut,
-// getestet und ggf. debuggt werden - siehe build.sh und README in diesem
-// Ordner.
+// Gebaut, getestet und debuggt auf echter Apple-Silicon-Hardware (macOS 26) -
+// siehe build.sh und README in diesem Ordner fuer Details und offene Punkte.
 //
 // Voraussetzungen:
 //   - macOS 13 (Ventura) oder neuer (SCStreamConfiguration.capturesAudio kam
@@ -119,10 +117,10 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         // Haeufigste Ursache: fehlende "Bildschirmaufnahme"-Berechtigung.
-        FileHandle.standardError.write(
-            "Stream-Fehler (moeglicherweise fehlende Bildschirmaufnahme-Berechtigung " +
+        let message = "Stream-Fehler (moeglicherweise fehlende Bildschirmaufnahme-Berechtigung " +
             "unter Systemeinstellungen > Datenschutz & Sicherheit): " +
-            "\(error.localizedDescription)\n".data(using: .utf8)!)
+            "\(error.localizedDescription)\n"
+        FileHandle.standardError.write(message.data(using: .utf8)!)
         exit(1)
     }
 }

@@ -1,4 +1,4 @@
-# System-Audio-Aufnahme unter macOS (experimentell, ungetestet)
+# System-Audio-Aufnahme unter macOS
 
 `SystemAudioCapture.swift` ist ein kleiner Kommandozeilen-Helfer, der System-Audio
 via Apples ScreenCaptureKit aufnimmt und als rohe 16kHz-Mono-Int16-PCM-Bytes nach
@@ -6,9 +6,15 @@ stdout schreibt. `recorder.py` startet ihn als Subprozess (siehe
 `_record_system_macos()`), analog dazu, wie unter Windows PyAudioWPatch und unter
 macOS/Linux `sounddevice` fuers Mikrofon genutzt werden.
 
-**Status: wurde ohne Zugriff auf echte Mac-/Xcode-Hardware geschrieben.**
-Muss auf einem echten Mac gebaut, getestet und wahrscheinlich noch debuggt werden,
-bevor es produktiv genutzt werden kann.
+**Status: auf echter Apple-Silicon-Hardware (macOS 26) gebaut, getestet und
+debuggt.** Zwei Bugs wurden dabei gefunden und behoben: ein Swift-Kompilierfehler
+(String/`Data`-Typkonflikt im Fehlerlogging) und ein Python-Importfehler
+(`recorder.py` referenzierte `pyaudio.PyAudio` in einer Typannotation, obwohl
+`pyaudio` unter macOS gar nicht importiert wird - das crashte den kompletten
+Import bereits beim Programmstart, siehe `from __future__ import annotations`
+in `recorder.py`). Nach den Fixes funktioniert die Aufnahme end-to-end:
+Berechtigungsabfrage, echte (nicht-stille) Audiodaten, sauberes Beenden in
+~10ms ohne haengenden Prozess.
 
 ## Voraussetzungen
 
@@ -44,23 +50,25 @@ ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/test.raw /tmp/test.wav
 
 ## Bekannte offene Punkte / worauf beim Debuggen zu achten ist
 
-- **Berechtigungsdialog**: Ob macOS die "Bildschirmaufnahme"-Berechtigung beim
-  ersten Start automatisch abfragt oder das Programm nur mit einem Fehler
-  abbricht (dann muesste man es manuell in den Systemeinstellungen freigeben,
-  danach das Terminal/den Prozess neu starten), ist ungetestet.
-- **Sample-Format**: Es wird angenommen, dass ScreenCaptureKit die Audiodaten
-  als Float32 liefert und dass `SCStreamConfiguration.sampleRate`/`channelCount`
-  zuverlaessig auf 16kHz/mono resampled. Falls nicht, muss die Float->Int16-
-  Konvertierung in `stream(_:didOutputSampleBuffer:of:)` angepasst werden
-  (z.B. falls tatsaechlich mehrkanalig oder mit anderer Sample-Rate geliefert
-  wird).
+- **Berechtigungsdialog**: Verifiziert - das Programm bricht ohne erteilte
+  Berechtigung mit einem klaren Fehler ab (TCC-Error -3801, "Benutzer:in hat
+  TCCs fuer die Aufnahme durch Apps, Fenster, Displays abgelehnt"). Die
+  Berechtigung muss manuell unter Systemeinstellungen > Datenschutz &
+  Sicherheit > Bildschirm- und Systemaudioaufnahme fuer den ausfuehrenden
+  Prozess (Terminal, spaeter die gepackte App) erteilt werden; danach muss
+  der Prozess (Terminal) neu gestartet werden, damit macOS das TCC-Update
+  uebernimmt.
+- **Sample-Format**: Verifiziert - ScreenCaptureKit liefert bei
+  `sampleRate = 16000`/`channelCount = 1` tatsaechlich zuverlaessig
+  16kHz-Mono-Float32, die Konvertierung nach Int16 in
+  `stream(_:didOutputSampleBuffer:of:)` erzeugt korrekte, hoerbare PCM-Daten.
 - **`excludingDesktopWindows`/`onScreenWindowsOnly`**: Aktuell wird das erste
   gefundene Display genutzt (`content.displays.first`) - bei Mehrschirm-Setups
-  waere ggf. eine Display-Auswahl noetig.
-- **Sauberes Beenden**: SIGTERM/SIGINT sollten das Programm sauber beenden
-  (siehe `signal(...)`-Handler); ob `Task`/`RunLoop` das unter echten
-  Bedingungen tatsaechlich sauber abbricht (z.B. kein haengender Prozess nach
-  `subprocess.terminate()`), ist ungetestet.
+  waere ggf. eine Display-Auswahl noetig (noch nicht getestet).
+- **Sauberes Beenden**: Verifiziert - SIGTERM beendet den Prozess sauber
+  (`signal(...)`-Handler + `exit(0)`), `subprocess.terminate()` von
+  `recorder.py` aus fuehrt zu keinem haengenden Prozess und `stop()` kehrt in
+  ~10ms zurueck.
 - **Nur "System-Audio" allein implementiert**: Die kombinierte Aufnahme
   "Mikrofon + System" (wie unter Windows) ist auf macOS noch NICHT umgesetzt -
   bewusste Scope-Entscheidung, um zuerst den Basis-Fall zu verifizieren.

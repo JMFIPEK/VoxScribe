@@ -13,6 +13,12 @@ import whisperx
 from whisperx.diarize import DiarizationPipeline
 from whisperx.utils import LANGUAGES as _WHISPER_LANGUAGE_NAMES
 
+# Muss vor der ersten MPS-Operation gesetzt sein: pyannote/wav2vec2 nutzen
+# vereinzelt Ops, die (noch) nicht fuer Apple's MPS-Backend implementiert sind -
+# ohne Fallback wuerde das mit einem NotImplementedError abstuerzen, statt
+# transparent auf die CPU auszuweichen.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 SAMPLE_RATE = 16000
 
 # Volle Sprachnamen (z.B. "german", wie von OpenAI-kompatiblen APIs zurueckgegeben)
@@ -278,18 +284,35 @@ def transcribe(
         min_speakers: Minimale Anzahl Sprecher (optional)
         max_speakers: Maximale Anzahl Sprecher (optional)
         batch_size: Batch-Groesse fuer Inference (kleiner = weniger VRAM)
-        device: "cuda" oder "cpu" (auto-detect wenn None)
+        device: "cuda", "mps" oder "cpu" (auto-detect wenn None). Wirkt nur auf
+            Alignment/Diarization (plain PyTorch) - die Whisper-Transkription
+            selbst laeuft ueber CTranslate2, das kein MPS unterstuetzt und
+            deshalb bei "mps" automatisch auf "cpu" zurueckfaellt.
 
     Returns:
         Dict mit "segments", "language" und ggf. Speaker-Labels
     """
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
 
-    compute_type = "float16" if device == "cuda" else "int8"
+    # CTranslate2 (WhisperX' Inference-Backend) kennt nur "cuda"/"cpu" - kein
+    # MPS. Alignment (wav2vec2) und Diarization (pyannote) sind plain PyTorch
+    # und koennen MPS dagegen nutzen, daher zwei getrennte Device-Variablen.
+    whisper_device = device if device == "cuda" else "cpu"
+    torch_device = device
+
+    compute_type = "float16" if whisper_device == "cuda" else "int8"
     remote = is_remote_model(model_size)
 
-    print(f"Device: {device} ({compute_type})")
+    if device == "mps":
+        print(f"Device: Whisper={whisper_device} ({compute_type}), Alignment/Diarization={torch_device} (Apple MPS)")
+    else:
+        print(f"Device: {device} ({compute_type})")
     print(f"Modell: {model_size}")
     print(f"Sprache: {language or 'automatisch erkennen'}")
     print(f"Audio: {audio_path}")
@@ -351,7 +374,7 @@ def transcribe(
                 whisper_local_only = True
 
         model = whisperx.load_model(
-            model_size, device, compute_type=compute_type, language=language,
+            model_size, whisper_device, compute_type=compute_type, language=language,
             download_root=whisper_download_root, local_files_only=whisper_local_only,
         )
 
@@ -371,7 +394,7 @@ def transcribe(
         # Modell entladen
         del model
         gc.collect()
-        if device == "cuda":
+        if whisper_device == "cuda":
             torch.cuda.empty_cache()
 
     # --- 2. Alignment ---
@@ -389,13 +412,13 @@ def transcribe(
             align_cache_only = True
 
     model_a, metadata = whisperx.load_align_model(
-        language_code=result["language"], device=device,
+        language_code=result["language"], device=torch_device,
         model_dir=align_model_dir, model_cache_only=align_cache_only,
     )
 
     _prog(0.50, "Wort-Alignment laeuft...")
     result = whisperx.align(
-        result["segments"], model_a, metadata, audio, device,
+        result["segments"], model_a, metadata, audio, torch_device,
         return_char_alignments=False,
         progress_callback=_align_progress,
     )
@@ -407,8 +430,10 @@ def transcribe(
     # Modell entladen
     del model_a
     gc.collect()
-    if device == "cuda":
+    if torch_device == "cuda":
         torch.cuda.empty_cache()
+    elif torch_device == "mps":
+        torch.mps.empty_cache()
 
     # --- 3. Speaker Diarization ---
     if diarize:
@@ -429,7 +454,7 @@ def transcribe(
                     diarize_cache = diarize_path
 
             diarize_model = DiarizationPipeline(
-                token=hf_token, device=device, cache_dir=diarize_cache
+                token=hf_token, device=torch_device, cache_dir=diarize_cache
             )
 
             _prog(0.80, "Speaker Diarization laeuft...")
@@ -479,8 +504,10 @@ def transcribe(
 
             del diarize_model
             gc.collect()
-            if device == "cuda":
+            if torch_device == "cuda":
                 torch.cuda.empty_cache()
+            elif torch_device == "mps":
+                torch.mps.empty_cache()
     else:
         print("3/3  Diarization deaktiviert")
 

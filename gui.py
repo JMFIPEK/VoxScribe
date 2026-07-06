@@ -673,10 +673,10 @@ class App(ctk.CTk):
         ctk.CTkLabel(tab, text="Compute:",
                      font=ctk.CTkFont(weight="bold")).grid(
             row=11, column=0, padx=10, pady=5, sticky="w")
-        self.compute_var = ctk.StringVar(value="Auto (CUDA wenn verfügbar)")
+        self.compute_var = ctk.StringVar(value="Auto (CUDA/MPS wenn verfügbar)")
         ctk.CTkOptionMenu(
             tab, variable=self.compute_var,
-            values=["Auto (CUDA wenn verfügbar)", "cuda", "cpu"], width=250
+            values=["Auto (CUDA/MPS wenn verfügbar)", "cuda", "mps", "cpu"], width=250
         ).grid(row=11, column=1, padx=10, pady=5, sticky="w")
 
         # Version info
@@ -1023,7 +1023,7 @@ class App(ctk.CTk):
         api_base_url = self.api_base_url_var.get().strip() or DEFAULT_API_BASE_URL
         compute = self.compute_var.get()
         device = None
-        if compute in ("cuda", "cpu"):
+        if compute in ("cuda", "mps", "cpu"):
             device = compute
 
         min_spk = None
