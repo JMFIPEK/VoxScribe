@@ -227,8 +227,8 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title(f"{APP_NAME} — {APP_SUBTITLE}")
-        self.geometry("900x700")
-        self.minsize(800, 600)
+        self.geometry("900x760")
+        self.minsize(800, 640)
 
         # App-Icon setzen
         icon_path = os.path.join(os.path.dirname(__file__), "Logo.png")
@@ -331,6 +331,17 @@ class App(ctk.CTk):
             device_frame, text="↻", width=35, command=self._refresh_devices)
         btn_refresh.grid(row=0, column=2, padx=(0, 10), pady=10)
 
+        # Eine feste Breite (z.B. 460px) reicht je nach Schriftart/DPI/
+        # Skalierung des jeweiligen Systems nicht immer, um lange
+        # Geraetenamen vollstaendig zu zeigen - deshalb die Dropdown-Breite
+        # bei jeder Groessenaenderung des Frames neu an den tatsaechlich
+        # verfuegbaren Platz anpassen, statt einen festen Wert zu raten.
+        def _on_device_frame_configure(event):
+            available = event.width - 180  # Platz fuer Label + Refresh-Button + Paddings
+            if available > 150:
+                self.device_menu.configure(width=available)
+        device_frame.bind("<Configure>", _on_device_frame_configure)
+
         # Level meter (pro Kanal) + Timer
         meter_frame = ctk.CTkFrame(tab)
         meter_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
@@ -380,16 +391,16 @@ class App(ctk.CTk):
 
         # --- Karte: Audio-Datei ---
         file_card = ctk.CTkFrame(tab, corner_radius=10)
-        file_card.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
+        file_card.grid(row=0, column=0, padx=10, pady=(8, 4), sticky="ew")
         file_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             file_card, text="AUDIO-DATEI", text_color="gray",
             font=ctk.CTkFont(size=11, weight="bold")
-        ).grid(row=0, column=0, padx=14, pady=(10, 0), sticky="w")
+        ).grid(row=0, column=0, padx=14, pady=(6, 0), sticky="w")
 
         file_row = ctk.CTkFrame(file_card, fg_color="transparent")
-        file_row.grid(row=1, column=0, padx=14, pady=(4, 12), sticky="ew")
+        file_row.grid(row=1, column=0, padx=14, pady=(3, 8), sticky="ew")
         file_row.grid_columnconfigure(0, weight=1)
 
         self.file_var = ctk.StringVar(value="Keine Datei ausgewählt")
@@ -406,13 +417,13 @@ class App(ctk.CTk):
 
         # --- Karte: Optionen (Sprache/Modell + Diarization) ---
         opts_card = ctk.CTkFrame(tab, corner_radius=10)
-        opts_card.grid(row=1, column=0, padx=10, pady=6, sticky="ew")
+        opts_card.grid(row=1, column=0, padx=10, pady=4, sticky="ew")
         opts_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             opts_card, text="EINSTELLUNGEN", text_color="gray",
             font=ctk.CTkFont(size=11, weight="bold")
-        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
+        ).grid(row=0, column=0, padx=14, pady=(6, 2), sticky="w")
 
         opts_frame = ctk.CTkFrame(opts_card, fg_color="transparent")
         opts_frame.grid(row=1, column=0, padx=14, pady=0, sticky="ew")
@@ -420,64 +431,64 @@ class App(ctk.CTk):
             opts_frame.grid_columnconfigure(i, weight=1)
 
         ctk.CTkLabel(opts_frame, text="Sprache:").grid(
-            row=0, column=0, padx=(0, 2), pady=8, sticky="e")
+            row=0, column=0, padx=(0, 2), pady=4, sticky="e")
         self.lang_var = ctk.StringVar(value="Automatisch erkennen")
         ctk.CTkOptionMenu(
             opts_frame, variable=self.lang_var,
             values=list(LANGUAGES.keys()), width=140
-        ).grid(row=0, column=1, padx=5, pady=8, sticky="w")
+        ).grid(row=0, column=1, padx=5, pady=4, sticky="w")
 
         ctk.CTkLabel(opts_frame, text="Modell:").grid(
-            row=0, column=2, padx=(10, 2), pady=8, sticky="e")
+            row=0, column=2, padx=(10, 2), pady=4, sticky="e")
         self.model_var = ctk.StringVar(
             value=MODEL_DISPLAY_NAMES["server:kit.whisper-large-v3"])
         ctk.CTkOptionMenu(
             opts_frame, variable=self.model_var,
             values=MODELS, width=170
-        ).grid(row=0, column=3, padx=(5, 0), pady=8, sticky="w")
+        ).grid(row=0, column=3, padx=(5, 0), pady=4, sticky="w")
 
         # Hardware-Empfehlung anzeigen (nur relevant bei lokalen Modellen)
         ctk.CTkLabel(
             opts_card, text=f"⚡ Bei lokalem Modell empfohlen: {_hw_reason}",
             text_color="gray", font=ctk.CTkFont(size=11)
-        ).grid(row=2, column=0, padx=14, pady=(0, 8), sticky="w")
+        ).grid(row=2, column=0, padx=14, pady=(0, 4), sticky="w")
 
         sep = ctk.CTkFrame(opts_card, height=1, fg_color=("gray80", "gray30"))
-        sep.grid(row=3, column=0, padx=14, pady=(2, 8), sticky="ew")
+        sep.grid(row=3, column=0, padx=14, pady=(2, 4), sticky="ew")
 
         diar_frame = ctk.CTkFrame(opts_card, fg_color="transparent")
-        diar_frame.grid(row=4, column=0, padx=14, pady=(0, 12), sticky="ew")
+        diar_frame.grid(row=4, column=0, padx=14, pady=(0, 6), sticky="ew")
 
         self.diarize_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
             diar_frame, text="Speaker Diarization",
             variable=self.diarize_var, command=self._on_diarize_toggled
-        ).grid(row=0, column=0, padx=(0, 10), pady=4)
+        ).grid(row=0, column=0, padx=(0, 10), pady=2)
 
         self.min_spk_label = ctk.CTkLabel(diar_frame, text="Min Sprecher:")
-        self.min_spk_label.grid(row=0, column=1, padx=(20, 2), pady=4)
+        self.min_spk_label.grid(row=0, column=1, padx=(20, 2), pady=2)
         self.min_spk_var = ctk.StringVar(value="")
         self.min_spk_entry = ctk.CTkEntry(
             diar_frame, textvariable=self.min_spk_var, width=50,
             placeholder_text="auto")
-        self.min_spk_entry.grid(row=0, column=2, padx=5, pady=4)
+        self.min_spk_entry.grid(row=0, column=2, padx=5, pady=2)
 
         self.max_spk_label = ctk.CTkLabel(diar_frame, text="Max Sprecher:")
-        self.max_spk_label.grid(row=0, column=3, padx=(20, 2), pady=4)
+        self.max_spk_label.grid(row=0, column=3, padx=(20, 2), pady=2)
         self.max_spk_var = ctk.StringVar(value="")
         self.max_spk_entry = ctk.CTkEntry(
             diar_frame, textvariable=self.max_spk_var, width=50,
             placeholder_text="auto")
-        self.max_spk_entry.grid(row=0, column=4, padx=5, pady=4)
+        self.max_spk_entry.grid(row=0, column=4, padx=5, pady=2)
 
         # --- Start-Button + Fortschritt ---
         self.transcribe_btn = ctk.CTkButton(
-            tab, text="▶  Transkription starten", height=45,
+            tab, text="▶  Transkription starten", height=38,
             font=ctk.CTkFont(size=15, weight="bold"),
             fg_color="#27ae60", hover_color="#2ecc71", text_color="white",
             state="disabled",
             command=self._start_transcription)
-        self.transcribe_btn.grid(row=2, column=0, padx=10, pady=(6, 5), sticky="ew")
+        self.transcribe_btn.grid(row=2, column=0, padx=10, pady=(4, 3), sticky="ew")
 
         self.progress_bar = ctk.CTkProgressBar(tab)
         self.progress_bar.grid(row=3, column=0, padx=10, pady=(0, 2), sticky="ew")
@@ -506,11 +517,11 @@ class App(ctk.CTk):
         speaker_header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(speaker_header, text="Sprecher umbenennen",
                      font=ctk.CTkFont(weight="bold")).grid(
-            row=0, column=0, padx=10, pady=5, sticky="w")
+            row=0, column=0, padx=10, pady=3, sticky="w")
         self.apply_names_btn = ctk.CTkButton(
             speaker_header, text="Anwenden", width=100,
             command=self._apply_speaker_names)
-        self.apply_names_btn.grid(row=0, column=1, padx=10, pady=5)
+        self.apply_names_btn.grid(row=0, column=1, padx=10, pady=3)
 
         # Beliebig viele Sprecher (nicht auf eine feste Spalten-/Zeilenzahl
         # hartkodiert): ein fest-hoher, scrollbarer Bereich mit einer Zeile
@@ -520,10 +531,12 @@ class App(ctk.CTk):
         # ein simples, manuelles Canvas+Scrollbar-Konstrukt: die Hoehe ist
         # fest (SPEAKER_SCROLL_HEIGHT), damit der Transkript-Bereich beim
         # Zuordnen der Sprecher immer sichtbar bleibt, egal wie viele
-        # Sprecher es sind.
-        SPEAKER_SCROLL_HEIGHT = 150
+        # Sprecher es sind. Bewusst knapp bemessen (Platz fuer ~2-3 Zeilen),
+        # damit moeglichst viel Hoehe beim Transkript-Bereich bleibt - bei
+        # mehr Sprechern wird einfach gescrollt.
+        SPEAKER_SCROLL_HEIGHT = 100
         scroll_outer = ctk.CTkFrame(self.speaker_frame, fg_color="transparent")
-        scroll_outer.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+        scroll_outer.grid(row=1, column=0, padx=10, pady=(0, 6), sticky="ew")
         scroll_outer.grid_columnconfigure(0, weight=1)
 
         canvas_bg = self.speaker_frame.cget("fg_color")
@@ -533,8 +546,13 @@ class App(ctk.CTk):
             scroll_outer, height=SPEAKER_SCROLL_HEIGHT,
             highlightthickness=0, bg=canvas_bg)
         self._speaker_canvas.grid(row=0, column=0, sticky="ew")
+        # CTkScrollbar defaults to height=200 fuer orientation="vertical" -
+        # ohne explizite Hoehe wuerde das die Zeile (und damit die ganze
+        # Sprecher-Karte) auf mindestens 200px aufblasen, egal wie klein der
+        # Canvas ist.
         speaker_scrollbar = ctk.CTkScrollbar(
-            scroll_outer, orientation="vertical", command=self._speaker_canvas.yview)
+            scroll_outer, orientation="vertical", command=self._speaker_canvas.yview,
+            height=SPEAKER_SCROLL_HEIGHT)
         speaker_scrollbar.grid(row=0, column=1, sticky="ns")
         self._speaker_canvas.configure(yscrollcommand=speaker_scrollbar.set)
 
