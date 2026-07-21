@@ -19,6 +19,14 @@ MODEL_IDS_BY_DISPLAY = {v: k for k, v in MODEL_DISPLAY_NAMES.items()}
 MODELS = list(MODEL_DISPLAY_NAMES.values())
 FORMATS = ["txt", "srt", "json"]
 
+# Muss mit transcriber.APPLE_SPEECHANALYZER_MODEL uebereinstimmen. Hier als
+# eigene Konstante dupliziert statt importiert, damit `qt_app`-Seiten beim
+# Aufbau kein `import transcriber` brauchen (laedt whisperx/torch, kalt
+# 1-3 Minuten) - siehe HardwareInfoController/TranscribeController fuer das
+# gleiche Muster (transcriber wird dort bewusst erst im Background-Thread
+# importiert).
+APPLE_SPEECHANALYZER_MODEL = "apple:speechanalyzer"
+
 
 def format_time_short(seconds: float) -> str:
     """Formatiert Sekunden als MM:SS (bzw. HH:MM:SS bei >= 1h)."""

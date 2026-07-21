@@ -2,6 +2,7 @@
 Sprecher-Umbenennung, Export."""
 
 import os
+import sys
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from qt_app import theme
 from qt_app.constants import (
+    APPLE_SPEECHANALYZER_MODEL,
     FORMATS,
     LANGUAGES,
     MODEL_IDS_BY_DISPLAY,
@@ -75,15 +77,27 @@ class TranscribePage(QWidget):
         opts_row.addWidget(QLabel("Sprache:"), 0, 0)
         self.lang_combo = self._combo(list(LANGUAGES.keys()), "Automatisch erkennen")
         opts_row.addWidget(self.lang_combo, 0, 1)
-        opts_row.addWidget(QLabel("Modell:"), 0, 2)
-        self.model_combo = self._combo(MODELS, MODEL_DISPLAY_NAMES["server:kit.whisper-large-v3"])
-        opts_row.addWidget(self.model_combo, 0, 3)
         opts_row.setColumnStretch(1, 1)
-        opts_row.setColumnStretch(3, 1)
 
-        self.hw_hint = QLabel("⚡ Ermittle Hardware-Empfehlung...")
-        self.hw_hint.setProperty("role", "hint")
-        opts_layout.addWidget(self.hw_hint)
+        if sys.platform == "darwin":
+            # Auf macOS gibt es keine Modellwahl: Apples SpeechAnalyzer
+            # (Neural Engine) ist die einzige Transkriptions-Engine, kein
+            # Whisper-Download/-Inferenz mehr (siehe
+            # transcriber.py::transcribe_apple() und CLAUDE.md). Die
+            # "Modell"-Dropdown und der Hardware-Hinweis (der sich auf die
+            # Wahl einer Whisper-Modellgroesse bezieht) entfallen deshalb
+            # hier komplett - Diarization bleibt unveraendert.
+            self.model_combo = None
+            self.hw_hint = None
+        else:
+            opts_row.addWidget(QLabel("Modell:"), 0, 2)
+            self.model_combo = self._combo(MODELS, MODEL_DISPLAY_NAMES["server:kit.whisper-large-v3"])
+            opts_row.addWidget(self.model_combo, 0, 3)
+            opts_row.setColumnStretch(3, 1)
+
+            self.hw_hint = QLabel("⚡ Ermittle Hardware-Empfehlung...")
+            self.hw_hint.setProperty("role", "hint")
+            opts_layout.addWidget(self.hw_hint)
 
         sep = QFrame()
         sep.setProperty("role", "separator")
@@ -182,6 +196,8 @@ class TranscribePage(QWidget):
         """Slot fuer HardwareInfoController.infoReady (siehe Docstring dort -
         vermeidet den 1-3 Minuten dauernden whisperx/torch-Import waehrend
         des Seitenaufbaus)."""
+        if self.hw_hint is None:
+            return
         if "error" in info:
             self.hw_hint.setText("")
         else:
@@ -256,8 +272,11 @@ class TranscribePage(QWidget):
         from transcriber import DEFAULT_API_BASE_URL
 
         lang_code = LANGUAGES.get(self.lang_combo.currentText(), "de")
-        model_display = self.model_combo.currentText()
-        model = MODEL_IDS_BY_DISPLAY.get(model_display, model_display)
+        if self.model_combo is not None:
+            model_display = self.model_combo.currentText()
+            model = MODEL_IDS_BY_DISPLAY.get(model_display, model_display)
+        else:
+            model = APPLE_SPEECHANALYZER_MODEL
         settings = self.window_.settings
         hf_token = settings.get("hf_token") or None
         api_key = settings.get("api_key") or os.getenv("KIT_TOOLBOX_API_KEY") or None

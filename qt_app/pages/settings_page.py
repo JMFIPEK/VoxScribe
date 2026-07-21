@@ -3,6 +3,7 @@
 kein eigener Tab mehr dafuer."""
 
 import os
+import sys
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -129,8 +130,14 @@ class SettingsPage(QWidget):
 
         self.hw_summary_label = self._muted("Hardware: wird ermittelt...")
         root.addWidget(self.hw_summary_label)
-        self.recommended_model_label = self._muted("Empfohlenes Modell: wird ermittelt...")
-        root.addWidget(self.recommended_model_label)
+        if sys.platform == "darwin":
+            # Auf macOS gibt es keine Whisper-Modellwahl mehr (siehe
+            # Kommentar bei self.model_combo in transcribe_page.py) - eine
+            # "empfohlene Modellgroesse" ergibt hier keinen Sinn.
+            self.recommended_model_label = None
+        else:
+            self.recommended_model_label = self._muted("Empfohlenes Modell: wird ermittelt...")
+            root.addWidget(self.recommended_model_label)
 
         root.addWidget(self._separator())
         info_header = QLabel("Info")
@@ -153,11 +160,13 @@ class SettingsPage(QWidget):
         Bundled-Info da ist."""
         if "error" in info:
             self.hw_summary_label.setText("Hardware: konnte nicht ermittelt werden")
-            self.recommended_model_label.setText("Empfohlenes Modell: ?")
+            if self.recommended_model_label is not None:
+                self.recommended_model_label.setText("Empfohlenes Modell: ?")
             return
 
         self.hw_summary_label.setText(f"Hardware: {info['hw_summary']}")
-        self.recommended_model_label.setText(f"Empfohlenes Modell: {info['recommended_model']}")
+        if self.recommended_model_label is not None:
+            self.recommended_model_label.setText(f"Empfohlenes Modell: {info['recommended_model']}")
         if info["diarize_bundled"]:
             self.hf_hint_label.setText("Diarization-Modelle sind integriert — kein Token nötig.")
         else:
