@@ -3,6 +3,7 @@
 import gc
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -255,6 +256,118 @@ def transcribe_remote(
     return {"segments": all_segments, "language": detected_language_code or language or "de"}
 
 
+APPLE_MODEL_PREFIX = "apple:"
+APPLE_SPEECHANALYZER_MODEL = "apple:speechanalyzer"
+
+
+def is_apple_model(model_size: str) -> bool:
+    """Prueft, ob die Apple SpeechAnalyzer-Engine (nur macOS) genutzt werden soll."""
+    return model_size.startswith(APPLE_MODEL_PREFIX)
+
+
+# ISO-639-1 -> volle BCP-47-Locale, wie sie SpeechTranscriber erwartet. Anders
+# als WhisperX/das Server-Modell kennt SpeechAnalyzer (Stand macOS 26) keine
+# automatische Spracherkennung - die Sprache muss vorher feststehen, "de" ist
+# der Default, wenn keine/automatische Sprache gewaehlt wurde.
+_APPLE_LOCALE_BY_LANGUAGE = {
+    "de": "de-DE", "en": "en-US", "fr": "fr-FR", "es": "es-ES",
+    "it": "it-IT", "pt": "pt-PT", "ja": "ja-JP", "ko": "ko-KR", "zh": "zh-CN",
+}
+
+
+def _apple_locale_identifier(language: str | None) -> str:
+    return _APPLE_LOCALE_BY_LANGUAGE.get((language or "de").lower(), "de-DE")
+
+
+def _apple_speechanalyzer_binary_path() -> str:
+    """Pfad zum kompilierten SpeechAnalyzer-Helfer (siehe macos/README.md)."""
+    return os.path.join(_get_base_dir(), "macos", "SpeechAnalyzerTranscribe")
+
+
+def default_model_size() -> str:
+    """Plattform-Default fuer model_size, wenn der Aufrufer keinen expliziten Wunsch hat.
+
+    Auf macOS ist Apples SpeechAnalyzer (Neural Engine) die einzige lokale
+    Transkriptions-Engine - kein Whisper-Modell-Download/-Inferenz mehr, siehe
+    CLAUDE.md ("Apple Silicon (MPS) acceleration is partial by design"). Auf
+    Windows/Linux bleibt WhisperX (lokal) unveraendert der Default.
+    """
+    return APPLE_SPEECHANALYZER_MODEL if sys.platform == "darwin" else "large-v2"
+
+
+def transcribe_apple(
+    audio_path: str,
+    language: str | None = "de",
+    on_progress=None,
+) -> dict:
+    """Transkribiert via Apples SpeechAnalyzer/SpeechTranscriber (macOS 26+, Neural Engine).
+
+    Ruft den kompilierten Swift-Helfer macos/SpeechAnalyzerTranscribe als
+    einmaligen Subprozess auf (kein Dauer-Stream wie bei der Systemaudio-
+    Aufnahme, daher auch kein Watcher-Thread noetig - der Prozess endet von
+    selbst) und liest dessen NDJSON-Ausgabe zeilenweise fuer Fortschritt.
+
+    SpeechTranscriber liefert pro Wort bereits einen Zeitstempel
+    (attributeOptions: [.audioTimeRange] im Swift-Helfer) - an echter Hardware
+    mit deutschem Testaudio verifiziert als wortgenau. Das Rueckgabe-Dict ist
+    deshalb bereits im "ausgerichteten" Format, das WhisperX' wav2vec2-
+    Alignment sonst produziert ({"segments": [...{"words": [...]}...],
+    "word_segments": [...]}) - der Alignment-Schritt entfaellt fuer diesen Pfad
+    komplett (siehe Verzweigung in transcribe()).
+    """
+    binary = _apple_speechanalyzer_binary_path()
+    if not os.path.isfile(binary):
+        raise RuntimeError(
+            f"SpeechAnalyzer-Helfer nicht gefunden ({binary}). "
+            "Erst 'cd macos && ./build.sh' ausfuehren."
+        )
+
+    locale_id = _apple_locale_identifier(language)
+    try:
+        duration = sf.info(audio_path).duration or 1.0
+    except Exception:
+        duration = 1.0
+
+    proc = subprocess.Popen(
+        [binary, audio_path, locale_id],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
+    )
+
+    segments = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") != "segment":
+            continue
+        words = [
+            {"word": w["word"], "start": w["start"], "end": w["end"], "score": w["score"]}
+            for w in obj.get("words", [])
+        ]
+        segments.append({
+            "start": obj["start"], "end": obj["end"], "text": obj["text"], "words": words,
+        })
+        if on_progress:
+            on_progress(min(obj["end"] / duration, 1.0))
+
+    proc.wait()
+    if proc.returncode != 0:
+        stderr = proc.stderr.read().strip() if proc.stderr else ""
+        raise RuntimeError(f"SpeechAnalyzer-Transkription fehlgeschlagen: {stderr}")
+
+    word_segments = [w for seg in segments for w in seg["words"]]
+    return {
+        "segments": segments,
+        "word_segments": word_segments,
+        "language": (language or "de").lower(),
+    }
+
+
 def transcribe(
     audio_path: str,
     language: str | None = "de",
@@ -278,7 +391,12 @@ def transcribe(
     Args:
         audio_path: Pfad zur Audio-Datei (WAV, MP3, etc.)
         language: Sprache des Audios (z.B. "de", "en"). None = automatische Erkennung
-        model_size: Whisper-Modellgroesse ("large-v2", "large-v3", "medium", "base")
+            (nur bei lokalen/Server-Modellen - Apples SpeechAnalyzer kennt keine
+            automatische Spracherkennung und faellt in dem Fall auf "de" zurueck)
+        model_size: Whisper-Modellgroesse ("large-v2", "large-v3", "medium", "base"),
+            ein Server-Modell (Praefix "server:", siehe is_remote_model()) oder
+            "apple:speechanalyzer" fuer Apples SpeechAnalyzer (nur macOS 26+,
+            siehe is_apple_model()/transcribe_apple())
         diarize: Speaker Diarization aktivieren
         hf_token: HuggingFace Token fuer pyannote (nur beim ersten Download noetig)
         min_speakers: Minimale Anzahl Sprecher (optional)
@@ -308,8 +426,11 @@ def transcribe(
 
     compute_type = "float16" if whisper_device == "cuda" else "int8"
     remote = is_remote_model(model_size)
+    apple = is_apple_model(model_size)
 
-    if device == "mps":
+    if apple:
+        print(f"Device: Transkription=Apple Neural Engine (SpeechAnalyzer), Diarization={torch_device}")
+    elif device == "mps":
         print(f"Device: Whisper={whisper_device} ({compute_type}), Alignment/Diarization={torch_device} (Apple MPS)")
     else:
         print(f"Device: {device} ({compute_type})")
@@ -339,7 +460,25 @@ def transcribe(
     # Bundled model path verwenden falls vorhanden
     bundled = _get_bundled_models_dir()
 
-    if remote:
+    if apple:
+        print("1/3  Transkription via Apple SpeechAnalyzer (Neural Engine)...")
+        _prog(0.0, "SpeechAnalyzer transkribiert...")
+
+        def _apple_progress(frac):
+            mapped = frac * 0.40
+            _prog(mapped, f"Transkription... {frac * 100:.0f}%")
+
+        result = transcribe_apple(audio_path, language, on_progress=_apple_progress)
+        # Fuer die Diarization unten wird das Audio als Array benoetigt (der
+        # Swift-Helfer laedt/dekodiert die Datei intern selbst nochmal).
+        audio = load_audio_universal(audio_path)
+
+        t1 = time.time()
+        n_segs = len(result["segments"])
+        print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} Segmente erkannt")
+        _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
+    elif remote:
         remote_model_name = model_size[len(REMOTE_MODEL_PREFIX):]
         print(f"1/3  Transkription via Server-Modell ({remote_model_name})...")
         _prog(0.0, "Audio laden...")
@@ -398,42 +537,50 @@ def transcribe(
             torch.cuda.empty_cache()
 
     # --- 2. Alignment ---
-    print("2/3  Alignment laeuft...")
-    _prog(0.45, "Alignment-Modell laden...")
-    t2 = time.time()
+    # SpeechAnalyzer liefert bereits wortgenaue Zeitstempel (siehe
+    # transcribe_apple()) - der wav2vec2-Alignment-Schritt ist fuer dieses
+    # Ergebnis ueberfluessig und wuerde auf macOS zudem ein weiteres
+    # PyTorch-Modell laden, das gar nicht gebraucht wird.
+    if apple:
+        print("2/3  Alignment uebersprungen (SpeechAnalyzer liefert bereits Wort-Zeitstempel)")
+        _prog(0.65, "Alignment nicht noetig (Apple SpeechAnalyzer)")
+    else:
+        print("2/3  Alignment laeuft...")
+        _prog(0.45, "Alignment-Modell laden...")
+        t2 = time.time()
 
-    # Bundled alignment model path
-    align_model_dir = None
-    align_cache_only = False
-    if bundled:
-        align_path = os.path.join(bundled, "align")
-        if os.path.isdir(align_path):
-            align_model_dir = align_path
-            align_cache_only = True
+        # Bundled alignment model path
+        align_model_dir = None
+        align_cache_only = False
+        if bundled:
+            align_path = os.path.join(bundled, "align")
+            if os.path.isdir(align_path):
+                align_model_dir = align_path
+                align_cache_only = True
 
-    model_a, metadata = whisperx.load_align_model(
-        language_code=result["language"], device=torch_device,
-        model_dir=align_model_dir, model_cache_only=align_cache_only,
-    )
+        model_a, metadata = whisperx.load_align_model(
+            language_code=result["language"], device=torch_device,
+            model_dir=align_model_dir, model_cache_only=align_cache_only,
+        )
 
-    _prog(0.50, "Wort-Alignment laeuft...")
-    result = whisperx.align(
-        result["segments"], model_a, metadata, audio, torch_device,
-        return_char_alignments=False,
-        progress_callback=_align_progress,
-    )
+        _prog(0.50, "Wort-Alignment laeuft...")
+        result = whisperx.align(
+            result["segments"], model_a, metadata, audio, torch_device,
+            return_char_alignments=False,
+            progress_callback=_align_progress,
+        )
 
-    t3 = time.time()
-    print(f"     Alignment abgeschlossen ({t3 - t2:.1f}s)")
-    _prog(0.65, f"Alignment fertig ({t3 - t2:.0f}s)")
+        t3 = time.time()
+        print(f"     Alignment abgeschlossen ({t3 - t2:.1f}s)")
+        _prog(0.65, f"Alignment fertig ({t3 - t2:.0f}s)")
 
-    # Modell entladen
-    del model_a
-    gc.collect()
-    if torch_device == "cuda":
-        torch.cuda.empty_cache()
-    elif torch_device == "mps":
-        torch.mps.empty_cache()
+        # Modell entladen
+        del model_a
+        gc.collect()
+        if torch_device == "cuda":
+            torch.cuda.empty_cache()
+        elif torch_device == "mps":
+            torch.mps.empty_cache()
 
     # --- 3. Speaker Diarization ---
     if diarize:

@@ -8,4 +8,5 @@ build/
 bundled_models/
 *.ico
 macos/SystemAudioCapture
+macos/SpeechAnalyzerTranscribe
 *.egg-info/

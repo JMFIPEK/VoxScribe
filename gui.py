@@ -169,6 +169,7 @@ if _splash:
     _splash.update_status("Transcriber-Engine...")
 
 from transcriber import (
+    APPLE_SPEECHANALYZER_MODEL,
     DEFAULT_API_BASE_URL,
     transcribe,
     save_transcript,
@@ -438,20 +439,29 @@ class App(ctk.CTk):
             values=list(LANGUAGES.keys()), width=140
         ).grid(row=0, column=1, padx=5, pady=4, sticky="w")
 
-        ctk.CTkLabel(opts_frame, text="Modell:").grid(
-            row=0, column=2, padx=(10, 2), pady=4, sticky="e")
-        self.model_var = ctk.StringVar(
-            value=MODEL_DISPLAY_NAMES["server:kit.whisper-large-v3"])
-        ctk.CTkOptionMenu(
-            opts_frame, variable=self.model_var,
-            values=MODELS, width=170
-        ).grid(row=0, column=3, padx=(5, 0), pady=4, sticky="w")
+        if sys.platform == "darwin":
+            # Auf macOS gibt es keine Modellwahl: Apples SpeechAnalyzer (Neural
+            # Engine) ist die einzige Transkriptions-Engine, kein Whisper-
+            # Download/-Inferenz mehr (siehe transcriber.py::transcribe_apple()
+            # und CLAUDE.md). Die "Modell"-Dropdown und der Hardware-Hinweis
+            # unten (der sich auf die Wahl einer Whisper-Modellgroesse bezieht)
+            # entfallen deshalb hier komplett - Diarization bleibt unveraendert.
+            self.model_var = ctk.StringVar(value=APPLE_SPEECHANALYZER_MODEL)
+        else:
+            ctk.CTkLabel(opts_frame, text="Modell:").grid(
+                row=0, column=2, padx=(10, 2), pady=4, sticky="e")
+            self.model_var = ctk.StringVar(
+                value=MODEL_DISPLAY_NAMES["server:kit.whisper-large-v3"])
+            ctk.CTkOptionMenu(
+                opts_frame, variable=self.model_var,
+                values=MODELS, width=170
+            ).grid(row=0, column=3, padx=(5, 0), pady=4, sticky="w")
 
-        # Hardware-Empfehlung anzeigen (nur relevant bei lokalen Modellen)
-        ctk.CTkLabel(
-            opts_card, text=f"⚡ Bei lokalem Modell empfohlen: {_hw_reason}",
-            text_color="gray", font=ctk.CTkFont(size=11)
-        ).grid(row=2, column=0, padx=14, pady=(0, 4), sticky="w")
+            # Hardware-Empfehlung anzeigen (nur relevant bei lokalen Modellen)
+            ctk.CTkLabel(
+                opts_card, text=f"⚡ Bei lokalem Modell empfohlen: {_hw_reason}",
+                text_color="gray", font=ctk.CTkFont(size=11)
+            ).grid(row=2, column=0, padx=14, pady=(0, 4), sticky="w")
 
         sep = ctk.CTkFrame(opts_card, height=1, fg_color=("gray80", "gray30"))
         sep.grid(row=3, column=0, padx=14, pady=(2, 4), sticky="ew")
@@ -707,9 +717,13 @@ class App(ctk.CTk):
         ctk.CTkLabel(tab, text=f"Hardware: {hw_summary}",
                      text_color="gray", justify="left").grid(
             row=21, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
-        ctk.CTkLabel(tab, text=f"Empfohlenes Modell: {_recommended_model}",
-                     text_color="gray").grid(
-            row=22, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
+        if sys.platform != "darwin":
+            # Auf macOS gibt es keine Whisper-Modellwahl mehr (siehe
+            # Kommentar bei self.model_var in _build_transcribe_tab) - eine
+            # "empfohlene Modellgroesse" ergibt hier keinen Sinn.
+            ctk.CTkLabel(tab, text=f"Empfohlenes Modell: {_recommended_model}",
+                         text_color="gray").grid(
+                row=22, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
 
     # --- Tab: Info ---
     def _build_info_tab(self):
