@@ -18,8 +18,13 @@ import tempfile
 BG = "#15172a"
 BG_ALT = "#1c2038"
 SURFACE = "#242842"
-SURFACE_ALT = "#363e68"
-BORDER = "#4b5385"
+# SURFACE_ALT (Eingabefelder/Textinhalt) war zuvor #363e68 - auf echtem
+# Bildschirm neben SURFACE (Karten-Hintergrund) kaum unterscheidbar (per
+# Pixel-Sampling nur (36,40,66) vs (54,62,104), zu wenig Kontrast trotz
+# korrekt getrennter Werte im Code). Deutlich angehoben, damit Eingabefelder/
+# Textinhalt sich klar von ihrer Karte abheben.
+SURFACE_ALT = "#454f8a"
+BORDER = "#5c66a8"
 TEXT = "#e8e9f3"
 TEXT_MUTED = "#8e9aaf"
 ACCENT = "#3498db"
@@ -412,7 +417,11 @@ QProgressBar::chunk {{
 }}
 
 QScrollArea {{
+    background: transparent;
     border: none;
+}}
+QScrollArea > QWidget > QWidget {{
+    background: transparent;
 }}
 QScrollBar:vertical {{
     background: transparent;

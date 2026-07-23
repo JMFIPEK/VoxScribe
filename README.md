@@ -6,7 +6,7 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 
 ## Features
 
-- **Zwei GUIs** — **PySide6/Qt** (`gui_qt.py`, primäre GUI, aktiv weiterentwickelt) und die ursprüngliche **CustomTkinter**-GUI (`gui.py`, funktioniert weiterhin, bekommt aber keine neuen Features mehr)
+- **GUI** — **PySide6/Qt** (`gui_qt.py`), die Standard-GUI von VoxScribe: drei Tabs (Aufnahme, Transkription, Einstellungen), aktiv weiterentwickelt. Die ursprüngliche CustomTkinter-GUI (`gui.py`) funktioniert weiterhin, ist aber Legacy und bekommt keine neuen Features mehr
 - **Mikrofon-Aufnahme** — direktes Aufnehmen von Gesprächen (alle Plattformen)
 - **System-Audio (Loopback)** — Aufnahme von Teams/Zoom/Webex über WASAPI (Windows) bzw. ScreenCaptureKit (macOS, experimentell)
 - **Mikrofon + System-Audio** — beide Quellen gleichzeitig für vollständige Meeting-Aufnahmen (Windows; auf macOS implementiert, aber noch nicht auf echter Hardware verifiziert)
@@ -151,8 +151,7 @@ Segmenten — nur die reine Transkription verlässt in diesem Fall den Rechner.
 ```bash
 .\.venv\Scripts\activate     # Windows
 source .venv/bin/activate    # macOS/Linux
-python gui_qt.py              # PySide6-GUI (primär, empfohlen)
-python gui.py                 # CustomTkinter-GUI (legacy)
+python gui_qt.py
 ```
 
 Oder mit uv (ohne manuelle Aktivierung):
@@ -160,7 +159,7 @@ Oder mit uv (ohne manuelle Aktivierung):
 uv run python gui_qt.py
 ```
 
-Beide GUIs teilen sich denselben Backend-Code (`recorder.py`, `transcriber.py`, ...) und bieten funktional dasselbe — Tab-/Seitenaufteilung und Bedienung sind im Folgenden am Beispiel von `gui_qt.py` beschrieben, `gui.py` ist nahezu identisch aufgebaut. Auf macOS zeigt die Transkriptions-Seite **keine** Modellwahl (siehe unten) — das ist kein Bug, sondern weil Apples SpeechAnalyzer dort die einzige Transkriptions-Engine ist.
+`gui_qt.py` (PySide6/Qt) ist die Standard-GUI von VoxScribe. Die alte CustomTkinter-GUI ist weiterhin über `python gui.py` erreichbar (Legacy, funktional nahezu identisch, aber ohne neue Features) — Tab-/Seitenaufteilung und Bedienung sind im Folgenden am Beispiel von `gui_qt.py` beschrieben. Auf macOS zeigt die Transkriptions-Seite **keine** Modellwahl (siehe unten) — das ist kein Bug, sondern weil Apples SpeechAnalyzer dort die einzige Transkriptions-Engine ist.
 
 Die GUI hat drei Tabs:
 
@@ -269,9 +268,9 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 ## Projektstruktur
 
 ```
-├── gui_qt.py              # GUI (PySide6/Qt) — primär, aktiv weiterentwickelt
+├── gui_qt.py              # Standard-GUI (PySide6/Qt), aktiv weiterentwickelt
 ├── qt_app/                # PySide6-GUI-Code: main_window.py, controllers.py, theme.py, pages/, widgets/
-├── gui.py                 # GUI (CustomTkinter) — legacy, funktioniert weiterhin
+├── gui.py                 # Legacy-GUI (CustomTkinter) — funktioniert weiterhin, keine neuen Features
 ├── main.py                # CLI Entry Point
 ├── recorder.py            # Audio-Aufnahme (Mikrofon + WASAPI Loopback/ScreenCaptureKit + kombiniert)
 ├── transcriber.py         # WhisperX/Apple-SpeechAnalyzer Transkription + Alignment + Diarization + Server-Modell + Video-Input

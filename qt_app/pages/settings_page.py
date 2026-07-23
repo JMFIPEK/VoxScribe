@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from qt_app.constants import DEFAULT_API_BASE_URL_FALLBACK
 from qt_app.pages.common import PAGE_MARGINS, PAGE_SPACING
 from qt_app.pages.info_content import INFO_TEXT
 
@@ -27,12 +28,6 @@ class SettingsPage(QWidget):
         super().__init__()
         self.window_ = window
         self._build_ui()
-
-    # Fallback-Konstante, damit fuer dieses Feld kein `import transcriber`
-    # (laedt whisperx/torch, kalt 1-3 Minuten) beim Seitenaufbau noetig ist -
-    # siehe apply_hardware_info() fuer den Rest der Hardware-/Bundled-Infos,
-    # die tatsaechlich asynchron ermittelt werden muessen.
-    _FALLBACK_API_BASE_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -93,7 +88,7 @@ class SettingsPage(QWidget):
 
         grid.addWidget(self._bold("KIT ToolBox Basis-URL:"), row, 0)
         default_url = (self.window_.settings.get("api_base_url") or os.getenv("KIT_TOOLBOX_BASE_URL")
-                       or self._FALLBACK_API_BASE_URL)
+                       or DEFAULT_API_BASE_URL_FALLBACK)
         self.window_.settings["api_base_url"] = default_url
         self.api_url_entry = QLineEdit(default_url)
         self.api_url_entry.textChanged.connect(lambda v: self.window_.settings.__setitem__("api_base_url", v))

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QScrollArea,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 from qt_app import theme
 from qt_app.constants import (
     APPLE_SPEECHANALYZER_MODEL,
+    DEFAULT_API_BASE_URL_FALLBACK,
     FORMATS,
     LANGUAGES,
     MODEL_IDS_BY_DISPLAY,
@@ -142,16 +144,26 @@ class TranscribePage(QWidget):
         self.status_label.hide()
         root.addWidget(self.status_label)
 
-        # --- Transkript ---
+        # --- Transkript + Sprecher umbenennen: nebeneinander statt gestapelt,
+        # damit sich beide nicht um dieselbe Hoehe streiten (vorher hat die
+        # Sprecher-Karte dem Transkript-Textfeld kaum sichtbaren Platz
+        # gelassen, sobald mehr als 1-2 Sprecher erkannt wurden). Beide
+        # Bereiche nutzen so die volle verfuegbare Hoehe der Seite. ---
+        self.content_splitter = QSplitter(Qt.Horizontal)
+        root.addWidget(self.content_splitter, 1)
+
         self.transcript_view = QTextEdit()
         self.transcript_view.setReadOnly(True)
-        root.addWidget(self.transcript_view, 1)
+        self.content_splitter.addWidget(self.transcript_view)
 
-        # --- Sprecher umbenennen ---
         self.speaker_frame, speaker_outer = card()
         speaker_outer.setSpacing(6)
         self.speaker_frame.hide()
-        root.addWidget(self.speaker_frame)
+        self.content_splitter.addWidget(self.speaker_frame)
+
+        self.content_splitter.setStretchFactor(0, 3)
+        self.content_splitter.setStretchFactor(1, 1)
+        self.content_splitter.setSizes([700, 260])
 
         speaker_header = QHBoxLayout()
         speaker_outer.addLayout(speaker_header)
@@ -164,8 +176,7 @@ class TranscribePage(QWidget):
 
         self.speaker_scroll = QScrollArea()
         self.speaker_scroll.setWidgetResizable(True)
-        self.speaker_scroll.setFixedHeight(110)
-        speaker_outer.addWidget(self.speaker_scroll)
+        speaker_outer.addWidget(self.speaker_scroll, 1)
         self.speaker_entries_widget = QWidget()
         self.speaker_entries_layout = QVBoxLayout(self.speaker_entries_widget)
         self.speaker_entries_layout.setContentsMargins(0, 0, 0, 0)
@@ -260,16 +271,23 @@ class TranscribePage(QWidget):
             return
 
         self.start_btn.hide()
+        # Unbestimmter Fortschritt (kein Minimum/Maximum), bis der erste
+        # echte Prozentwert reinkommt - siehe _on_progress(). Modell-/Engine-
+        # Ladezeit (whisperx/torch-Import, Modellgewichte) kann besonders
+        # beim ersten Lauf 1-3 Minuten dauern, WAEHREND der es noch keinen
+        # Fortschrittswert gibt; ohne diese Anzeige wirkt die App in dieser
+        # Zeit eingefroren (siehe auch: dieser Import laeuft bewusst im
+        # Background-Thread von TranscribeController, NICHT hier synchron -
+        # die GUI bleibt reaktionsfaehig, aber ohne visuelles Feedback sah
+        # das trotzdem wie ein Freeze aus).
+        self.progress_bar.setRange(0, 0)
         self.progress_bar.show()
-        self.progress_bar.setValue(0)
         self.status_label.show()
         self.status_label.setStyleSheet(f"color: {theme.ACCENT};")
-        self.status_label.setText("Starte Transkription...")
+        self.status_label.setText("Initialisiere Transkriptions-Engine... (kann beim ersten Start 1-2 Minuten dauern)")
         self.transcript_view.clear()
         self.save_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
-
-        from transcriber import DEFAULT_API_BASE_URL
 
         lang_code = LANGUAGES.get(self.lang_combo.currentText(), "de")
         if self.model_combo is not None:
@@ -280,7 +298,15 @@ class TranscribePage(QWidget):
         settings = self.window_.settings
         hf_token = settings.get("hf_token") or None
         api_key = settings.get("api_key") or os.getenv("KIT_TOOLBOX_API_KEY") or None
-        api_base_url = settings.get("api_base_url") or DEFAULT_API_BASE_URL
+        # Fallback-Konstante statt `from transcriber import DEFAULT_API_BASE_URL`:
+        # dieser Import laedt whisperx/torch (kalt 1-3 Minuten) und wuerde HIER
+        # synchron im GUI-Thread blockieren - insbesondere wenn der
+        # HardwareInfoController-Background-Thread (siehe main_window.py)
+        # `transcriber` gerade noch importiert, wartet Pythons Import-Lock in
+        # diesem Thread, bis jener fertig ist = spuerbares GUI-Einfrieren beim
+        # Klick auf "Transkription starten". settings["api_base_url"] traegt
+        # ohnehin schon denselben Fallback-Wert (siehe SettingsPage).
+        api_base_url = settings.get("api_base_url") or DEFAULT_API_BASE_URL_FALLBACK
         compute = settings.get("compute", "auto")
         device = compute if compute in ("cuda", "mps", "cpu") else None
 
@@ -310,11 +336,16 @@ class TranscribePage(QWidget):
             return None
 
     def _on_progress(self, pct, message):
+        if self.progress_bar.maximum() == 0:
+            # Erster echter Fortschrittswert - vom unbestimmten "Ladebalken"
+            # (siehe start_transcription()) auf normale Prozentanzeige wechseln.
+            self.progress_bar.setRange(0, 1000)
         self.progress_bar.setValue(int(pct * 1000))
         self.status_label.setText(message)
 
     def _on_finished(self, result, error):
         self.progress_bar.hide()
+        self.progress_bar.setRange(0, 1000)
         self.start_btn.show()
 
         if error:
@@ -431,32 +462,38 @@ class TranscribePage(QWidget):
             self.speaker_frame.hide()
             return
 
+        # Jede Zeile: Label + "merken"-Checkbox obendrueber, Eingabefeld
+        # darunter (volle Breite) - passt so auch in die schmale Spalte
+        # rechts neben dem Transkript (statt einer breiten Zeile mit fest
+        # nebeneinander platziertem Label+Eingabefeld+Checkbox).
         for raw_id, current_label in rows:
             row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout = QVBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 6)
+            row_layout.setSpacing(2)
+
+            top_row = QHBoxLayout()
+            row_layout.addLayout(top_row)
 
             color = self._speaker_colors.get(raw_id, theme.TEXT)
-            lbl = QLabel(f"{current_label}  →")
-            lbl.setFixedWidth(150)
+            lbl = QLabel(current_label)
             lbl.setStyleSheet(f"color: {color};")
-            row_layout.addWidget(lbl)
+            top_row.addWidget(lbl)
+            top_row.addStretch(1)
+
+            if raw_id in embeddings:
+                remember_check = QCheckBox("merken")
+                remember_check.setChecked(True)
+                top_row.addWidget(remember_check)
+                self._speaker_remember_checks[raw_id] = remember_check
 
             entry = QLineEdit()
             entry.setPlaceholderText("Name eingeben")
             if raw_id != current_label:
                 entry.setText(current_label)
-            entry.setFixedWidth(160)
             row_layout.addWidget(entry)
             self._speaker_entries[raw_id] = entry
 
-            if raw_id in embeddings:
-                remember_check = QCheckBox("merken")
-                remember_check.setChecked(True)
-                row_layout.addWidget(remember_check)
-                self._speaker_remember_checks[raw_id] = remember_check
-
-            row_layout.addStretch(1)
             self.speaker_entries_layout.insertWidget(
                 self.speaker_entries_layout.count() - 1, row_widget)
 

@@ -2,7 +2,7 @@
 
 APP_NAME = "VoxScribe"
 APP_SUBTITLE = "for ORION"
-APP_VERSION = "0.2.0"
+APP_VERSION = "1.0.0"
 
 LANGUAGES = {
     "Automatisch erkennen": None, "Deutsch": "de", "English": "en",
@@ -26,6 +26,11 @@ FORMATS = ["txt", "srt", "json"]
 # gleiche Muster (transcriber wird dort bewusst erst im Background-Thread
 # importiert).
 APPLE_SPEECHANALYZER_MODEL = "apple:speechanalyzer"
+
+# Muss mit transcriber.DEFAULT_API_BASE_URL uebereinstimmen - selber Grund wie
+# oben bei APPLE_SPEECHANALYZER_MODEL (kein `import transcriber` fuer eine
+# reine String-Konstante).
+DEFAULT_API_BASE_URL_FALLBACK = "https://ki-toolbox.scc.kit.edu/api/v1"
 
 
 def format_time_short(seconds: float) -> str:
