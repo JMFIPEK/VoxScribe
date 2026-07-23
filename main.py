@@ -102,7 +102,7 @@ def _cli_progress(state):
 
 def cmd_transcribe(args):
     """Transkribiert eine Audio-Datei."""
-    from transcriber import DEFAULT_API_BASE_URL, transcribe, save_transcript
+    from transcriber import DEFAULT_API_BASE_URL, default_model_size, transcribe, save_transcript
 
     if not os.path.isfile(args.input):
         print(f"Datei nicht gefunden: {args.input}")
@@ -112,11 +112,12 @@ def cmd_transcribe(args):
     api_key = args.api_key or os.getenv("KIT_TOOLBOX_API_KEY") or None
     api_base_url = args.api_base_url or os.getenv("KIT_TOOLBOX_BASE_URL") or DEFAULT_API_BASE_URL
     language = None if args.language.lower() in ("auto", "automatisch") else args.language
+    model = args.model or default_model_size()
 
     result = transcribe(
         audio_path=args.input,
         language=language,
-        model_size=args.model,
+        model_size=model,
         diarize=args.diarize,
         hf_token=hf_token,
         min_speakers=args.min_speakers,
@@ -187,9 +188,10 @@ def main():
         help="Sprache (z.B. de, en) oder 'auto' fuer automatische Erkennung. Default: de"
     )
     sub_transcribe.add_argument(
-        "--model", "-m", default="large-v2",
-        help=("Whisper-Modell (large-v2, large-v3, medium, base) oder "
-              "Server-Modell (z.B. server:kit.whisper-large-v3). Default: large-v2")
+        "--model", "-m", default=None,
+        help=("Whisper-Modell (large-v2, large-v3, medium, base), Server-Modell "
+              "(z.B. server:kit.whisper-large-v3) oder apple:speechanalyzer. "
+              "Default: large-v2 (Windows/Linux) bzw. apple:speechanalyzer (macOS)")
     )
     sub_transcribe.add_argument(
         "--diarize", action="store_true", default=True,
@@ -218,8 +220,9 @@ def main():
         help="Batch-Groesse (kleiner = weniger VRAM). Default: 16"
     )
     sub_transcribe.add_argument(
-        "--device-compute", choices=["cuda", "cpu"], default=None,
-        help="Compute Device (auto-detect wenn nicht gesetzt)"
+        "--device-compute", choices=["cuda", "mps", "cpu"], default=None,
+        help="Compute Device (auto-detect wenn nicht gesetzt). 'mps' beschleunigt "
+             "auf Apple Silicon nur Alignment/Diarization, nicht die Whisper-Transkription."
     )
     sub_transcribe.add_argument("--output", "-o", help="Ausgabe-Pfad (ohne Endung)")
     sub_transcribe.add_argument(
@@ -239,7 +242,7 @@ def main():
     sub_run.add_argument("--output", "-o", default=None)
     sub_run.add_argument("--device", type=int, default=None)
     sub_run.add_argument("--language", "-l", default="de")
-    sub_run.add_argument("--model", "-m", default="large-v2")
+    sub_run.add_argument("--model", "-m", default=None)
     sub_run.add_argument("--diarize", action="store_true", default=True)
     sub_run.add_argument("--no-diarize", dest="diarize", action="store_false")
     sub_run.add_argument("--hf-token", default=None)
@@ -249,7 +252,7 @@ def main():
     sub_run.add_argument("--max-speakers", type=int, default=None)
     sub_run.add_argument("--batch-size", type=int, default=16)
     sub_run.add_argument(
-        "--device-compute", choices=["cuda", "cpu"], default=None
+        "--device-compute", choices=["cuda", "mps", "cpu"], default=None
     )
     sub_run.add_argument("--format", "-f", default="txt")
     sub_run.set_defaults(func=cmd_run)

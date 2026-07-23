@@ -1,13 +1,19 @@
 [project]
 name = "whisperx-recorder"
-version = "0.1.0"
+version = "1.0.0"
 description = "Lokale Audio-Aufnahme und Transkription mit WhisperX"
 requires-python = ">=3.10"
 dependencies = [
     "whisperx>=3.8",
-    "PyAudioWPatch>=0.2.12",
+    "PyAudioWPatch>=0.2.12; sys_platform == 'win32'",
+    "sounddevice>=0.4; sys_platform != 'win32'",
+    "soundfile>=0.13",
+    "scipy",
     "numpy",
     "python-dotenv",
+    "customtkinter>=5.2",
+    "PySide6>=6.7",
+    "psutil",
     "av",
     "requests",
     "torch",
@@ -18,15 +24,42 @@ dependencies = [
 [project.scripts]
 whisperx-recorder = "main:main"
 
-# PyPI's default torch wheels are CPU-only; pin torch/torchaudio/torchvision to
-# the CUDA build so a plain `uv sync` (or `uv venv` + `uv pip install -e .`)
-# installs a GPU-enabled, version-matched PyTorch stack out of the box instead
-# of silently falling back to CPU (or mixing CPU/CUDA build versions, which
-# breaks torchvision's C-extension loading).
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# Top-level scripts (main.py, gui.py, ...) are plain modules, not a package -
+# list them explicitly as py-modules. `qt_app/` is the one real package here;
+# setuptools' automatic flat-layout discovery otherwise also picks up
+# `macos/` (Swift sources, no __init__.py) and the gitignored runtime output
+# dirs `recordings/`/`bundled_models/` as ambiguous "top-level packages" and
+# refuses to build at all.
+[tool.setuptools]
+py-modules = [
+    "main", "gui", "gui_qt", "recorder", "transcriber",
+    "hardware_detect", "speaker_profiles", "download_models", "build_exe",
+]
+
+[tool.setuptools.packages.find]
+include = ["qt_app*"]
+
+# PyPI's default torch wheels on Windows/Linux are CPU-only; pin torch/torchaudio/
+# torchvision to the CUDA build there so a plain `uv sync` installs a GPU-enabled,
+# version-matched PyTorch stack instead of silently falling back to CPU (or mixing
+# CPU/CUDA build versions, which breaks torchvision's C-extension loading).
+# macOS has no CUDA at all (Apple Silicon uses the MPS/Metal backend instead), so
+# the marker below only applies this index on win32/linux - macOS falls through
+# to the default PyPI wheels, which already bundle MPS support.
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+torchaudio = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

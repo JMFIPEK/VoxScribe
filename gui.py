@@ -2,6 +2,7 @@
 
 import os
 import ssl
+import sys
 import warnings
 import threading
 import time
@@ -29,8 +30,10 @@ os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # Windows: eigene AppUserModelID setzen, damit Taskleiste eigenes Icon zeigt
-import ctypes
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+# (ctypes.windll existiert nur unter Windows - auf macOS/Linux ueberspringen)
+if sys.platform == "win32":
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -166,6 +169,7 @@ if _splash:
     _splash.update_status("Transcriber-Engine...")
 
 from transcriber import (
+    APPLE_SPEECHANALYZER_MODEL,
     DEFAULT_API_BASE_URL,
     transcribe,
     save_transcript,
@@ -224,20 +228,28 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title(f"{APP_NAME} — {APP_SUBTITLE}")
-        self.geometry("900x700")
-        self.minsize(800, 600)
+        self.geometry("900x760")
+        self.minsize(800, 640)
 
         # App-Icon setzen
         icon_path = os.path.join(os.path.dirname(__file__), "Logo.png")
         if os.path.exists(icon_path):
             from PIL import Image as PILImage
-            import tempfile
-            img = PILImage.open(icon_path)
-            # ICO mit mehreren Größen für Titelleiste + Taskleiste
-            ico_path = os.path.join(tempfile.gettempdir(), "whisperx_icon.ico")
-            img.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (256, 256)])
-            self.iconbitmap(ico_path)
-            self.after(200, lambda: self.iconbitmap(ico_path))
+            if sys.platform == "win32":
+                import tempfile
+                # ICO mit mehreren Größen für Titelleiste + Taskleiste
+                ico_path = os.path.join(tempfile.gettempdir(), "whisperx_icon.ico")
+                img = PILImage.open(icon_path)
+                img.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (256, 256)])
+                self.iconbitmap(ico_path)
+                self.after(200, lambda: self.iconbitmap(ico_path))
+            else:
+                # macOS/Linux: iconbitmap() erwartet .ico (Windows) bzw. .xbm
+                # (X11) und schlaegt fuer unser PNG fehl - iconphoto ist der
+                # plattformuebergreifende Tk-Weg fuer beliebige Bildformate.
+                icon_img = tk.PhotoImage(file=icon_path)
+                self.iconphoto(True, icon_img)
+                self._icon_img_ref = icon_img  # Referenz halten (sonst GC'd)
 
         self.recorder = AudioRecorder()
         self._record_start_time = None
@@ -273,11 +285,34 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(source_frame, text="Quelle:").grid(
             row=0, column=0, padx=10, pady=10)
-        self.source_var = ctk.StringVar(value="Mikrofon + System")
+        # System-Audio: unter Windows vollstaendig (WASAPI Loopback, inkl.
+        # Kombination mit Mikrofon). Unter macOS experimentell via
+        # ScreenCaptureKit (siehe macos/README.md) - nur einzeln, noch nicht
+        # kombiniert mit Mikrofon. Unter Linux gar nicht verfuegbar.
+        if sys.platform == "win32":
+            source_values = ["Mikrofon", "System-Audio", "Mikrofon + System"]
+            default_source = "Mikrofon + System"
+            source_hint = None
+        elif sys.platform == "darwin":
+            source_values = ["Mikrofon", "System-Audio", "Mikrofon + System"]
+            default_source = "Mikrofon"
+            source_hint = ("⚠ System-Audio ist auf macOS experimentell (ScreenCaptureKit) - "
+                          "erfordert die Berechtigung „Bildschirm- und Systemaudioaufnahme“.")
+        else:
+            source_values = ["Mikrofon"]
+            default_source = "Mikrofon"
+            source_hint = "System-Audio (Meeting-Mitschnitt) ist auf diesem Betriebssystem noch nicht verfügbar."
+
+        self.source_var = ctk.StringVar(value=default_source)
         self.source_menu = ctk.CTkSegmentedButton(
-            source_frame, values=["Mikrofon", "System-Audio", "Mikrofon + System"],
+            source_frame, values=source_values,
             variable=self.source_var, command=self._on_source_changed)
         self.source_menu.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        if source_hint:
+            ctk.CTkLabel(
+                source_frame, text=source_hint,
+                text_color="gray", font=ctk.CTkFont(size=11)
+            ).grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
 
         # Device selection
         device_frame = ctk.CTkFrame(tab)
@@ -296,6 +331,17 @@ class App(ctk.CTk):
         btn_refresh = ctk.CTkButton(
             device_frame, text="↻", width=35, command=self._refresh_devices)
         btn_refresh.grid(row=0, column=2, padx=(0, 10), pady=10)
+
+        # Eine feste Breite (z.B. 460px) reicht je nach Schriftart/DPI/
+        # Skalierung des jeweiligen Systems nicht immer, um lange
+        # Geraetenamen vollstaendig zu zeigen - deshalb die Dropdown-Breite
+        # bei jeder Groessenaenderung des Frames neu an den tatsaechlich
+        # verfuegbaren Platz anpassen, statt einen festen Wert zu raten.
+        def _on_device_frame_configure(event):
+            available = event.width - 180  # Platz fuer Label + Refresh-Button + Paddings
+            if available > 150:
+                self.device_menu.configure(width=available)
+        device_frame.bind("<Configure>", _on_device_frame_configure)
 
         # Level meter (pro Kanal) + Timer
         meter_frame = ctk.CTkFrame(tab)
@@ -346,16 +392,16 @@ class App(ctk.CTk):
 
         # --- Karte: Audio-Datei ---
         file_card = ctk.CTkFrame(tab, corner_radius=10)
-        file_card.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
+        file_card.grid(row=0, column=0, padx=10, pady=(8, 4), sticky="ew")
         file_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             file_card, text="AUDIO-DATEI", text_color="gray",
             font=ctk.CTkFont(size=11, weight="bold")
-        ).grid(row=0, column=0, padx=14, pady=(10, 0), sticky="w")
+        ).grid(row=0, column=0, padx=14, pady=(6, 0), sticky="w")
 
         file_row = ctk.CTkFrame(file_card, fg_color="transparent")
-        file_row.grid(row=1, column=0, padx=14, pady=(4, 12), sticky="ew")
+        file_row.grid(row=1, column=0, padx=14, pady=(3, 8), sticky="ew")
         file_row.grid_columnconfigure(0, weight=1)
 
         self.file_var = ctk.StringVar(value="Keine Datei ausgewählt")
@@ -372,13 +418,13 @@ class App(ctk.CTk):
 
         # --- Karte: Optionen (Sprache/Modell + Diarization) ---
         opts_card = ctk.CTkFrame(tab, corner_radius=10)
-        opts_card.grid(row=1, column=0, padx=10, pady=6, sticky="ew")
+        opts_card.grid(row=1, column=0, padx=10, pady=4, sticky="ew")
         opts_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             opts_card, text="EINSTELLUNGEN", text_color="gray",
             font=ctk.CTkFont(size=11, weight="bold")
-        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
+        ).grid(row=0, column=0, padx=14, pady=(6, 2), sticky="w")
 
         opts_frame = ctk.CTkFrame(opts_card, fg_color="transparent")
         opts_frame.grid(row=1, column=0, padx=14, pady=0, sticky="ew")
@@ -386,64 +432,73 @@ class App(ctk.CTk):
             opts_frame.grid_columnconfigure(i, weight=1)
 
         ctk.CTkLabel(opts_frame, text="Sprache:").grid(
-            row=0, column=0, padx=(0, 2), pady=8, sticky="e")
+            row=0, column=0, padx=(0, 2), pady=4, sticky="e")
         self.lang_var = ctk.StringVar(value="Automatisch erkennen")
         ctk.CTkOptionMenu(
             opts_frame, variable=self.lang_var,
             values=list(LANGUAGES.keys()), width=140
-        ).grid(row=0, column=1, padx=5, pady=8, sticky="w")
+        ).grid(row=0, column=1, padx=5, pady=4, sticky="w")
 
-        ctk.CTkLabel(opts_frame, text="Modell:").grid(
-            row=0, column=2, padx=(10, 2), pady=8, sticky="e")
-        self.model_var = ctk.StringVar(
-            value=MODEL_DISPLAY_NAMES["server:kit.whisper-large-v3"])
-        ctk.CTkOptionMenu(
-            opts_frame, variable=self.model_var,
-            values=MODELS, width=170
-        ).grid(row=0, column=3, padx=(5, 0), pady=8, sticky="w")
+        if sys.platform == "darwin":
+            # Auf macOS gibt es keine Modellwahl: Apples SpeechAnalyzer (Neural
+            # Engine) ist die einzige Transkriptions-Engine, kein Whisper-
+            # Download/-Inferenz mehr (siehe transcriber.py::transcribe_apple()
+            # und CLAUDE.md). Die "Modell"-Dropdown und der Hardware-Hinweis
+            # unten (der sich auf die Wahl einer Whisper-Modellgroesse bezieht)
+            # entfallen deshalb hier komplett - Diarization bleibt unveraendert.
+            self.model_var = ctk.StringVar(value=APPLE_SPEECHANALYZER_MODEL)
+        else:
+            ctk.CTkLabel(opts_frame, text="Modell:").grid(
+                row=0, column=2, padx=(10, 2), pady=4, sticky="e")
+            self.model_var = ctk.StringVar(
+                value=MODEL_DISPLAY_NAMES["server:kit.whisper-large-v3"])
+            ctk.CTkOptionMenu(
+                opts_frame, variable=self.model_var,
+                values=MODELS, width=170
+            ).grid(row=0, column=3, padx=(5, 0), pady=4, sticky="w")
 
-        # Hardware-Empfehlung anzeigen (nur relevant bei lokalen Modellen)
-        ctk.CTkLabel(
-            opts_card, text=f"⚡ Bei lokalem Modell empfohlen: {_hw_reason}",
-            text_color="gray", font=ctk.CTkFont(size=11)
-        ).grid(row=2, column=0, padx=14, pady=(0, 8), sticky="w")
+            # Hardware-Empfehlung anzeigen (nur relevant bei lokalen Modellen)
+            ctk.CTkLabel(
+                opts_card, text=f"⚡ Bei lokalem Modell empfohlen: {_hw_reason}",
+                text_color="gray", font=ctk.CTkFont(size=11)
+            ).grid(row=2, column=0, padx=14, pady=(0, 4), sticky="w")
 
         sep = ctk.CTkFrame(opts_card, height=1, fg_color=("gray80", "gray30"))
-        sep.grid(row=3, column=0, padx=14, pady=(2, 8), sticky="ew")
+        sep.grid(row=3, column=0, padx=14, pady=(2, 4), sticky="ew")
 
         diar_frame = ctk.CTkFrame(opts_card, fg_color="transparent")
-        diar_frame.grid(row=4, column=0, padx=14, pady=(0, 12), sticky="ew")
+        diar_frame.grid(row=4, column=0, padx=14, pady=(0, 6), sticky="ew")
 
         self.diarize_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
             diar_frame, text="Speaker Diarization",
             variable=self.diarize_var, command=self._on_diarize_toggled
-        ).grid(row=0, column=0, padx=(0, 10), pady=4)
+        ).grid(row=0, column=0, padx=(0, 10), pady=2)
 
         self.min_spk_label = ctk.CTkLabel(diar_frame, text="Min Sprecher:")
-        self.min_spk_label.grid(row=0, column=1, padx=(20, 2), pady=4)
+        self.min_spk_label.grid(row=0, column=1, padx=(20, 2), pady=2)
         self.min_spk_var = ctk.StringVar(value="")
         self.min_spk_entry = ctk.CTkEntry(
             diar_frame, textvariable=self.min_spk_var, width=50,
             placeholder_text="auto")
-        self.min_spk_entry.grid(row=0, column=2, padx=5, pady=4)
+        self.min_spk_entry.grid(row=0, column=2, padx=5, pady=2)
 
         self.max_spk_label = ctk.CTkLabel(diar_frame, text="Max Sprecher:")
-        self.max_spk_label.grid(row=0, column=3, padx=(20, 2), pady=4)
+        self.max_spk_label.grid(row=0, column=3, padx=(20, 2), pady=2)
         self.max_spk_var = ctk.StringVar(value="")
         self.max_spk_entry = ctk.CTkEntry(
             diar_frame, textvariable=self.max_spk_var, width=50,
             placeholder_text="auto")
-        self.max_spk_entry.grid(row=0, column=4, padx=5, pady=4)
+        self.max_spk_entry.grid(row=0, column=4, padx=5, pady=2)
 
         # --- Start-Button + Fortschritt ---
         self.transcribe_btn = ctk.CTkButton(
-            tab, text="▶  Transkription starten", height=45,
+            tab, text="▶  Transkription starten", height=38,
             font=ctk.CTkFont(size=15, weight="bold"),
             fg_color="#27ae60", hover_color="#2ecc71", text_color="white",
             state="disabled",
             command=self._start_transcription)
-        self.transcribe_btn.grid(row=2, column=0, padx=10, pady=(6, 5), sticky="ew")
+        self.transcribe_btn.grid(row=2, column=0, padx=10, pady=(4, 3), sticky="ew")
 
         self.progress_bar = ctk.CTkProgressBar(tab)
         self.progress_bar.grid(row=3, column=0, padx=10, pady=(0, 2), sticky="ew")
@@ -472,16 +527,65 @@ class App(ctk.CTk):
         speaker_header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(speaker_header, text="Sprecher umbenennen",
                      font=ctk.CTkFont(weight="bold")).grid(
-            row=0, column=0, padx=10, pady=5, sticky="w")
+            row=0, column=0, padx=10, pady=3, sticky="w")
         self.apply_names_btn = ctk.CTkButton(
             speaker_header, text="Anwenden", width=100,
             command=self._apply_speaker_names)
-        self.apply_names_btn.grid(row=0, column=1, padx=10, pady=5)
+        self.apply_names_btn.grid(row=0, column=1, padx=10, pady=3)
+
+        # Beliebig viele Sprecher (nicht auf eine feste Spalten-/Zeilenzahl
+        # hartkodiert): ein fest-hoher, scrollbarer Bereich mit einer Zeile
+        # pro Sprecher. CTkScrollableFrame wurde bewusst NICHT verwendet - es
+        # bringt die Geometrie des restlichen Tabs durcheinander und macht den
+        # Transkript-Textbereich unsichtbar (siehe Kommentar dort). Stattdessen
+        # ein simples, manuelles Canvas+Scrollbar-Konstrukt: die Hoehe ist
+        # fest (SPEAKER_SCROLL_HEIGHT), damit der Transkript-Bereich beim
+        # Zuordnen der Sprecher immer sichtbar bleibt, egal wie viele
+        # Sprecher es sind. Bewusst knapp bemessen (Platz fuer ~2-3 Zeilen),
+        # damit moeglichst viel Hoehe beim Transkript-Bereich bleibt - bei
+        # mehr Sprechern wird einfach gescrollt.
+        SPEAKER_SCROLL_HEIGHT = 100
+        scroll_outer = ctk.CTkFrame(self.speaker_frame, fg_color="transparent")
+        scroll_outer.grid(row=1, column=0, padx=10, pady=(0, 6), sticky="ew")
+        scroll_outer.grid_columnconfigure(0, weight=1)
+
+        canvas_bg = self.speaker_frame.cget("fg_color")
+        if isinstance(canvas_bg, (list, tuple)):
+            canvas_bg = canvas_bg[1 if ctk.get_appearance_mode() == "Dark" else 0]
+        self._speaker_canvas = tk.Canvas(
+            scroll_outer, height=SPEAKER_SCROLL_HEIGHT,
+            highlightthickness=0, bg=canvas_bg)
+        self._speaker_canvas.grid(row=0, column=0, sticky="ew")
+        # CTkScrollbar defaults to height=200 fuer orientation="vertical" -
+        # ohne explizite Hoehe wuerde das die Zeile (und damit die ganze
+        # Sprecher-Karte) auf mindestens 200px aufblasen, egal wie klein der
+        # Canvas ist.
+        speaker_scrollbar = ctk.CTkScrollbar(
+            scroll_outer, orientation="vertical", command=self._speaker_canvas.yview,
+            height=SPEAKER_SCROLL_HEIGHT)
+        speaker_scrollbar.grid(row=0, column=1, sticky="ns")
+        self._speaker_canvas.configure(yscrollcommand=speaker_scrollbar.set)
 
         self.speaker_entries_frame = ctk.CTkFrame(
-            self.speaker_frame, fg_color="transparent")
-        self.speaker_entries_frame.grid(
-            row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+            self._speaker_canvas, fg_color="transparent")
+        self._speaker_canvas_window = self._speaker_canvas.create_window(
+            (0, 0), window=self.speaker_entries_frame, anchor="nw")
+
+        def _on_entries_configure(_event=None):
+            self._speaker_canvas.configure(scrollregion=self._speaker_canvas.bbox("all"))
+        self.speaker_entries_frame.bind("<Configure>", _on_entries_configure)
+
+        def _on_canvas_configure(event):
+            self._speaker_canvas.itemconfig(self._speaker_canvas_window, width=event.width)
+        self._speaker_canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            self._speaker_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._speaker_canvas.bind(
+            "<Enter>", lambda e: self._speaker_canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        self._speaker_canvas.bind(
+            "<Leave>", lambda e: self._speaker_canvas.unbind_all("<MouseWheel>"))
+
         self._speaker_name_entries = {}
 
         # Bottom buttons
@@ -597,10 +701,10 @@ class App(ctk.CTk):
         ctk.CTkLabel(tab, text="Compute:",
                      font=ctk.CTkFont(weight="bold")).grid(
             row=11, column=0, padx=10, pady=5, sticky="w")
-        self.compute_var = ctk.StringVar(value="Auto (CUDA wenn verfügbar)")
+        self.compute_var = ctk.StringVar(value="Auto (CUDA/MPS wenn verfügbar)")
         ctk.CTkOptionMenu(
             tab, variable=self.compute_var,
-            values=["Auto (CUDA wenn verfügbar)", "cuda", "cpu"], width=250
+            values=["Auto (CUDA/MPS wenn verfügbar)", "cuda", "mps", "cpu"], width=250
         ).grid(row=11, column=1, padx=10, pady=5, sticky="w")
 
         # Version info
@@ -613,9 +717,13 @@ class App(ctk.CTk):
         ctk.CTkLabel(tab, text=f"Hardware: {hw_summary}",
                      text_color="gray", justify="left").grid(
             row=21, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
-        ctk.CTkLabel(tab, text=f"Empfohlenes Modell: {_recommended_model}",
-                     text_color="gray").grid(
-            row=22, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
+        if sys.platform != "darwin":
+            # Auf macOS gibt es keine Whisper-Modellwahl mehr (siehe
+            # Kommentar bei self.model_var in _build_transcribe_tab) - eine
+            # "empfohlene Modellgroesse" ergibt hier keinen Sinn.
+            ctk.CTkLabel(tab, text=f"Empfohlenes Modell: {_recommended_model}",
+                         text_color="gray").grid(
+                row=22, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
 
     # --- Tab: Info ---
     def _build_info_tab(self):
@@ -745,31 +853,41 @@ class App(ctk.CTk):
         if not hasattr(self, '_all_devices'):
             return
         self._device_map = {}
-        if value == "Mikrofon + System":
-            # Mikrofon wählen — System-Audio wird automatisch genutzt
-            devices = self._all_devices["microphones"]
-        elif value == "Mikrofon":
-            devices = self._all_devices["microphones"]
-        else:
-            devices = self._all_devices["loopback"]
 
-        names = []
-        seen_labels = set()
-        for d in devices:
-            label = d["name"]
-            if label in seen_labels:
-                host_api = d.get("host_api") or "Audio"
-                label = f"{label} ({host_api}, #{d['index']})"
-            seen_labels.add(label)
-            names.append(label)
-            self._device_map[label] = d["index"]
-
-        if names:
-            self.device_menu.configure(values=names)
-            self.device_var.set(names[0])
+        # macOS System-Audio (ScreenCaptureKit) hat keine Geraeteauswahl - es
+        # wird immer die gesamte System-Wiedergabe aufgenommen.
+        if value == "System-Audio" and sys.platform == "darwin":
+            label = "Gesamte System-Wiedergabe (keine Geräteauswahl)"
+            self.device_menu.configure(values=[label], state="disabled")
+            self.device_var.set(label)
+            self._device_map[label] = None
         else:
-            self.device_menu.configure(values=["Kein Gerät gefunden"])
-            self.device_var.set("Kein Gerät gefunden")
+            self.device_menu.configure(state="normal")
+            if value == "Mikrofon + System":
+                # Mikrofon wählen — System-Audio wird automatisch genutzt
+                devices = self._all_devices["microphones"]
+            elif value == "Mikrofon":
+                devices = self._all_devices["microphones"]
+            else:
+                devices = self._all_devices["loopback"]
+
+            names = []
+            seen_labels = set()
+            for d in devices:
+                label = d["name"]
+                if label in seen_labels:
+                    host_api = d.get("host_api") or "Audio"
+                    label = f"{label} ({host_api}, #{d['index']})"
+                seen_labels.add(label)
+                names.append(label)
+                self._device_map[label] = d["index"]
+
+            if names:
+                self.device_menu.configure(values=names)
+                self.device_var.set(names[0])
+            else:
+                self.device_menu.configure(values=["Kein Gerät gefunden"])
+                self.device_var.set("Kein Gerät gefunden")
 
         # Pegelanzeige an gewaehlte Quelle anpassen (nur relevante Kanaele zeigen)
         show_mic = value in ("Mikrofon", "Mikrofon + System")
@@ -937,7 +1055,7 @@ class App(ctk.CTk):
         api_base_url = self.api_base_url_var.get().strip() or DEFAULT_API_BASE_URL
         compute = self.compute_var.get()
         device = None
-        if compute in ("cuda", "cpu"):
+        if compute in ("cuda", "mps", "cpu"):
             device = compute
 
         min_spk = None
@@ -1135,16 +1253,19 @@ class App(ctk.CTk):
             self.speaker_frame.grid_remove()
             return
 
-        for raw_id, current_label in rows:
+        # Eine Zeile pro Sprecher, im scrollbaren Bereich - egal wie viele
+        # es sind (kein hartkodiertes Spalten-/Zeilenlimit), der sichtbare
+        # Bereich bleibt durch die feste Canvas-Hoehe konstant.
+        for row_idx, (raw_id, current_label) in enumerate(rows):
             frame = ctk.CTkFrame(self.speaker_entries_frame, fg_color="transparent")
-            frame.pack(side="left", padx=(0, 15), pady=2)
+            frame.grid(row=row_idx, column=0, sticky="w", pady=2)
 
             color = self._speaker_colors.get(raw_id) if hasattr(self, "_speaker_colors") else None
-            ctk.CTkLabel(frame, text=f"{current_label}  →",
+            ctk.CTkLabel(frame, text=f"{current_label}  →", width=160, anchor="w",
                          font=ctk.CTkFont(size=12),
                          text_color=color or ("gray10", "gray90")).pack(side="left", padx=(0, 5))
 
-            entry = ctk.CTkEntry(frame, width=130, placeholder_text="Name eingeben")
+            entry = ctk.CTkEntry(frame, width=160, placeholder_text="Name eingeben")
             if raw_id != current_label:
                 entry.insert(0, current_label)
             entry.pack(side="left")
@@ -1154,10 +1275,13 @@ class App(ctk.CTk):
                 remember_var = ctk.BooleanVar(value=True)
                 ctk.CTkCheckBox(frame, text="merken", variable=remember_var,
                                 width=20, font=ctk.CTkFont(size=11)
-                                ).pack(side="left", padx=(5, 0))
+                                ).pack(side="left", padx=(10, 0))
                 self._speaker_remember_vars[raw_id] = remember_var
 
         self.speaker_frame.grid()
+        self._speaker_canvas.update_idletasks()
+        self._speaker_canvas.configure(scrollregion=self._speaker_canvas.bbox("all"))
+        self._speaker_canvas.yview_moveto(0)
 
     def _get_speaker_mapping(self):
         """Gibt das aktuelle Mapping {rohe_Diarization_ID: neuer_Name} zurueck."""

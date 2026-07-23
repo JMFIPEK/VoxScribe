@@ -10,10 +10,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Activate virtual environment
-.\.venv\Scripts\activate
+.\.venv\Scripts\activate      # Windows
+source .venv/bin/activate     # macOS/Linux
 
 # Or use uv (no activation needed)
 uv run python <script>
+
+# macOS only, once: build the Swift helpers (system-audio capture +
+# SpeechAnalyzer transcription) - see macos/README.md
+cd macos && ./build.sh && cd ..
 
 # List available audio devices
 python main.py devices
@@ -21,7 +26,7 @@ python main.py devices
 # Record from microphone (stop with ENTER)
 python main.py record --source mic
 
-# Record system audio (WASAPI Loopback)
+# Record system audio (WASAPI Loopback on Windows, ScreenCaptureKit on macOS)
 python main.py record --source system
 
 # Transcribe an audio file
@@ -30,13 +35,17 @@ python main.py transcribe -i recordings/audio.wav
 # Full pipeline: record + transcribe
 python main.py run --source system
 
-# Start GUI
+# Start GUI (PySide6 — primary GUI going forward)
+python gui_qt.py
+
+# Start GUI (legacy CustomTkinter — kept working, no longer where new features land first)
 python gui.py
 
-# Download models for offline/bundled operation
+# Download models for offline/bundled operation (Windows/Linux WhisperX only —
+# macOS uses Apple's SpeechAnalyzer, no download needed for transcription)
 python download_models.py
 
-# Build standalone .exe (requires PyInstaller)
+# Build standalone .exe (Windows, requires PyInstaller)
 python build_exe.py
 ```
 
@@ -47,13 +56,16 @@ python build_exe.py
 | File | Purpose |
 |------|---------|
 | `main.py` | CLI entry point with subcommands: `devices`, `record`, `transcribe`, `run` |
-| `gui.py` | CustomTkinter GUI with tabs: Aufnahme, Transkription, Einstellungen, Info |
-| `recorder.py` | Audio recording via PyAudioWPatch: microphone, WASAPI loopback, or mixed |
-| `transcriber.py` | WhisperX pipeline: transcription → alignment → diarization (sequential loading); also handles video-container audio extraction (PyAV) and the remote/server model |
+| `gui.py` | Legacy CustomTkinter GUI with tabs: Aufnahme, Transkription, Einstellungen, Info — kept working but `gui_qt.py` is where new features land |
+| `gui_qt.py` | Primary PySide6 GUI entry point — thin bootstrap (splash, SSL/proxy setup) that builds `qt_app.main_window.MainWindow`; app logic lives in `qt_app/` |
+| `qt_app/` | PySide6 GUI package: `main_window.py` (top tab bar, `QTabWidget`), `controllers.py` (Qt-signal bridges to `recorder.py`/`transcriber.py` for thread-safe UI updates), `theme.py` (dark QSS stylesheet), `constants.py` (shared language/model/format constants), `pages/` (one file per tab: Aufnahme, Transkription, Einstellungen — Info is folded into the bottom of Einstellungen, not its own tab), `widgets/` (custom widgets, e.g. `level_meter.py`) |
+| `recorder.py` | Audio recording: PyAudioWPatch (Windows: microphone, WASAPI loopback, or mixed), `sounddevice` (macOS/Linux microphone), experimental ScreenCaptureKit subprocess (macOS system-audio, see `macos/`) |
+| `transcriber.py` | WhisperX pipeline: transcription → alignment → diarization (sequential loading); also handles video-container audio extraction (PyAV), the remote/server model, and (macOS only) Apple's SpeechAnalyzer engine via `transcribe_apple()` |
 | `hardware_detect.py` | GPU/CPU detection and model recommendations based on VRAM/RAM |
 | `speaker_profiles.py` | Persistent voice-print storage (`~/.voxscribe/speaker_profiles.json`) and cosine-similarity speaker matching/enrollment |
 | `download_models.py` | Pre-download models to `bundled_models/` for offline operation |
 | `build_exe.py` | PyInstaller build script for creating standalone .exe |
+| `macos/` | macOS-only Swift helpers: `SystemAudioCapture` (experimental system-audio recording via ScreenCaptureKit) and `SpeechAnalyzerTranscribe` (transcription via Apple's Speech framework) — see `macos/README.md` for build steps and known open issues |
 
 ### Pipeline Flow
 
@@ -73,6 +85,8 @@ Output: TXT, SRT, JSON
 ### Key Design Patterns
 
 - **Sequential model loading**: Models are loaded/unloaded sequentially (Whisper → Alignment → Diarization) to minimize VRAM usage
+- **Apple Silicon (MPS) acceleration is partial by design**: `transcriber.transcribe()` resolves two separate device variables — `whisper_device` (only ever `"cuda"` or `"cpu"`) and `torch_device` (`"cuda"`, `"mps"`, or `"cpu"`). This split exists because WhisperX's transcription backend (CTranslate2/faster-whisper) has no MPS support at all — passing it `"mps"` would crash — so Whisper inference always runs on CPU on a Mac regardless of the resolved device. Alignment (wav2vec2) and diarization (pyannote) are plain PyTorch, so they use `torch_device` and do get real MPS acceleration. `hardware_detect.recommend_model()` mirrors this: on Apple Silicon it picks model size from CPU/RAM (since that's what actually bounds Whisper's speed there) rather than pretending GPU compute helps the transcription step, but still returns `device="mps"` so alignment/diarization benefit. `PYTORCH_ENABLE_MPS_FALLBACK=1` is set at import time in `transcriber.py` because pyannote/wav2vec2 use a few ops MPS doesn't implement yet, and without the fallback flag those crash instead of transparently running on CPU.
+- **macOS transcription runs on Apple's SpeechAnalyzer, not WhisperX**: on macOS, `transcriber.transcribe()` defaults to `model_size="apple:speechanalyzer"` (`transcriber.default_model_size()`) and no Whisper model is ever downloaded or run there — Windows/Linux are unaffected and keep WhisperX (plus the "KIT ToolBox (Server)" option) exactly as before. `transcribe_apple()` shells out to a one-shot Swift helper (`macos/SpeechAnalyzerTranscribe`, built via `macos/build.sh`) that runs the audio file through Apple's Speech framework (`SpeechAnalyzer`/`SpeechTranscriber`, macOS 26+) on the Neural Engine and streams one NDJSON line per recognized segment to stdout (word list included) — same subprocess-helper pattern as `SystemAudioCapture`, but a one-shot batch call instead of a live stream, so there's no watcher thread and no SIGTERM handling. Verified at end-to-end on real Apple Silicon hardware (macOS 26.5.1) against synthetic German test audio: **word-level timestamps are already present** in the `SpeechTranscriber.Result.text` `AttributedString`'s per-run `audioTimeRange` attribute, confirmed word-accurate against the source audio — so `transcribe()` **skips the wav2vec2 forced-alignment step entirely** on this path (see the `apple` branch guarding "--- 2. Alignment ---"), since there's nothing left for it to add. This makes macOS transcription meaningfully faster than the old WhisperX-on-CPU path too: the "Apple Silicon (MPS) acceleration is partial by design" bullet above explains that Whisper/CTranslate2 has no MPS support at all and always ran on the CPU on a Mac — SpeechAnalyzer instead runs on the Neural Engine. Diarization is **unchanged**: SpeechAnalyzer has no speaker-diarization capability, so pyannote-audio still runs afterwards exactly as today (MPS-accelerated per the same bullet), consuming `transcribe_apple()`'s word/segment output the same way it would consume WhisperX's aligned output. SpeechAnalyzer also has no automatic language-detection API (unlike WhisperX/the server model), so `transcribe_apple()` maps the requested ISO language code to a BCP-47 locale (`_APPLE_LOCALE_BY_LANGUAGE`, e.g. `"de"` → `"de-DE"`) and falls back to `"de-DE"` if none was given. Because there is no model choice left to make on macOS, both GUIs hide the "Modell" dropdown and the Whisper-hardware-recommendation hint entirely on `sys.platform == "darwin"` (everything else — language, diarization, min/max speakers — stays), and hide "Empfohlenes Modell" on the settings page, since it was always a Whisper-model-size recommendation: `gui.py`'s transcription/settings tabs, and `qt_app/pages/transcribe_page.py`/`qt_app/pages/settings_page.py` (`self.model_combo`/`self.hw_hint`/`self.recommended_model_label` are `None` on macOS instead of being built, and every call site checks for that before touching them). `qt_app/constants.py` duplicates the `"apple:speechanalyzer"` sentinel as `APPLE_SPEECHANALYZER_MODEL` rather than importing it from `transcriber` — `qt_app` pages are built eagerly during `MainWindow.__init__()`, and `transcriber` pulls in whisperx/torch at import time (a cold multi-minute import), which is exactly what `HardwareInfoController`/`TranscribeController` already defer into background threads for the same reason.
 - **SSL bypass for corporate proxy**: All HTTPS verification is disabled at module load to work behind corporate proxies
 - **Bundled models support**: Models can be pre-downloaded to `bundled_models/` and used offline without HF_TOKEN
 - **Threaded recording**: Audio recording runs in background threads with callbacks for GUI updates
@@ -81,6 +95,8 @@ Output: TXT, SRT, JSON
 - **Automatic language detection**: passing `language=None` to `transcribe()` makes WhisperX auto-detect from the first 30s of audio (local models) or omits the `language` field so the remote server auto-detects (which is then normalized from a full name like `"german"` to an ISO code like `"de"` for the alignment step). Exposed in the GUI/CLI as "Automatisch erkennen" / `--language auto`
 - **Speaker recognition (voice-prints)**: diarization requests per-speaker embeddings (`DiarizationPipeline(..., return_embeddings=True)`); `transcriber.py` matches them against `speaker_profiles.py`'s stored profiles and relabels recognized speakers' segments directly with their name instead of `SPEAKER_00` (CLI output benefits automatically). `result["speaker_id_map"]` tracks raw diarization ID → currently-displayed label so the GUI can find the right embedding when the user confirms/corrects a name via the "merken" (remember) checkbox, which enrolls/updates that speaker's profile as a running average
 - **Speaker color-coding**: `gui.py`'s `_render_transcript()` tags each line in the transcript textbox by the *raw* diarization ID (not the display label), so colors and renames stay correctly associated even after a speaker gets auto-recognized or manually renamed. `_apply_speaker_names()` is the single place that mutates the textbox, `result["segments"]`, and `speaker_id_map` together — it must stay merged; a previous version had this split across two functions and the two representations could silently drift out of sync
+- **PySide6 is now the primary GUI**: `gui_qt.py` + `qt_app/` is the actively developed GUI going forward; `gui.py` (CustomTkinter) is kept working but is legacy and no longer where new features land first. Chosen over an Electron rewrite because the whole backend (`recorder.py`, `transcriber.py`) is Python — PySide6 keeps it as direct in-process calls/threads instead of needing an IPC boundary to a subprocess. Both GUIs share the same backend modules unchanged. Key differences from the old GUI: (1) `qt_app/pages/record_page.py` puts source/device selection, live per-channel level meters, timer, and start/stop all on one page (`QTabWidget`'s "Aufnahme" tab) — same single-page layout as the old CTk GUI, just re-implemented in Qt widgets. (2) Since `AudioRecorder`'s `on_level`/`on_done` and `transcriber.transcribe()`'s `on_progress` callbacks fire from background threads, and Qt widgets may only be touched from the GUI thread, `qt_app/controllers.py` wraps them in `QObject` subclasses (`RecorderController`, `TranscribeController`) that re-emit them as Qt signals — Qt automatically marshals a signal emitted from a non-GUI thread to a `QueuedConnection` when the receiving `QObject` lives in the GUI thread, so no manual locking is needed. (3) The transcript view (`qt_app/pages/transcribe_page.py`) always fully re-renders from `result["segments"]`/`speaker_id_map` on every change (including after a speaker rename) instead of doing targeted text search-and-replace like `gui.py`'s `_apply_speaker_names()` — simpler and safe since the `QTextEdit` is read-only and the result dict is the single source of truth. (4) `HardwareInfoController`/`TranscribeController` defer `import transcriber`/`hardware_detect` into background threads specifically because those modules import whisperx/torch at module load, which can cold-take 1-3 minutes — `qt_app/constants.py` duplicates small constants (e.g. `APPLE_SPEECHANALYZER_MODEL`) instead of importing them from `transcriber` for the same reason, since pages are built eagerly in `MainWindow.__init__()`.
+- **Cross-platform recording (partial)**: `recorder.py` branches on `IS_WINDOWS = sys.platform == "win32"` and `IS_MACOS = sys.platform == "darwin"`. Windows uses `PyAudioWPatch` for both microphone and WASAPI-loopback system-audio capture (including combined "Mikrofon + System"). Non-Windows falls back to `sounddevice` for **microphone-only** recording. macOS additionally has an **experimental** system-audio path: `AudioRecorder._record_system_macos()` shells out to a compiled helper at `macos/SystemAudioCapture` (source: `macos/SystemAudioCapture.swift`, built via `macos/build.sh`) that captures system audio through ScreenCaptureKit (requires macOS 13+ and the "Bildschirm- und Systemaudioaufnahme" permission) and streams raw 16kHz mono Int16 PCM over stdout; Python reads it like any other audio stream. A dedicated watcher thread calls `proc.terminate()` the moment `stop()` is requested so the blocking `stdout.read()` unblocks via EOF instead of hanging — same class of fix as the WASAPI stall bug below, applied proactively here. Combined "Mikrofon + System" is implemented on macOS too (`AudioRecorder._record_both_macos()`: microphone via `sounddevice`'s own callback thread, system audio read blocking on the current thread identical to `_record_system_macos()`, both frame lists mixed after stop) but — unlike the standalone system-audio path — has **not yet been verified on real hardware** (see `macos/README.md` open issues); watch for sync drift between the two sources and behavior when only one side has recording permission when first testing it for real. Both GUIs' source selectors reflect the platform split: Windows gets all three options ("Mikrofon"/"System-Audio"/"Mikrofon + System"), macOS gets all three too (with an experimental-status hint label, and the device dropdown disabled for System-Audio since ScreenCaptureKit captures the whole system, not a selectable device), Linux gets "Mikrofon" only. `pyproject.toml`/`requirements.txt` use PEP 508 markers (`sys_platform == 'win32'` / `!= 'win32'`) so the right backend installs per platform. The CUDA torch index in `[tool.uv.sources]` is similarly marker-gated to win32/linux only — macOS has no CUDA and gets plain PyPI torch (MPS backend) instead. Note: this was originally implemented on Windows without access to real Apple Silicon hardware (non-Windows Python logic validated only by mocking `sounddevice`/`subprocess.Popen`), then built and debugged on real macOS hardware — fixed a Swift compile error (string/`Data` type mismatch in the error-logging path) and a Python import-time crash (`recorder.py` referenced `pyaudio.PyAudio` in a type annotation even on macOS, where `pyaudio` is never imported — annotations are evaluated eagerly at def-time and crashed on import; fixed via `from __future__ import annotations`). Verified end-to-end on macOS 26/Apple Silicon: builds cleanly, requests/respects the "Bildschirm- und Systemaudioaufnahme" TCC permission, captures real non-silent system audio through the full `recorder.py` pipeline, and `stop()` terminates the subprocess in ~10ms with no orphaned process.
 
 ## Configuration
 
@@ -94,8 +110,10 @@ KIT_TOOLBOX_BASE_URL=https://...    # Optional override (default: https://ki-too
 
 ### Hardware Requirements
 
-- Windows 10/11
-- NVIDIA GPU with CUDA 12.8 (recommended for large-v2/v3 models)
+- Windows 10/11 — primary target, full feature set (mic + system-audio/WASAPI recording)
+- macOS (Apple Silicon) — microphone and system-audio recording both verified working on real hardware (ScreenCaptureKit helper, see `macos/README.md`); combined mic+system is implemented but not yet verified on real hardware; transcription runs via Apple's SpeechAnalyzer on the Neural Engine (macOS 26+, see Key Design Patterns above), not WhisperX; diarization still runs via pyannote on CPU/MPS instead of CUDA
+- Linux — experimental, microphone-only, no system-audio path at all
+- NVIDIA GPU with CUDA 12.8 (recommended for large-v2/v3 models on Windows/Linux)
 - Python 3.11+ (managed via `uv` or system installation)
 
 ### PyTorch / CUDA install

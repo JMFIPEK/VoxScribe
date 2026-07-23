@@ -6,17 +6,17 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 
 ## Features
 
-- **GUI (CustomTkinter)** — native Desktop-App mit Dark Mode
-- **Mikrofon-Aufnahme** — direktes Aufnehmen von Gesprächen
-- **System-Audio (Loopback)** — Aufnahme von Teams/Zoom/Webex über WASAPI
-- **Mikrofon + System-Audio** — beide Quellen gleichzeitig für vollständige Meeting-Aufnahmen
+- **GUI** — **PySide6/Qt** (`gui_qt.py`), die Standard-GUI von VoxScribe: drei Tabs (Aufnahme, Transkription, Einstellungen), aktiv weiterentwickelt. Die ursprüngliche CustomTkinter-GUI (`gui.py`) funktioniert weiterhin, ist aber Legacy und bekommt keine neuen Features mehr
+- **Mikrofon-Aufnahme** — direktes Aufnehmen von Gesprächen (alle Plattformen)
+- **System-Audio (Loopback)** — Aufnahme von Teams/Zoom/Webex über WASAPI (Windows) bzw. ScreenCaptureKit (macOS, experimentell)
+- **Mikrofon + System-Audio** — beide Quellen gleichzeitig für vollständige Meeting-Aufnahmen (Windows; auf macOS implementiert, aber noch nicht auf echter Hardware verifiziert)
 - **Video-Dateien als Eingabe** — MKV, MP4, MOV, WebM, AVI werden direkt transkribiert (nur die Audiospur wird extrahiert, kein ffmpeg nötig)
-- **WhisperX-Transkription** — schnelle Batch-Inference mit `large-v2`/`large-v3` auf GPU
-- **KIT ToolBox (Server)** — alternativ: Transkription über einen gehosteten Whisper-Endpunkt statt lokal (siehe [Server-Modell](#kit-toolbox-server-modell))
-- **Automatische Spracherkennung** — Sprache muss nicht manuell gewählt werden ("Automatisch erkennen")
+- **Transkription** — WhisperX (`large-v2`/`large-v3` auf GPU) unter Windows/Linux; unter macOS läuft die Transkription stattdessen über **Apples SpeechAnalyzer** (Speech-Framework, Neural Engine, macOS 26+) — kein Modell-Download, keine Modellwahl nötig, siehe [macOS-Hinweise](#macos-installation)
+- **KIT ToolBox (Server)** — alternativ (alle Plattformen): Transkription über einen gehosteten Whisper-Endpunkt statt lokal (siehe [Server-Modell](#kit-toolbox-server-modell))
+- **Automatische Spracherkennung** — Sprache muss nicht manuell gewählt werden ("Automatisch erkennen"); auf macOS/SpeechAnalyzer nicht verfügbar, dort wird "Deutsch" angenommen, falls keine Sprache gewählt ist
 - **Detaillierter Fortschritt** — Fortschrittsbalken pro Pipeline-Schritt (Transkription, Alignment, Diarization), auch in der CLI
-- **Word-Level Timestamps** — exakte Wort-Zeitstempel via Forced Alignment (wav2vec2)
-- **Speaker Diarization** — Sprecherzuordnung via pyannote-audio, farbcodiert im Transkript
+- **Word-Level Timestamps** — exakte Wort-Zeitstempel via Forced Alignment (wav2vec2) unter Windows/Linux, bzw. direkt von SpeechAnalyzer unter macOS (dort entfällt der Alignment-Schritt komplett)
+- **Speaker Diarization** — Sprecherzuordnung via pyannote-audio, farbcodiert im Transkript (alle Plattformen unverändert, auch unter macOS)
 - **Sprecher-Wiedererkennung (Voice-Prints)** — einmal benannte Sprecher werden bei zukünftigen Aufnahmen automatisch anhand ihrer Stimme wiedererkannt
 - **Sprecher umbenennen** — nach Transkription können SPEAKER_00 etc. durch echte Namen ersetzt werden
 - **Ausgabeformate** — TXT, SRT (Untertitel), JSON
@@ -25,15 +25,34 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 
 ## Voraussetzungen
 
+### Windows (primäre Zielplattform, voller Funktionsumfang)
+
 - Windows 10/11
 - Python 3.11
 - NVIDIA GPU mit CUDA 12.8 (z.B. RTX 5000, RTX 4090, ...)
 - [CUDA Toolkit 12.8](https://developer.nvidia.com/cuda-12-8-1-download-archive)
 - **[uv](https://docs.astral.sh/uv/)** — schneller Python-Paketmanager (optional, aber empfohlen)
 
+### macOS (Apple Silicon)
+
+- macOS 26 (Tahoe) oder neuer — SpeechAnalyzer (Transkription) und ScreenCaptureKit (System-Audio) sind beides macOS-26+-APIs
+- Apple Silicon (M1 oder neuer)
+- Python 3.11+
+- Xcode Command Line Tools (`xcode-select --install`) — zum Bauen der beiden Swift-Helfer in `macos/`
+- **[uv](https://docs.astral.sh/uv/)** — empfohlen, siehe [Installation](#macos-installation) unten
+- Keine NVIDIA-GPU/CUDA nötig — Transkription läuft über die Neural Engine (SpeechAnalyzer), Alignment/Diarization nutzen MPS (Apple GPU)
+
+### Linux (experimentell)
+
+- Python 3.11+
+- Nur Mikrofon-Aufnahme, kein System-Audio-Weg
+- NVIDIA GPU mit CUDA 12.8 empfohlen für WhisperX (sonst CPU)
+
 ## Installation
 
-### Option 1: Mit uv (empfohlen)
+### Windows
+
+#### Option 1: Mit uv (empfohlen)
 
 `pyproject.toml` pinnt `torch`/`torchaudio`/`torchvision` bereits auf den CUDA-12.8-Index, daher reicht ein einziger Befehl:
 
@@ -51,7 +70,7 @@ uv sync
 > ```
 > (`uv pip install` ohne `--reinstall` hält ein bereits installiertes Paket für "erfüllt" und prüft die Build-Variante nicht.)
 
-### Option 2: Mit venv (Standard Python)
+#### Option 2: Mit venv (Standard Python)
 
 ```bash
 # 1. Virtuelle Umgebung erstellen
@@ -67,6 +86,36 @@ pip install -r requirements.txt
 # 4. PyTorch CUDA-Version sicherstellen
 pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
 ```
+
+### macOS-Installation
+
+Es gibt kein CUDA auf dem Mac — `pyproject.toml`/`requirements.txt` markieren den CUDA-Torch-Index bereits als `win32`/`linux`-only, macOS bekommt automatisch normales PyPI-`torch` mit MPS-Unterstützung. Ein einziger `uv sync` reicht daher auch hier:
+
+```bash
+# 1. uv installieren (falls noch nicht vorhanden)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. Xcode Command Line Tools installieren (falls noch nicht vorhanden) -
+#    noetig, um die beiden Swift-Helfer in macos/ zu bauen
+xcode-select --install
+
+# 3. Abhängigkeiten installieren (erstellt .venv automatisch, inkl. PySide6)
+uv sync
+
+# 4. Swift-Helfer bauen (System-Audio-Aufnahme + SpeechAnalyzer-Transkription)
+cd macos
+./build.sh
+cd ..
+```
+
+Danach venv aktivieren mit `source .venv/bin/activate` (oder `uv run python ...` ohne Aktivierung).
+
+**Wichtig für macOS:**
+- Ohne den `macos/build.sh`-Schritt funktionieren weder System-Audio-Aufnahme noch Transkription — beide rufen kompilierte Binaries in `macos/` als Subprozess auf (`macos/SystemAudioCapture`, `macos/SpeechAnalyzerTranscribe`), die nicht im Repo mitgeliefert werden (siehe `.gitignore`).
+- Die Transkription läuft über Apples `SpeechAnalyzer` (Speech-Framework) statt WhisperX — es gibt daher **keine Modellwahl** in der GUI unter macOS und `download_models.py`/das GPU-Speicher-Kapitel weiter unten sind für macOS nicht relevant.
+- System-Audio-Aufnahme erfordert die Berechtigung „Bildschirm- und Systemaudioaufnahme“ (Systemeinstellungen → Datenschutz & Sicherheit) für den Prozess, der VoxScribe ausführt (Terminal beim Testen, später die gepackte App) — macOS fragt das beim ersten Versuch ab.
+- Speaker Diarization (pyannote) läuft unverändert wie unter Windows/Linux, nur eben mit MPS statt CUDA — siehe [HuggingFace Token](#huggingface-token-für-speaker-diarization) unten, der wird weiterhin gebraucht.
+- Details/Hintergrund zu beiden Swift-Helfern: `macos/README.md`.
 
 ### HuggingFace Token (für Speaker Diarization)
 
@@ -100,14 +149,17 @@ Segmenten — nur die reine Transkription verlässt in diesem Fall den Rechner.
 ### GUI starten
 
 ```bash
-.\.venv\Scripts\activate
-python gui.py
+.\.venv\Scripts\activate     # Windows
+source .venv/bin/activate    # macOS/Linux
+python gui_qt.py
 ```
 
 Oder mit uv (ohne manuelle Aktivierung):
 ```bash
-uv run python gui.py
+uv run python gui_qt.py
 ```
+
+`gui_qt.py` (PySide6/Qt) ist die Standard-GUI von VoxScribe. Die alte CustomTkinter-GUI ist weiterhin über `python gui.py` erreichbar (Legacy, funktional nahezu identisch, aber ohne neue Features) — Tab-/Seitenaufteilung und Bedienung sind im Folgenden am Beispiel von `gui_qt.py` beschrieben. Auf macOS zeigt die Transkriptions-Seite **keine** Modellwahl (siehe unten) — das ist kein Bug, sondern weil Apples SpeechAnalyzer dort die einzige Transkriptions-Engine ist.
 
 Die GUI hat drei Tabs:
 
@@ -122,9 +174,9 @@ Die GUI hat drei Tabs:
 #### Tab: Transkription
 
 - **Audio-/Video-Datei wählen**: Datei-Picker (WAV, MP3, MKV, MP4, ...) oder automatisch nach Aufnahme
-- **Sprache**: "Automatisch erkennen" (Default), Deutsch, Englisch, Französisch, ...
-- **Modell**: lokale Whisper-Modelle (`large-v3`, `large-v2`, `medium`, `base`) oder "KIT ToolBox (Server)"
-- **Speaker Diarization**: Ein/Aus + Min/Max Sprecheranzahl (Felder deaktivieren sich automatisch, wenn Diarization aus ist)
+- **Sprache**: "Automatisch erkennen" (Default, nicht verfügbar unter macOS), Deutsch, Englisch, Französisch, ...
+- **Modell** (nur Windows/Linux): lokale Whisper-Modelle (`large-v3`, `large-v2`, `medium`, `base`) oder "KIT ToolBox (Server)". **Unter macOS entfällt diese Auswahl komplett** — dort wird immer Apples SpeechAnalyzer verwendet
+- **Speaker Diarization**: Ein/Aus + Min/Max Sprecheranzahl (Felder deaktivieren sich automatisch, wenn Diarization aus ist) — auf allen Plattformen identisch, auch unter macOS
 - **Start-Button**: Die Transkription startet ausschließlich per Klick auf "Transkription starten" — nie automatisch beim Auswählen einer Datei
 - **Fortschrittsanzeige**: Detaillierter Balken pro Pipeline-Schritt
 - **Farbcodiertes Transkript**: jeder Sprecher bekommt automatisch eine eigene Farbe
@@ -141,7 +193,8 @@ Die GUI hat drei Tabs:
 
 Virtuelle Umgebung aktivieren:
 ```bash
-.\.venv\Scripts\activate
+.\.venv\Scripts\activate      # Windows
+source .venv/bin/activate     # macOS/Linux
 ```
 
 Oder mit uv (ohne Aktivierung):
@@ -215,19 +268,22 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 ## Projektstruktur
 
 ```
-├── gui.py                # GUI (CustomTkinter)
-├── main.py               # CLI Entry Point
-├── recorder.py           # Audio-Aufnahme (Mikrofon + WASAPI Loopback + kombiniert)
-├── transcriber.py        # WhisperX Transkription + Alignment + Diarization + Server-Modell + Video-Input
-├── speaker_profiles.py   # Persistente Sprecher-Profile (Voice-Prints) fuer Wiedererkennung
-├── hardware_detect.py    # GPU/CPU-Erkennung + Modellempfehlung
-├── download_models.py    # Modelle fuer Offline-/Bundled-Betrieb vorladen
-├── build_exe.py          # PyInstaller-Build fuer eigenstaendige .exe
-├── pyproject.toml        # Python-Abhängigkeiten (inkl. CUDA-PyTorch-Pinning), primäre Quelle für `uv`
-├── requirements.txt      # Python-Abhängigkeiten (alternativ für `pip`/Option 2)
-├── .env                  # HuggingFace Token, KIT ToolBox API-Key (nicht committen!)
+├── gui_qt.py              # Standard-GUI (PySide6/Qt), aktiv weiterentwickelt
+├── qt_app/                # PySide6-GUI-Code: main_window.py, controllers.py, theme.py, pages/, widgets/
+├── gui.py                 # Legacy-GUI (CustomTkinter) — funktioniert weiterhin, keine neuen Features
+├── main.py                # CLI Entry Point
+├── recorder.py            # Audio-Aufnahme (Mikrofon + WASAPI Loopback/ScreenCaptureKit + kombiniert)
+├── transcriber.py         # WhisperX/Apple-SpeechAnalyzer Transkription + Alignment + Diarization + Server-Modell + Video-Input
+├── speaker_profiles.py    # Persistente Sprecher-Profile (Voice-Prints) fuer Wiedererkennung
+├── hardware_detect.py     # GPU/CPU-Erkennung + Modellempfehlung (Windows/Linux)
+├── download_models.py     # Modelle fuer Offline-/Bundled-Betrieb vorladen (Windows/Linux, WhisperX)
+├── build_exe.py           # PyInstaller-Build fuer eigenstaendige .exe (Windows)
+├── macos/                 # macOS-Swift-Helfer: SystemAudioCapture.swift, SpeechAnalyzerTranscribe.swift, build.sh
+├── pyproject.toml         # Python-Abhängigkeiten (inkl. CUDA-PyTorch-Pinning), primäre Quelle für `uv`
+├── requirements.txt       # Python-Abhängigkeiten (alternativ für `pip`/Option 2)
+├── .env                   # HuggingFace Token, KIT ToolBox API-Key (nicht committen!)
 ├── .gitignore
-└── recordings/           # Aufnahmen + Transkripte
+└── recordings/            # Aufnahmen + Transkripte
 ```
 
 ## CLI-Referenz
@@ -245,7 +301,7 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 |--------|---------|-------------|
 | `--source` | `mic` | `mic`, `system` (WASAPI Loopback) oder `both` (Mikrofon + System) |
 | `--language`, `-l` | `de` | Sprache (de, en, fr, es, ...) oder `auto` für automatische Erkennung |
-| `--model`, `-m` | `large-v2` | Whisper-Modell (large-v2, large-v3, medium, base) oder Server-Modell (`server:kit.whisper-large-v3`) |
+| `--model`, `-m` | `large-v2` (Windows/Linux), `apple:speechanalyzer` (macOS) | Whisper-Modell (large-v2, large-v3, medium, base), Server-Modell (`server:kit.whisper-large-v3`) oder `apple:speechanalyzer` (nur macOS) |
 | `--diarize` / `--no-diarize` | `--diarize` | Speaker Diarization an/aus |
 | `--min-speakers` | – | Minimale Sprecheranzahl |
 | `--max-speakers` | – | Maximale Sprecheranzahl |
@@ -257,6 +313,8 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 | `--output`, `-o` | auto | Ausgabepfad |
 
 ## GPU-Speicher
+
+Gilt für Windows/Linux (WhisperX). Unter macOS läuft die Transkription über Apples SpeechAnalyzer (Neural Engine) statt lokaler Whisper-Modelle — diese Tabelle ist dort nicht relevant, nur Alignment/Diarization brauchen dort (MPS-)Speicher, deutlich weniger als ein Whisper-Modell.
 
 | Modell | VRAM |
 |--------|------|
@@ -270,13 +328,14 @@ Die lokalen Modelle werden sequenziell geladen und entladen (Whisper → Alignme
 
 ## Hinweise
 
-- Beim **ersten Start** werden Modelle von HuggingFace heruntergeladen (~3 GB). Danach läuft alles offline (außer bei Nutzung des KIT-ToolBox-Server-Modells).
-- **Mikrofon + System** nimmt beide Quellen gleichzeitig auf und mischt sie — ideal für vollständige Meeting-Transkription.
-- **System-Audio** nimmt auf, was über die Lautsprecher/Kopfhörer ausgegeben wird — ideal für Teams/Zoom.
+- Beim **ersten Start** werden Modelle von HuggingFace heruntergeladen (~3 GB, nur Windows/Linux/WhisperX). Danach läuft alles offline (außer bei Nutzung des KIT-ToolBox-Server-Modells). Unter macOS gibt es keinen Whisper-Modell-Download — Apples SpeechAnalyzer-Sprachmodell wird bei Bedarf einmalig über das Betriebssystem selbst geladen (`AssetInventory`, siehe `macos/SpeechAnalyzerTranscribe.swift`).
+- **Mikrofon + System** nimmt beide Quellen gleichzeitig auf und mischt sie — ideal für vollständige Meeting-Transkription. Unter macOS implementiert, aber noch nicht auf echter Hardware verifiziert (siehe `macos/README.md`).
+- **System-Audio** nimmt auf, was über die Lautsprecher/Kopfhörer ausgegeben wird — ideal für Teams/Zoom. Unter macOS experimentell (ScreenCaptureKit) und erfordert die Berechtigung „Bildschirm- und Systemaudioaufnahme“.
 - In der GUI stoppt die Aufnahme per **Button**, in der CLI mit **ENTER** oder **Ctrl+C**.
 - Transkripte werden im `recordings/`-Ordner gespeichert.
 - **Video-Dateien** (MKV, MP4, MOV, WebM, AVI) können direkt ausgewählt werden — nur die Audiospur wird extrahiert, kein separates ffmpeg nötig.
 - **Sprecher umbenennen & merken**: Nach der Transkription kann man in der GUI SPEAKER_00 etc. durch echte Namen ersetzen. Ist die Checkbox "merken" aktiv, wird die Stimme als Profil gespeichert (`~/.voxscribe/speaker_profiles.json`) und bei zukünftigen Aufnahmen automatisch wiedererkannt — das ist ein heuristischer Stimmabgleich, gelegentliche Fehlzuordnungen (v.a. bei kurzen/leisen Segmenten) sind möglich und sollten vor dem Speichern geprüft werden.
+- **macOS**: keine automatische Spracherkennung bei der Transkription (SpeechAnalyzer kennt keine Sprach-Auto-Detection) — ohne explizite Sprachwahl wird Deutsch angenommen. Diarization (Sprechererkennung) funktioniert unverändert, da sie weiterhin über pyannote läuft, nicht über SpeechAnalyzer.
 
 ## Firmen-Proxy / SSL
 
