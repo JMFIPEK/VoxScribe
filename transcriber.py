@@ -130,10 +130,20 @@ REMOTE_MIN_CHUNK_SECONDS = 5.0
 
 
 def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
-                       api_key: str, base_url: str) -> tuple[list[dict], str | None]:
+                       api_key: str, base_url: str, timeout: float = 1800.0
+                       ) -> tuple[list[dict], str | None]:
     """Schickt einen einzelnen Audio-Chunk an den Server.
 
     Gibt (segmente, roher_sprachname_aus_der_antwort) zurueck.
+
+    `timeout` ist bewusst ein Parameter statt eines festen Werts: die normale
+    Datei-Transkription darf fuer lange Aufnahmen ruhig sehr lange warten
+    (Default 1800s), aber die Live-Zusammenfassung (siehe
+    qt_app/controllers.py::LiveMeetingController) transkribiert wiederholt
+    kurze, rollierende Ausschnitte waehrend eines laufenden Meetings - dort
+    soll ein haengender/extrem langsamer Server nach spaetestens einer Minute
+    als Fehler sichtbar werden statt bis zu 30 Minuten lang kommentarlos beim
+    Status "Transkribiere..." zu verharren.
     """
     import io
     import requests
@@ -151,7 +161,7 @@ def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
         data["language"] = language
     files = {"file": ("audio.flac", buf, "audio/flac")}
 
-    resp = requests.post(url, headers=headers, data=data, files=files, timeout=1800)
+    resp = requests.post(url, headers=headers, data=data, files=files, timeout=timeout)
     if resp.status_code == 413:
         raise _PayloadTooLarge()
     resp.raise_for_status()
@@ -171,10 +181,11 @@ def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
 
 
 def _transcribe_chunk_with_backoff(chunk: np.ndarray, language: str | None, model_name: str,
-                                    api_key: str, base_url: str) -> tuple[list[dict], str | None]:
+                                    api_key: str, base_url: str, timeout: float = 1800.0
+                                    ) -> tuple[list[dict], str | None]:
     """Sendet einen Chunk; wird er mit 413 abgelehnt, wird er rekursiv halbiert."""
     try:
-        return _post_audio_chunk(chunk, language, model_name, api_key, base_url)
+        return _post_audio_chunk(chunk, language, model_name, api_key, base_url, timeout=timeout)
     except _PayloadTooLarge:
         duration = len(chunk) / SAMPLE_RATE
         if duration <= REMOTE_MIN_CHUNK_SECONDS:
@@ -183,8 +194,10 @@ def _transcribe_chunk_with_backoff(chunk: np.ndarray, language: str | None, mode
                 "selbst fuer sehr kurze Audio-Chunks. Server-Konfiguration pruefen."
             )
         mid = len(chunk) // 2
-        left, lang_left = _transcribe_chunk_with_backoff(chunk[:mid], language, model_name, api_key, base_url)
-        right, lang_right = _transcribe_chunk_with_backoff(chunk[mid:], language, model_name, api_key, base_url)
+        left, lang_left = _transcribe_chunk_with_backoff(
+            chunk[:mid], language, model_name, api_key, base_url, timeout=timeout)
+        right, lang_right = _transcribe_chunk_with_backoff(
+            chunk[mid:], language, model_name, api_key, base_url, timeout=timeout)
         offset = mid / SAMPLE_RATE
         for seg in right:
             seg["start"] += offset
@@ -200,6 +213,7 @@ def transcribe_remote(
     base_url: str = DEFAULT_API_BASE_URL,
     chunk_seconds: float = REMOTE_CHUNK_SECONDS,
     on_progress=None,
+    timeout: float = 1800.0,
 ) -> dict:
     """Schickt Audio in Chunks an einen OpenAI-kompatiblen Transkriptions-Endpoint (z.B. KIT ToolBox).
 
@@ -236,7 +250,7 @@ def transcribe_remote(
         chunk_start_time = offset / SAMPLE_RATE
 
         chunk_segments, raw_language = _transcribe_chunk_with_backoff(
-            chunk, request_language, model_name, api_key, base_url)
+            chunk, request_language, model_name, api_key, base_url, timeout=timeout)
         for seg in chunk_segments:
             seg["start"] += chunk_start_time
             seg["end"] += chunk_start_time
@@ -254,6 +268,84 @@ def transcribe_remote(
         offset += chunk_samples
 
     return {"segments": all_segments, "language": detected_language_code or language or "de"}
+
+
+DEFAULT_SUMMARY_MODEL = "kit.mistral-small-4-119b-a8b"
+
+# ISO-Sprachcode -> Name fuer die Sprachanweisung im Zusammenfassungs-Prompt
+# (deckt dieselben Sprachen ab wie qt_app/constants.py::LANGUAGES).
+_LANGUAGE_DISPLAY_NAMES = {
+    "de": "Deutsch", "en": "Englisch", "fr": "Französisch",
+    "es": "Spanisch", "it": "Italienisch",
+}
+
+
+def summarize_meeting(
+    transcript_delta: str,
+    api_key: str,
+    base_url: str = DEFAULT_API_BASE_URL,
+    model: str = DEFAULT_SUMMARY_MODEL,
+    previous_summary: str | None = None,
+    language: str | None = None,
+) -> str:
+    """Fasst eine laufende Meeting-Mitschrift zusammen (Live-Zusammenfassung,
+    siehe qt_app/controllers.py::LiveMeetingController).
+
+    Bekommt bewusst nur das NEUE Transkript-Stueck seit der letzten
+    Zusammenfassung (nicht das gesamte bisherige Transkript) plus die
+    vorherige Zusammenfassung als Kontext, und bittet das Modell, die
+    Zusammenfassung zu AKTUALISIEREN statt komplett neu zu erzeugen - haelt
+    die Tokenkosten bei langen Meetings ungefaehr konstant statt mit der
+    Gesamtlaenge des Transkripts zu wachsen.
+
+    `language` sollte der von der Live-Transkription erkannte ISO-Sprachcode
+    des Meetings sein (siehe LiveMeetingController - dort nach dem ersten
+    transkribierten Ausschnitt "eingefroren"), damit die Zusammenfassung in
+    der Sprache des Meetings antwortet statt in irgendeiner Default-Sprache.
+    """
+    import requests
+
+    if not api_key:
+        raise ValueError(
+            "Kein API-Key fuer KIT ToolBox gesetzt "
+            "(KIT_TOOLBOX_API_KEY in .env oder in den Einstellungen eintragen)."
+        )
+
+    language_name = _LANGUAGE_DISPLAY_NAMES.get((language or "").lower())
+    lang_instruction = (
+        f" Antworte auf {language_name}, der Sprache des Meetings."
+        if language_name else
+        " Antworte in derselben Sprache wie das Transkript."
+    )
+    system_prompt = (
+        "Du bist ein Assistent, der eine laufende Meeting-Mitschrift in Echtzeit "
+        "zusammenfasst. Du bekommst die bisherige Zusammenfassung und den neuen "
+        "Transkript-Abschnitt seit der letzten Zusammenfassung. Aktualisiere die "
+        "Zusammenfassung entsprechend: ergaenze neue Punkte, korrigiere "
+        "ueberholte, wiederhole aber nicht unnoetig bereits Bekanntes. Antworte "
+        "ausschliesslich mit zwei Abschnitten (Ueberschriften 'Bisher besprochen' "
+        "und 'Nächste Schritte'), jeweils als knappe Stichpunktliste." + lang_instruction
+    )
+
+    user_parts = []
+    if previous_summary:
+        user_parts.append(f"Bisherige Zusammenfassung:\n{previous_summary}")
+    user_parts.append(f"Neuer Transkript-Abschnitt:\n{transcript_delta}")
+
+    url = base_url.rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "\n\n".join(user_parts)},
+        ],
+        "temperature": 0.3,
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=120)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"].strip()
 
 
 APPLE_MODEL_PREFIX = "apple:"
@@ -662,7 +754,134 @@ def transcribe(
     _prog(1.0, f"Fertig! (Gesamt: {total:.0f}s)")
     print(f"\nGesamt: {total:.1f}s")
 
+    # Fuer transcribe_multi(): Dauer der Datei, um nachfolgende Dateien im
+    # kombinierten Transkript zeitlich korrekt zu verschieben, ohne die Audio-
+    # Datei ein zweites Mal dekodieren zu muessen.
+    result["duration"] = len(audio) / SAMPLE_RATE
+
     return result
+
+
+def transcribe_multi(
+    audio_paths: list[str],
+    language: str | None = "de",
+    model_size: str = "large-v2",
+    diarize: bool = True,
+    hf_token: str | None = None,
+    min_speakers: int | None = None,
+    max_speakers: int | None = None,
+    batch_size: int = 16,
+    device: str | None = None,
+    on_progress=None,
+    api_key: str | None = None,
+    api_base_url: str = DEFAULT_API_BASE_URL,
+) -> dict:
+    """Transkribiert mehrere Audio-/Video-Dateien nacheinander (per `transcribe()`,
+    unveraendert) und fuegt die Ergebnisse zu einem einzigen zusammenhaengenden
+    Transkript zusammen - fuer die Mehrfachdatei-Auswahl im Transkriptions-Tab
+    (qt_app/pages/transcribe_page.py).
+
+    Zeitstempel jeder Datei werden um die kumulierte Dauer der vorherigen
+    Dateien verschoben, damit das kombinierte Transkript eine durchgehende
+    Zeitachse hat (Datei 2 beginnt zeitlich da, wo Datei 1 endet, usw.).
+
+    Speaker-Labels werden NICHT blind dateiuebergreifend vereinheitlicht:
+    Diarization laeuft pro Datei unabhaengig, SPEAKER_00 in Datei 1 ist nicht
+    notwendigerweise dieselbe Person wie SPEAKER_00 in Datei 2. Deshalb
+    bekommen noch nicht per Voice-Print erkannte Sprecher (siehe
+    speaker_profiles.py) einen Datei-Praefix ("Datei 2: SPEAKER_00"), damit
+    sie in der Umbenennen-UI klar auseinandergehalten werden koennen - bereits
+    erkannte/benannte Sprecher (deren Label bereits ein echter Name statt des
+    rohen SPEAKER_NN-Labels ist) bleiben unveraendert und werden dadurch ueber
+    Dateien hinweg ganz natuerlich zusammengefuehrt.
+    """
+    if not audio_paths:
+        raise ValueError("Keine Dateien zum Transkribieren angegeben.")
+
+    n_files = len(audio_paths)
+    combined_segments = []
+    combined_word_segments = []
+    combined_speaker_id_map = {}
+    combined_speaker_embeddings = {}
+    detected_language = None
+    cumulative_offset = 0.0
+
+    for idx, path in enumerate(audio_paths):
+        file_label = f"Datei {idx + 1}/{n_files} ({os.path.basename(path)})"
+
+        def _file_progress(pct, msg, idx=idx, file_label=file_label):
+            if on_progress:
+                overall = (idx + pct) / n_files
+                on_progress(overall, f"{file_label}: {msg}")
+
+        # Nach der ersten Datei die dort erkannte Sprache fuer die restlichen
+        # festhalten (analog zum "einmal erkennen, dann festhalten"-Muster in
+        # transcribe_remote()), damit die Spracherkennung nicht pro Datei
+        # hin- und herspringt.
+        file_language = language if language else detected_language
+
+        result = transcribe(
+            audio_path=path, language=file_language, model_size=model_size,
+            diarize=diarize, hf_token=hf_token, min_speakers=min_speakers,
+            max_speakers=max_speakers, batch_size=batch_size, device=device,
+            on_progress=_file_progress, api_key=api_key, api_base_url=api_base_url,
+        )
+
+        if detected_language is None:
+            detected_language = result.get("language")
+
+        # Noch nicht erkannte Sprecher (Label == rohe Diarization-ID) dieser
+        # Datei umbenennen, um Kollisionen mit anderen Dateien zu vermeiden;
+        # bereits per Voice-Print erkannte Namen unveraendert lassen, damit
+        # dieselbe Person ueber Dateien hinweg zusammengefuehrt wird.
+        rename_map = {}
+        file_speaker_id_map = result.get("speaker_id_map") or {}
+        file_embeddings = result.get("speaker_embeddings") or {}
+        for raw_id, current_label in file_speaker_id_map.items():
+            if n_files > 1 and raw_id == current_label:
+                new_label = f"Datei {idx + 1}: {current_label}"
+                new_key = f"file{idx}:{raw_id}"
+            else:
+                new_label = current_label
+                new_key = current_label
+            rename_map[current_label] = new_label
+            combined_speaker_id_map[new_key] = new_label
+            if raw_id in file_embeddings:
+                combined_speaker_embeddings[new_key] = file_embeddings[raw_id]
+
+        for seg in result.get("segments", []):
+            if rename_map and seg.get("speaker") in rename_map:
+                seg["speaker"] = rename_map[seg["speaker"]]
+            seg["start"] = seg.get("start", 0.0) + cumulative_offset
+            seg["end"] = seg.get("end", 0.0) + cumulative_offset
+            for w in seg.get("words", []) or []:
+                if "start" in w:
+                    w["start"] += cumulative_offset
+                if "end" in w:
+                    w["end"] += cumulative_offset
+            combined_segments.append(seg)
+
+        for w in result.get("word_segments", []) or []:
+            if rename_map and w.get("speaker") in rename_map:
+                w["speaker"] = rename_map[w["speaker"]]
+            if "start" in w:
+                w["start"] += cumulative_offset
+            if "end" in w:
+                w["end"] += cumulative_offset
+            combined_word_segments.append(w)
+
+        cumulative_offset += result.get("duration", 0.0)
+
+    combined = {
+        "segments": combined_segments,
+        "word_segments": combined_word_segments,
+        "language": detected_language or "de",
+        "duration": cumulative_offset,
+    }
+    if diarize:
+        combined["speaker_id_map"] = combined_speaker_id_map
+        combined["speaker_embeddings"] = combined_speaker_embeddings
+    return combined
 
 
 def format_transcript(result: dict, include_speakers: bool = True) -> str:

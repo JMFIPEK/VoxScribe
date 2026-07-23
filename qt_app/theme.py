@@ -193,10 +193,32 @@ def _generate_icons():
     p.end()
     pix.save(speech_bubble, "PNG")
 
+    # --- Live-Zusammenfassung: Sparkle/Stern (Premium-/KI-Feature) ---
+    live_summary = os.path.join(d, "live_summary.png")
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(ACCENT))
+    cx, cy = size / 2, size / 2
+    outer, inner = size * 0.46, size * 0.13
+    sparkle_path = QPainterPath()
+    sparkle_path.moveTo(cx, cy - outer)
+    sparkle_path.quadTo(cx + inner, cy - inner, cx + outer, cy)
+    sparkle_path.quadTo(cx + inner, cy + inner, cx, cy + outer)
+    sparkle_path.quadTo(cx - inner, cy + inner, cx - outer, cy)
+    sparkle_path.quadTo(cx - inner, cy - inner, cx, cy - outer)
+    sparkle_path.closeSubpath()
+    p.drawPath(sparkle_path)
+    p.end()
+    pix.save(live_summary, "PNG")
+
     return {
         "checkbox_unchecked": unchecked,
         "checkbox_checked": checked,
         "checkbox_disabled": disabled,
+        "live_summary": live_summary,
         "combo_arrow": arrow,
         "record": record,
         "stop": stop,
