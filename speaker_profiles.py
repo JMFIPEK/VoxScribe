@@ -68,7 +68,13 @@ def match_speakers(embeddings: dict, profiles: dict | None = None,
     candidates = []
     for spk, emb in embeddings.items():
         for name, profile in profiles.items():
-            sim = _cosine_similarity(emb, profile["embedding"])
+            try:
+                sim = _cosine_similarity(emb, profile["embedding"])
+            except ValueError:
+                # Beschaedigtes/inkompatibles Profil (z.B. falsche Embedding-
+                # Dimension) - ueberspringen statt den ganzen Abgleich fuer
+                # alle anderen Sprecher/Profile abzubrechen.
+                continue
             if sim >= threshold:
                 candidates.append((sim, spk, name))
     candidates.sort(key=lambda x: x[0], reverse=True)
