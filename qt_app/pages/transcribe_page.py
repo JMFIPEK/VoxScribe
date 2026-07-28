@@ -46,6 +46,7 @@ class TranscribePage(QWidget):
         self._speaker_colors = {}
         self._speaker_entries = {}
         self._speaker_remember_checks = {}
+        self._selected_files = []
         self._build_ui()
         self._wire()
         self._on_diarize_toggled()
@@ -67,7 +68,7 @@ class TranscribePage(QWidget):
         self.file_label = QLabel("Keine Datei ausgewählt")
         self.file_label.setProperty("role", "muted")
         file_row.addWidget(self.file_label, 1)
-        self.browse_btn = QPushButton("Datei wählen...")
+        self.browse_btn = QPushButton("Datei(en) wählen...")
         file_row.addWidget(self.browse_btn)
 
         sep0 = QFrame()
@@ -235,20 +236,36 @@ class TranscribePage(QWidget):
 
     # --------------------------------------------------------------- file
     def set_audio_file(self, path: str):
-        self.file_label.setText(path)
-        self._on_file_changed(path)
+        """Wird extern aufgerufen (RecordPage/LiveMeetingPage nach fertiger
+        Aufnahme) - ersetzt die Auswahl durch genau diese eine Datei."""
+        self._selected_files = [path] if path else []
+        self._update_file_display()
 
     def _browse_file(self):
         start_dir = self.window_.settings.get("output_dir") or "recordings"
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Audio- oder Video-Datei auswählen", start_dir,
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Audio- oder Video-Dateien auswählen", start_dir,
             "Audio & Video (*.wav *.mp3 *.m4a *.flac *.ogg *.mkv *.mp4 *.mov *.webm *.avi);;"
             "Alle Dateien (*.*)")
-        if path:
-            self.set_audio_file(path)
+        if paths:
+            self._selected_files = paths
+            self._update_file_display()
 
-    def _on_file_changed(self, path):
-        valid = bool(path) and os.path.isfile(path)
+    def _update_file_display(self):
+        files = self._selected_files
+        if not files:
+            self.file_label.setText("Keine Datei ausgewählt")
+            self.file_label.setToolTip("")
+        elif len(files) == 1:
+            self.file_label.setText(files[0])
+            self.file_label.setToolTip(files[0])
+        else:
+            self.file_label.setText(f"{len(files)} Dateien ausgewählt (werden zusammengefügt)")
+            self.file_label.setToolTip("\n".join(files))
+        self._on_files_changed()
+
+    def _on_files_changed(self):
+        valid = bool(self._selected_files) and all(os.path.isfile(p) for p in self._selected_files)
         self.start_btn.setEnabled(valid)
         self.status_label.hide()
         self.file_label.setStyleSheet("" if valid else f"color: {theme.TEXT_MUTED};")
@@ -263,8 +280,8 @@ class TranscribePage(QWidget):
 
     # --------------------------------------------------------- transcribe
     def start_transcription(self):
-        audio_path = self.file_label.text()
-        if not audio_path or not os.path.isfile(audio_path):
+        files = self._selected_files
+        if not files or not all(os.path.isfile(p) for p in files):
             self.status_label.show()
             self.status_label.setText("Bitte wähle eine Audio-Datei aus.")
             self.status_label.setStyleSheet(f"color: {theme.DANGER};")
@@ -314,8 +331,7 @@ class TranscribePage(QWidget):
         max_spk = self._parse_int(self.max_spk_edit.text())
         batch_size = self._parse_int(str(settings.get("batch_size", 16))) or 16
 
-        self.window_.transcribe_controller.start(
-            audio_path=audio_path,
+        common_kwargs = dict(
             language=lang_code,
             model_size=model,
             diarize=self.diarize_check.isChecked(),
@@ -327,6 +343,17 @@ class TranscribePage(QWidget):
             api_key=api_key,
             api_base_url=api_base_url,
         )
+
+        # Bei mehreren Dateien: transcribe_multi() (siehe transcriber.py) fuegt
+        # sie nacheinander transkribiert zu einem zusammenhaengenden Ergebnis
+        # zusammen (Zeitstempel verschoben, Sprecher-Labels je Datei
+        # disambiguiert - siehe dortige Docstring). Bei genau einer Datei
+        # bewusst weiterhin der normale Einzeldatei-Pfad, damit sich am
+        # bisherigen Verhalten/den Sprecher-Labels nichts aendert.
+        if len(files) == 1:
+            self.window_.transcribe_controller.start(audio_path=files[0], **common_kwargs)
+        else:
+            self.window_.transcribe_controller.start_multi(audio_paths=files, **common_kwargs)
 
     @staticmethod
     def _parse_int(text):
@@ -424,8 +451,10 @@ class TranscribePage(QWidget):
 
         from transcriber import save_transcript
         formats = [fmt for fmt, cb in self.format_checks.items() if cb.isChecked()] or ["txt"]
-        audio_path = self.file_label.text()
-        base = os.path.splitext(audio_path)[0]
+        first_file = self._selected_files[0] if self._selected_files else "transkript"
+        base = os.path.splitext(first_file)[0]
+        if len(self._selected_files) > 1:
+            base += "_kombiniert"
         saved = save_transcript(self._transcription_result, base, formats=formats)
         if saved:
             self.status_label.show()

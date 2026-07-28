@@ -32,6 +32,21 @@ APPLE_SPEECHANALYZER_MODEL = "apple:speechanalyzer"
 # reine String-Konstante).
 DEFAULT_API_BASE_URL_FALLBACK = "https://ki-toolbox.scc.kit.edu/api/v1"
 
+# Chat-Modelle fuer die Live-Zusammenfassung (qt_app/pages/live_meeting_page.py) -
+# ausschliesslich KIT-ToolBox-Chatmodelle, kein lokales Modell zur Auswahl,
+# da dieses Feature bewusst immer online/serverseitig laeuft. Muss mit
+# transcriber.DEFAULT_SUMMARY_MODEL uebereinstimmen (selber Grund wie oben).
+SUMMARY_MODEL_DISPLAY_NAMES = {
+    "kit.mistral-small-4-119b-a8b": "Mistral Small (schnell, empfohlen)",
+    "kit.gpt-oss-120b": "GPT-OSS 120B",
+    "kit.qwen3.5-397b-A17b": "Qwen 3.5 (397B, MoE)",
+    "kit.minimax-m2.7-229b": "MiniMax M2.7",
+    "kit.gemma4-31b-it": "Gemma 4 (31B, sehr schnell)",
+}
+SUMMARY_MODEL_IDS_BY_DISPLAY = {v: k for k, v in SUMMARY_MODEL_DISPLAY_NAMES.items()}
+SUMMARY_MODELS = list(SUMMARY_MODEL_DISPLAY_NAMES.values())
+DEFAULT_SUMMARY_MODEL_DISPLAY = SUMMARY_MODEL_DISPLAY_NAMES["kit.mistral-small-4-119b-a8b"]
+
 
 def format_time_short(seconds: float) -> str:
     """Formatiert Sekunden als MM:SS (bzw. HH:MM:SS bei >= 1h)."""

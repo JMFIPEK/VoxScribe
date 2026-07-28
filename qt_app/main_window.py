@@ -11,23 +11,28 @@ from qt_app.constants import APP_NAME, APP_SUBTITLE
 from qt_app.controllers import HardwareInfoController, RecorderController, TranscribeController
 from qt_app.pages.record_page import RecordPage
 from qt_app.pages.transcribe_page import TranscribePage
+from qt_app.pages.live_meeting_page import LiveMeetingPage
 from qt_app.pages.settings_page import SettingsPage
 
 # icon-Key (aus theme.get_icons(), None = kein Icon) + Label je Tab
 TAB_ITEMS = [
     ("record", "record", "  Aufnahme"),
     ("transcribe", "speech_bubble", "  Transkription"),
+    ("live", "live_summary", "  Live-Zusammenfassung"),
     ("settings", None, "⚙  Einstellungen"),
 ]
 
 
 class MainWindow(QMainWindow):
-    """Haelt die geteilten Controller/Settings und die drei Haupt-Tabs.
+    """Haelt die geteilten Controller/Settings und die vier Haupt-Tabs.
 
     Aufnahme (Quelle/Geraet waehlen + Live-Pegel/Timer/Stop) ist eine
     einzelne Seite - wie in der alten CTk-GUI. Die Info-Inhalte (Modelle,
     Lizenzen) sind an das Ende der Einstellungen-Seite angehaengt statt
-    einen eigenen Tab zu bekommen.
+    einen eigenen Tab zu bekommen. "Live-Zusammenfassung" ist ein separates
+    Premium-Feature (siehe qt_app/pages/live_meeting_page.py) mit eigener,
+    vereinfachter Aufnahme-Steuerung - bewusst kein Teil des normalen
+    Aufnahme-/Transkriptions-Flows.
     """
 
     def __init__(self):
@@ -69,6 +74,7 @@ class MainWindow(QMainWindow):
         self.pages = {}
         self._add_page("record", RecordPage(self))
         self._add_page("transcribe", TranscribePage(self))
+        self._add_page("live", LiveMeetingPage(self))
         self._add_page("settings", SettingsPage(self))
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -101,4 +107,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):  # noqa: N802 - Qt-Override
         if self.recorder_controller.is_recording:
             self.recorder_controller.stop()
+        live_page = self.pages.get("live")
+        if live_page is not None and live_page.live_controller.is_running:
+            live_page.live_controller.stop()
         super().closeEvent(event)

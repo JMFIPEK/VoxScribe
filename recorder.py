@@ -146,6 +146,36 @@ def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
     return np.pad(audio, (0, length - len(audio)), mode="constant")
 
 
+def _tail_audio_from_frames(frames: list[bytes], channels: int, sample_rate: int,
+                            seconds: float) -> np.ndarray:
+    """Wandelt Frame-Chunks in ein Mono-Float64-Array (int16-Wertebereich) um
+    und schneidet auf die letzten `seconds` Sekunden zu - Baustein fuer
+    AudioRecorder.snapshot_recent_audio()."""
+    audio = _frames_to_mono_float(frames, channels)
+    max_samples = int(seconds * sample_rate)
+    if len(audio) > max_samples:
+        audio = audio[-max_samples:]
+    return audio
+
+
+def _mix_sources(mic_audio: np.ndarray, sys_audio: np.ndarray) -> np.ndarray:
+    """Mischt zwei bereits auf dieselbe Sample-Rate resamplete Mono-Signale
+    (Mikrofon + System-Loopback, int16-Wertebereich als float) - gemeinsame
+    Basis fuer den End-Mix nach dem Stop (_record_both()/_record_both_macos())
+    UND fuer den Live-Snapshot waehrend laufender Aufnahme (siehe
+    AudioRecorder.snapshot_recent_audio()). Gibt den int16-Wertebereich
+    zurueck (weder auf -1..1 normalisiert noch nach int16 gecastet) - Aufrufer
+    entscheiden je nach Zweck (WAV-Speicherung vs. STT-Upload)."""
+    out_len = max(len(mic_audio), len(sys_audio))
+    mic_audio = _pad_to_length(mic_audio, out_len)
+    sys_audio = _pad_to_length(sys_audio, out_len)
+    mixed = (mic_audio * 0.65) + (sys_audio * 0.65)
+    peak = np.max(np.abs(mixed)) if len(mixed) else 0
+    if peak > 32767:
+        mixed = mixed * (32767 / peak)
+    return mixed
+
+
 def _macos_system_audio_binary_path() -> str:
     """Pfad zum kompilierten ScreenCaptureKit-Helfer (siehe macos/README.md)."""
     base = os.path.dirname(os.path.abspath(__file__))
@@ -277,6 +307,16 @@ class AudioRecorder:
         self._thread = None
         self._channels = 1
         self._sample_rate = 16000
+        # Nur bei source == "both" befuellt (siehe _record_both()/
+        # _record_both_macos()) - getrennte Mikrofon-/System-Puffer, damit
+        # snapshot_recent_audio() beide waehrend laufender Aufnahme live
+        # mischen kann, statt nur einmal am Ende (siehe dort).
+        self._mic_frames = None
+        self._sys_frames = None
+        self._mic_rate = None
+        self._mic_channels = None
+        self._sys_rate = None
+        self._sys_channels = None
         self._on_level = None
         self._on_done = None
 
@@ -317,6 +357,57 @@ class AudioRecorder:
     @property
     def is_recording(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def snapshot_recent_audio(self, seconds: float = 180.0):
+        """Gibt die letzten `seconds` Sekunden der bisher aufgenommenen
+        Audiodaten als normalisiertes Mono-Float32-Array (Wertebereich -1..1,
+        16kHz) zurueck - OHNE die laufende Aufnahme zu unterbrechen. Fuer die
+        Live-Zusammenfassung (siehe qt_app/controllers.py::LiveMeetingController),
+        die waehrend einer laufenden Aufnahme periodisch kurze Ausschnitte
+        transkribieren will.
+
+        Unterstuetzt alle drei Quellen, inkl. "both" (Mikrofon + System): dafuer
+        stellen _record_both()/_record_both_macos() ihre sonst lokalen
+        Mikrofon-/System-Frame-Listen zusaetzlich als Instanzattribute
+        (`self._mic_frames`/`self._sys_frames`) bereit, die hier live
+        zugeschnitten und gemischt werden (_mix_sources() - dieselbe
+        Mischformel wie beim End-Mix nach dem Stop).
+
+        Threadsicher, weil rein lesend: die Frame-Listen werden vom Aufnahme-
+        Thread nur per `.append()` erweitert (GIL-atomar), `list(...)` kopiert
+        den aktuellen Stand sofort, ohne den Aufnahme-Thread zu blockieren.
+        """
+        if not self.is_recording:
+            return None
+
+        if self._source == "both":
+            if not self._mic_frames or not self._sys_frames:
+                return None
+            mic_audio = _tail_audio_from_frames(
+                list(self._mic_frames), self._mic_channels, self._mic_rate, seconds)
+            sys_audio = _tail_audio_from_frames(
+                list(self._sys_frames), self._sys_channels, self._sys_rate, seconds)
+            mic_audio = _resample_to_rate(mic_audio, self._mic_rate, OUT_RATE)
+            sys_audio = _resample_to_rate(sys_audio, self._sys_rate, OUT_RATE)
+            mixed = _mix_sources(mic_audio, sys_audio)
+            if len(mixed) == 0:
+                return None
+            return (mixed / 32768.0).astype(np.float32)
+
+        if not self._frames:
+            return None
+
+        audio = _tail_audio_from_frames(
+            list(self._frames), self._channels, self._sample_rate, seconds)
+        if len(audio) == 0:
+            return None
+        audio = _resample_to_rate(audio, self._sample_rate, OUT_RATE)
+
+        # _frames_to_mono_float liefert den int16-Wertebereich als float64
+        # (fuer die interne Misch-/Resample-Pipeline) - transcribe_remote()
+        # erwartet dagegen auf -1..1 normalisierte Werte, wie sie
+        # load_audio_universal() liefert.
+        return (audio / 32768.0).astype(np.float32)
 
     def _record(self):
         if IS_MACOS and self._source == "system":
@@ -488,6 +579,16 @@ class AudioRecorder:
         mic_frames = []
         sys_frames = []
 
+        # Fuer Live-Zusammenfassung (siehe snapshot_recent_audio()) - dieselben
+        # Listenobjekte, mic_callback()/die Lese-Schleife unten haengen per
+        # `.append()` weiter daran an.
+        self._mic_frames = mic_frames
+        self._mic_rate = mic_rate
+        self._mic_channels = mic_ch
+        self._sys_frames = sys_frames
+        self._sys_rate = sys_rate
+        self._sys_channels = sys_ch
+
         def mic_callback(indata, frames, time_info, status):
             data = indata.tobytes()
             mic_frames.append(data)
@@ -560,18 +661,9 @@ class AudioRecorder:
         # Beide Streams zu Mono 16kHz mischen (identisch zu _record_both())
         mic_audio = _frames_to_mono_float(mic_frames, mic_ch)
         sys_audio = _frames_to_mono_float(sys_frames, sys_ch)
-
         mic_audio = _resample_to_rate(mic_audio, mic_rate, OUT_RATE)
         sys_audio = _resample_to_rate(sys_audio, sys_rate, OUT_RATE)
-
-        out_len = max(len(mic_audio), len(sys_audio))
-        mic_audio = _pad_to_length(mic_audio, out_len)
-        sys_audio = _pad_to_length(sys_audio, out_len)
-
-        mixed = (mic_audio * 0.65) + (sys_audio * 0.65)
-        peak = np.max(np.abs(mixed)) if len(mixed) else 0
-        if peak > 32767:
-            mixed = mixed * (32767 / peak)
+        mixed = _mix_sources(mic_audio, sys_audio)
         mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
 
         os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
@@ -669,6 +761,16 @@ class AudioRecorder:
             sys_ch = loopback["maxInputChannels"]
             sys_chunk = _chunk_size_for_rate(sys_rate)
 
+            # Fuer Live-Zusammenfassung (siehe snapshot_recent_audio()) -
+            # dieselben Listenobjekte, `read_loop()` haengt per `.append()`
+            # weiter daran an.
+            self._mic_frames = mic_frames
+            self._mic_rate = mic_rate
+            self._mic_channels = mic_ch
+            self._sys_frames = sys_frames
+            self._sys_rate = sys_rate
+            self._sys_channels = sys_ch
+
             mic_stream = p.open(
                 format=FORMAT, channels=mic_ch, rate=mic_rate,
                 input=True, input_device_index=mic_idx,
@@ -765,21 +867,9 @@ class AudioRecorder:
         # Beide Streams zu Mono 16kHz mischen
         mic_audio = _frames_to_mono_float(mic_frames, mic_ch)
         sys_audio = _frames_to_mono_float(sys_frames, sys_ch)
-
-        # Resample both sources to the output format.
         mic_audio = _resample_to_rate(mic_audio, mic_rate, OUT_RATE)
         sys_audio = _resample_to_rate(sys_audio, sys_rate, OUT_RATE)
-
-        # Keep the full duration and pad the shorter hardware stream.
-        out_len = max(len(mic_audio), len(sys_audio))
-        mic_audio = _pad_to_length(mic_audio, out_len)
-        sys_audio = _pad_to_length(sys_audio, out_len)
-
-        # Mix with headroom and clip only as a final guard.
-        mixed = (mic_audio * 0.65) + (sys_audio * 0.65)
-        peak = np.max(np.abs(mixed)) if len(mixed) else 0
-        if peak > 32767:
-            mixed = mixed * (32767 / peak)
+        mixed = _mix_sources(mic_audio, sys_audio)
         mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
 
         os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
