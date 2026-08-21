@@ -67,6 +67,13 @@ def get_hidden_imports():
         "sklearn.cluster",
         "huggingface_hub",
         "transformers",
+        # Intel Arc GPU transcription backend (transcriber.transcribe_openvino()) -
+        # imported lazily inside that function, not at module load, so PyInstaller's
+        # static import scan needs the explicit hint.
+        "optimum",
+        "optimum.intel",
+        "optimum.intel.openvino",
+        "openvino",
     ]
 
 
@@ -138,6 +145,13 @@ def build():
         "--collect-all=PySide6",
         "--collect-all=pyannote.audio",
         "--collect-all=speechbrain",
+        # Intel Arc GPU backend: openvino ships its inference-device backend
+        # plugins (CPU/GPU/NPU) as native DLLs PyInstaller's default import scan
+        # won't discover on its own - needs the explicit collect-all, same as
+        # torch/ctranslate2 above. Optional at runtime (see hardware_detect.py's
+        # guarded import) so this doesn't break the build on non-Windows.
+        "--collect-all=openvino",
+        "--collect-all=optimum",
         os.path.join(BASE_DIR, "gui_qt.py"),
     ]
 
