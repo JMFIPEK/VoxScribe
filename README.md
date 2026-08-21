@@ -30,6 +30,8 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 
 ### Windows (primäre Zielplattform, voller Funktionsumfang)
 
+Für die fertige `.exe` aus den [GitLab Releases](https://gitlab.kit.edu/kit/ipek/acm/voxscribe/-/releases) reicht **nur Windows 10/11** — kein Python, kein `uv`, keine GPU nötig (Transkription läuft standardmäßig über KIT ToolBox (Server)). Die folgenden Punkte gelten nur, wenn aus dem Quellcode gebaut/entwickelt wird, oder für lokale GPU-Transkription:
+
 - Windows 10/11
 - Python 3.11
 - NVIDIA GPU mit CUDA 12.8 (z.B. RTX 5000, RTX 4090, ...)
@@ -53,7 +55,17 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 
 ## Installation
 
-### Windows
+### Windows — Fertige .exe (kein Python/uv nötig)
+
+Für den schnellsten Einstieg ohne eigene Python-Installation gibt es eine fertig gebaute `.exe` unter den [GitLab Releases](https://gitlab.kit.edu/kit/ipek/acm/voxscribe/-/releases):
+
+1. Neuestes Release herunterladen und entpacken
+2. `VoxScribe.exe` im entpackten Ordner starten — läuft direkt, keine Installation nötig
+3. `.env` mit `HF_TOKEN` (für Speaker Diarization) neben die `.exe` legen, siehe [HuggingFace Token](#huggingface-token-für-speaker-diarization) unten
+
+Die `.exe` bringt **keine** lokalen Whisper-Modelle mit — Transkription läuft standardmäßig über KIT ToolBox (Server). Wird zum ersten Mal ein lokales Modell gebraucht (Server nicht erreichbar, oder bewusst gewählt), lädt die App es automatisch nach (~1-3 GB, einmalig, danach dauerhaft lokal gespeichert). Für Intel Arc GPU muss zusätzlich `python download_models.py` (Schritt 4/4) einmal aus einer normalen Python-Installation heraus gelaufen sein und der `bundled_models/openvino/`-Ordner neben die `.exe` kopiert werden — die `.exe` selbst bringt kein Python/`uv` mit, um das nachträglich auszuführen.
+
+### Windows — Aus dem Quellcode bauen
 
 #### Option 1: Mit uv (empfohlen)
 
