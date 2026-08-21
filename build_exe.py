@@ -1,46 +1,37 @@
-"""Build-Skript: Erstellt die WhisperX .exe mit PyInstaller.
+"""Build-Skript: Erstellt die VoxScribe .exe mit PyInstaller.
 
 Verwendung:
-    1. Zuerst Modelle herunterladen:  python download_models.py
-    2. Dann builden:                  python build_exe.py
+    python build_exe.py
 
-Das Ergebnis liegt in dist/WhisperX/WhisperX.exe
+Das Ergebnis liegt in dist/VoxScribe/VoxScribe.exe
+
+Baut bewusst "online-first" - ohne bundled_models/ vorab einzubetten. Die App
+laedt lokale Modelle ohnehin nur bei Bedarf herunter (KIT ToolBox (Server) ist
+der Default, siehe transcriber.default_model_size()), und die Modelle machen
+mit ~4-9 GB den grossen Teil der Groesse einer eingebetteten .exe aus. Wer
+zusaetzlich eine volloffline-faehige .exe will, kann nach dem Build manuell
+`python download_models.py` ausfuehren und den Ergebnisordner
+(bundled_models/) in dist/VoxScribe/ hineinkopieren - transcriber.py erkennt
+ihn automatisch (siehe _get_bundled_models_dir()), ganz ohne Code-Aenderung.
 """
 
 import os
 import sys
 import subprocess
-import shutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(BASE_DIR, "bundled_models")
 DIST_DIR = os.path.join(BASE_DIR, "dist")
 BUILD_DIR = os.path.join(BASE_DIR, "build")
 
 
 def check_prerequisites():
     """Prueft ob alle Voraussetzungen erfuellt sind."""
-    # PyInstaller installiert?
     try:
         import PyInstaller
         print(f"  [OK] PyInstaller {PyInstaller.__version__}")
     except ImportError:
         print("  [!] PyInstaller nicht installiert. Installiere mit: pip install pyinstaller")
         sys.exit(1)
-
-    # Modelle vorhanden?
-    if not os.path.isdir(MODELS_DIR):
-        print(f"  [!] Modelle nicht gefunden: {MODELS_DIR}")
-        print("  Fuehre zuerst aus: python download_models.py")
-        sys.exit(1)
-
-    whisper_dir = os.path.join(MODELS_DIR, "whisper", "medium")
-    if not os.path.isdir(whisper_dir):
-        print(f"  [!] Whisper medium Modell nicht gefunden: {whisper_dir}")
-        print("  Fuehre zuerst aus: python download_models.py")
-        sys.exit(1)
-
-    print(f"  [OK] Bundled Models: {MODELS_DIR}")
 
 
 def get_hidden_imports():
@@ -80,7 +71,7 @@ def get_hidden_imports():
 def build():
     """Fuehrt den PyInstaller-Build aus."""
     print("=" * 60)
-    print("  WhisperX — .exe Build")
+    print("  VoxScribe — .exe Build")
     print("=" * 60)
     print()
 
@@ -111,16 +102,16 @@ def build():
     for hi in hidden_imports:
         hidden_import_args.extend(["--hidden-import", hi])
 
-    # Data files
-    data_args = [
-        f"--add-data={MODELS_DIR};bundled_models",
-    ]
-    # Logo mitliefern
+    # Data files - bundled_models is deliberately not embedded, see module
+    # docstring ("online-first" build).
+    data_args = []
+    # Logo mitliefern - gui_qt.py looks this up via __file__, which for the
+    # frozen entry script resolves under _internal/, so this one DOES need
+    # --add-data (unlike bundled_models above).
     if os.path.exists(icon_path):
         data_args.append(f"--add-data={icon_path};.")
 
     print(f"  [OK] {len(hidden_imports)} Hidden Imports konfiguriert")
-    print(f"  [OK] bundled_models wird eingebunden")
     print()
 
     print("[3/3] Build starten (das dauert einige Minuten)...")
@@ -128,7 +119,7 @@ def build():
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--name=WhisperX",
+        "--name=VoxScribe",
         "--onedir",
         "--windowed",
         "--noconfirm",
@@ -164,21 +155,17 @@ def build():
         print("\n  [FEHLER] Build fehlgeschlagen!")
         sys.exit(1)
 
-    # bundled_models in dist-Ordner kopieren (fuer --onedir)
-    dist_app_dir = os.path.join(DIST_DIR, "WhisperX")
-    dist_models = os.path.join(dist_app_dir, "bundled_models")
-
-    if not os.path.isdir(dist_models):
-        print("\n  Kopiere bundled_models in dist/...")
-        shutil.copytree(MODELS_DIR, dist_models)
+    dist_app_dir = os.path.join(DIST_DIR, "VoxScribe")
 
     print()
     print("=" * 60)
     print("  Build erfolgreich!")
-    print(f"  Ergebnis: {dist_app_dir}\\WhisperX.exe")
+    print(f"  Ergebnis: {dist_app_dir}\\VoxScribe.exe")
     print()
-    print("  Den gesamten Ordner dist/WhisperX/ weitergeben.")
-    print("  Die .exe startet direkt ohne Installation.")
+    print("  Den gesamten Ordner dist/VoxScribe/ weitergeben.")
+    print("  Die .exe startet direkt ohne Installation. Lokale Modelle werden")
+    print("  automatisch heruntergeladen, sobald sie tatsaechlich gebraucht")
+    print("  werden (KIT ToolBox (Server) ist der Standard und braucht keine).")
     print("=" * 60)
 
 

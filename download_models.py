@@ -175,7 +175,7 @@ def export_openvino_model(whisper_size: str = "medium"):
 
 def main():
     print("=" * 60)
-    print("  WhisperX — Modelle herunterladen")
+    print("  VoxScribe — Modelle herunterladen")
     print("=" * 60)
     print(f"\nZielordner: {MODELS_DIR}\n")
 

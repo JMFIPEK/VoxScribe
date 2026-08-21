@@ -41,7 +41,7 @@ def _normalize_language_code(raw: str | None, fallback: str | None = None) -> st
 def _get_base_dir() -> str:
     """Gibt das Basisverzeichnis der Anwendung zurueck (PyInstaller-kompatibel)."""
     if getattr(sys, "frozen", False):
-        # PyInstaller --onedir: exe liegt in dist/WhisperX/
+        # PyInstaller --onedir: exe liegt in dist/VoxScribe/
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
