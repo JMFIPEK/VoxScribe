@@ -6,12 +6,15 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 
 ## Features
 
-- **GUI** — **PySide6/Qt** (`gui_qt.py`), die Standard-GUI von VoxScribe: drei Tabs (Aufnahme, Transkription, Einstellungen), aktiv weiterentwickelt. Die ursprüngliche CustomTkinter-GUI (`gui.py`) funktioniert weiterhin, ist aber Legacy und bekommt keine neuen Features mehr
+- **GUI** — **PySide6/Qt** (`gui_qt.py`), die Standard-GUI von VoxScribe: vier Tabs (Aufnahme, Transkription, Live-Zusammenfassung, Einstellungen), aktiv weiterentwickelt. Die ursprüngliche CustomTkinter-GUI (`gui.py`) funktioniert weiterhin, ist aber Legacy und bekommt keine neuen Features mehr
+- **Live-Zusammenfassung** (Premium, nur KIT ToolBox) — während einer laufenden Aufnahme wird die Besprechung in periodischen Intervallen live transkribiert und zusammengefasst, siehe [eigener Tab](#tab-live-zusammenfassung)
+- **Mehrere Dateien gleichzeitig transkribieren** — im Transkriptions-Tab können mehrere Audio-/Video-Dateien auf einmal ausgewählt werden; sie werden nacheinander transkribiert und zu einem durchgehenden Transkript zusammengefügt (Zeitstempel fortlaufend, Sprecher pro Datei getrennt, außer bereits per Voice-Print erkannte)
 - **Mikrofon-Aufnahme** — direktes Aufnehmen von Gesprächen (alle Plattformen)
 - **System-Audio (Loopback)** — Aufnahme von Teams/Zoom/Webex über WASAPI (Windows) bzw. ScreenCaptureKit (macOS, experimentell)
 - **Mikrofon + System-Audio** — beide Quellen gleichzeitig für vollständige Meeting-Aufnahmen (Windows; auf macOS implementiert, aber noch nicht auf echter Hardware verifiziert)
 - **Video-Dateien als Eingabe** — MKV, MP4, MOV, WebM, AVI werden direkt transkribiert (nur die Audiospur wird extrahiert, kein ffmpeg nötig)
 - **Transkription** — WhisperX (`large-v2`/`large-v3` auf GPU) unter Windows/Linux; unter macOS läuft die Transkription stattdessen über **Apples SpeechAnalyzer** (Speech-Framework, Neural Engine, macOS 26+) — kein Modell-Download, keine Modellwahl nötig, siehe [macOS-Hinweise](#macos-installation)
+- **Intel Arc GPU** (Windows) — auf Rechnern mit Intel-Arc-Grafik (z.B. Core-Ultra-Notebooks) läuft die Transkription optional über **Intel OpenVINO** statt CTranslate2 (das keine Intel-GPUs unterstützt) — deutlich schneller als CPU-Transkription, siehe [Intel Arc GPU](#intel-arc-gpu-windows)
 - **KIT ToolBox (Server)** — alternativ (alle Plattformen): Transkription über einen gehosteten Whisper-Endpunkt statt lokal (siehe [Server-Modell](#kit-toolbox-server-modell))
 - **Automatische Spracherkennung** — Sprache muss nicht manuell gewählt werden ("Automatisch erkennen"); auf macOS/SpeechAnalyzer nicht verfügbar, dort wird "Deutsch" angenommen, falls keine Sprache gewählt ist
 - **Detaillierter Fortschritt** — Fortschrittsbalken pro Pipeline-Schritt (Transkription, Alignment, Diarization), auch in der CLI
@@ -173,15 +176,24 @@ Die GUI hat drei Tabs:
 
 #### Tab: Transkription
 
-- **Audio-/Video-Datei wählen**: Datei-Picker (WAV, MP3, MKV, MP4, ...) oder automatisch nach Aufnahme
+- **Audio-/Video-Datei(en) wählen**: Datei-Picker (WAV, MP3, MKV, MP4, ...) oder automatisch nach Aufnahme — es können auch **mehrere Dateien auf einmal** ausgewählt werden, die dann nacheinander transkribiert und zu einem durchgehenden Transkript zusammengefügt werden (fortlaufende Zeitstempel; Sprecher werden pro Datei getrennt gehalten, außer bereits per Voice-Print erkannte, die dateiübergreifend zusammengeführt werden)
 - **Sprache**: "Automatisch erkennen" (Default, nicht verfügbar unter macOS), Deutsch, Englisch, Französisch, ...
-- **Modell** (nur Windows/Linux): lokale Whisper-Modelle (`large-v3`, `large-v2`, `medium`, `base`) oder "KIT ToolBox (Server)". **Unter macOS entfällt diese Auswahl komplett** — dort wird immer Apples SpeechAnalyzer verwendet
+- **Modell** (nur Windows/Linux): lokale Whisper-Modelle (`large-v3`, `large-v2`, `medium`, `base`), "medium (Intel Arc GPU)" (siehe [Intel Arc GPU](#intel-arc-gpu-windows)) oder "KIT ToolBox (Server)". **Unter macOS entfällt diese Auswahl komplett** — dort wird immer Apples SpeechAnalyzer verwendet
 - **Speaker Diarization**: Ein/Aus + Min/Max Sprecheranzahl (Felder deaktivieren sich automatisch, wenn Diarization aus ist) — auf allen Plattformen identisch, auch unter macOS
 - **Start-Button**: Die Transkription startet ausschließlich per Klick auf "Transkription starten" — nie automatisch beim Auswählen einer Datei
 - **Fortschrittsanzeige**: Detaillierter Balken pro Pipeline-Schritt
 - **Farbcodiertes Transkript**: jeder Sprecher bekommt automatisch eine eigene Farbe
 - **Sprecher umbenennen & merken**: SPEAKER_00 → echter Name zuweisen; bereits erkannte Sprecher (Voice-Print-Abgleich) werden mit vorausgefülltem Namen angezeigt. Die Checkbox "merken" (Standard: an) speichert/aktualisiert das Stimmprofil, damit dieselbe Person in zukünftigen Aufnahmen automatisch erkannt wird
 - **Speichern**: TXT, SRT und/oder JSON + Kopieren in Zwischenablage
+
+#### Tab: Live-Zusammenfassung
+
+Premium-Feature, ausschließlich über KIT ToolBox (Server) — läuft während einer laufenden Aufnahme, nicht wie die anderen Tabs erst danach:
+
+- Eigene, vereinfachte Aufnahme-Steuerung (Quelle wählen, Start/Stop) — teilt sich die Aufnahme mit dem Aufnahme-Tab, es kann immer nur eine Aufnahme gleichzeitig laufen
+- Alle ~15s wird ein rollierendes Zeitfenster der bisherigen Aufnahme transkribiert, alle ~20s (oder per Klick auf "Jetzt zusammenfassen") wird daraus eine laufend aktualisierte Zusammenfassung erstellt
+- Nur die Zusammenfassung wird angezeigt, kein Live-Transkript — die Sprache wird automatisch aus der ersten Transkription übernommen
+- Sendet Audio kontinuierlich an den KIT-ToolBox-Server — anders als der Rest der App **nicht 100 % lokal**
 
 #### Tab: Einstellungen
 
@@ -301,12 +313,12 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 |--------|---------|-------------|
 | `--source` | `mic` | `mic`, `system` (WASAPI Loopback) oder `both` (Mikrofon + System) |
 | `--language`, `-l` | `de` | Sprache (de, en, fr, es, ...) oder `auto` für automatische Erkennung |
-| `--model`, `-m` | `large-v2` (Windows/Linux), `apple:speechanalyzer` (macOS) | Whisper-Modell (large-v2, large-v3, medium, base), Server-Modell (`server:kit.whisper-large-v3`) oder `apple:speechanalyzer` (nur macOS) |
+| `--model`, `-m` | `large-v2` (Windows/Linux), `apple:speechanalyzer` (macOS) | Whisper-Modell (large-v2, large-v3, medium, base), `openvino:GPU:medium` (Intel Arc GPU, nur Windows, siehe [Intel Arc GPU](#intel-arc-gpu-windows)), Server-Modell (`server:kit.whisper-large-v3`) oder `apple:speechanalyzer` (nur macOS) |
 | `--diarize` / `--no-diarize` | `--diarize` | Speaker Diarization an/aus |
 | `--min-speakers` | – | Minimale Sprecheranzahl |
 | `--max-speakers` | – | Maximale Sprecheranzahl |
 | `--batch-size` | `16` | Batch-Größe (kleiner = weniger VRAM) |
-| `--device-compute` | auto | `cuda` oder `cpu` |
+| `--device-compute` | auto | `cuda`, `xpu` (Intel Arc GPU), `mps` (Apple Silicon) oder `cpu` — steuert nur Alignment/Diarization, nicht die Whisper-Transkription selbst (die läuft bei `openvino:...`-Modellen unabhängig davon immer über OpenVINO) |
 | `--api-key` | – | API-Key für Server-Modelle (alternativ: `KIT_TOOLBOX_API_KEY` in `.env`) |
 | `--api-base-url` | – | Basis-URL für Server-Modelle (alternativ: `KIT_TOOLBOX_BASE_URL` in `.env`) |
 | `--format`, `-f` | `txt` | Ausgabeformate: txt, srt, json (kommagetrennt) |
@@ -325,6 +337,26 @@ Gilt für Windows/Linux (WhisperX). Unter macOS läuft die Transkription über A
 | KIT ToolBox (Server) | kein lokales VRAM für die Transkription selbst nötig — Alignment und Diarization laufen aber weiterhin lokal (deutlich kleinerer Bedarf, ca. wie `base`) |
 
 Die lokalen Modelle werden sequenziell geladen und entladen (Whisper → Alignment → Diarization), um den VRAM optimal zu nutzen.
+
+## Intel Arc GPU (Windows)
+
+Auf Rechnern mit Intel-Arc-Grafik (z.B. Core-Ultra-Notebooks) und **ohne** NVIDIA-GPU kann die Transkription über **Intel OpenVINO** statt CTranslate2 laufen — CTranslate2 (WhisperX' Standard-Backend) unterstützt keine Intel-GPUs, daher ist das ein eigener, paralleler Pfad. Im Test auf einem Core Ultra 7 258V (Arc 140V) rund **10–16× Echtzeit** statt ~1,6–1,9× auf der CPU.
+
+**Einrichtung:**
+
+1. `optimum-intel[openvino]` wird auf Windows automatisch mit installiert (`uv sync`)
+2. Modell nach OpenVINO IR exportieren (einmalig, ~3 GB Download): `python download_models.py` (Schritt 4/4)
+3. In der GUI im Transkriptions-Tab **"medium (Intel Arc GPU)"** als Modell wählen, oder per CLI: `python main.py transcribe -i recordings/aufnahme.wav -m openvino:GPU:medium`
+
+**Alignment/Diarization zusätzlich auf der Arc GPU** (statt CPU): dafür muss `torch` mit dem Intel-XPU-Build statt CUDA installiert sein — kein `--extra`-Flag in `pyproject.toml` möglich (uv unterstützt keinen sauberen Index-Wechsel per Extra für ein und dasselbe Paket), stattdessen manuell:
+
+```bash
+uv pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/xpu --reinstall
+```
+
+**Wichtig:** Ein einzelner `torch`-Build unterstützt immer nur ein GPU-Backend (CUDA **oder** XPU, nie beide) — nach diesem Befehl läuft `torch` nicht mehr mit CUDA. Zusätzlich setzt jedes `uv run`/`uv sync` (ohne `--no-sync`) den in `pyproject.toml` gepinnten CUDA-Build automatisch wieder zurück, weil `pyproject.toml` weiterhin CUDA als Standard deklariert — auf einer Arc-GPU-Maschine daher entweder dauerhaft `uv run --no-sync python ...` verwenden, oder direkt `.venv\Scripts\python.exe` statt `uv run` aufrufen.
+
+Ist eine NVIDIA-GPU vorhanden, hat sie automatisch Vorrang (CUDA > Intel-Arc-GPU > Apple MPS > CPU), das gilt sowohl für die Whisper-Transkription als auch für Alignment/Diarization (`hardware_detect.recommend_model()`).
 
 ## Hinweise
 
