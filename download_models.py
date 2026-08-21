@@ -122,6 +122,57 @@ def download_diarization_model():
     return dest
 
 
+def export_openvino_model(whisper_size: str = "medium"):
+    """Exportiert ein Whisper-Modell nach OpenVINO IR (INT8-quantisiert) fuer die
+    Intel Arc GPU/NPU-Transkription (siehe transcriber.transcribe_openvino()).
+
+    Windows/Intel-spezifisch - braucht `optimum-intel[openvino]` (siehe
+    pyproject.toml, nur auf sys_platform == 'win32' installiert) und exportiert
+    aus dem HuggingFace-Transformers-Checkpoint (nicht dem CTranslate2-Format,
+    das download_whisper_model() oben laedt - das ist ein anderes Modellformat
+    fuer einen komplett anderen Inferenz-Backend).
+    """
+    try:
+        from optimum.commands.optimum_cli import main as optimum_cli_main
+    except ImportError:
+        print("  [UEBERSPRUNGEN] optimum-intel[openvino] nicht installiert "
+              "(nur auf Windows vorgesehen) - Intel Arc GPU/NPU-Backend nicht verfuegbar.")
+        return None
+
+    dest = os.path.join(MODELS_DIR, "openvino", f"whisper-{whisper_size}")
+    if os.path.exists(os.path.join(dest, "openvino_encoder_model.bin")):
+        print(f"  [OK] OpenVINO Whisper {whisper_size} bereits vorhanden")
+        return dest
+
+    hf_model_id = {
+        "medium": "openai/whisper-medium",
+        "large-v2": "openai/whisper-large-v2",
+        "large-v3": "openai/whisper-large-v3",
+        "base": "openai/whisper-base",
+    }.get(whisper_size, f"openai/whisper-{whisper_size}")
+
+    print(f"  Exportiere {hf_model_id} nach OpenVINO IR (INT8)...")
+    # Ueber die optimum-cli-Befehlsklasse statt main_export() direkt, weil die
+    # INT8/INT4-Gewichtskompressions-Konfiguration (OVConfig/quantization_config)
+    # intern recht komplex aus --weight-format zusammengebaut wird (siehe
+    # optimum.commands.export.openvino.OVExportCommand.run) - das hier
+    # nachzubauen waere fehleranfaellig, die CLI-Klasse macht es bereits korrekt.
+    original_argv = sys.argv
+    try:
+        sys.argv = [
+            "optimum-cli", "export", "openvino",
+            "--model", hf_model_id,
+            "--task", "automatic-speech-recognition-with-past",
+            "--weight-format", "int8",
+            dest,
+        ]
+        optimum_cli_main()
+    finally:
+        sys.argv = original_argv
+    print(f"  [OK] OpenVINO Whisper {whisper_size} -> {dest}")
+    return dest
+
+
 def main():
     print("=" * 60)
     print("  WhisperX — Modelle herunterladen")
@@ -130,16 +181,20 @@ def main():
 
     os.makedirs(MODELS_DIR, exist_ok=True)
 
-    print("[1/3] Whisper-Modell (medium)...")
+    print("[1/4] Whisper-Modell (medium)...")
     download_whisper_model("medium")
     print()
 
-    print("[2/3] Alignment-Modelle (DE + EN)...")
+    print("[2/4] Alignment-Modelle (DE + EN)...")
     download_align_models()
     print()
 
-    print("[3/3] Diarization-Modell (pyannote)...")
+    print("[3/4] Diarization-Modell (pyannote)...")
     download_diarization_model()
+    print()
+
+    print("[4/4] OpenVINO-Modell fuer Intel Arc GPU/NPU (medium)...")
+    export_openvino_model("medium")
     print()
 
     print("=" * 60)

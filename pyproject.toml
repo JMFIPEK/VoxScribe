@@ -19,6 +19,12 @@ dependencies = [
     "torch",
     "torchaudio",
     "torchvision",
+    # Intel Arc GPU / NPU transcription backend (OpenVINO) - CTranslate2 (the
+    # default WhisperX backend above) has no Intel GPU/NPU support at all, so
+    # this is a parallel opt-in path, see transcriber.py's OPENVINO_MODEL_PREFIX.
+    # Windows-only: this project's other platforms (macOS/Linux) don't target
+    # Intel Arc hardware - macOS uses Apple's SpeechAnalyzer instead.
+    "optimum-intel[openvino]>=2.1; sys_platform == 'win32'",
 ]
 
 [project.scripts]
@@ -50,6 +56,20 @@ include = ["qt_app*"]
 # macOS has no CUDA at all (Apple Silicon uses the MPS/Metal backend instead), so
 # the marker below only applies this index on win32/linux - macOS falls through
 # to the default PyPI wheels, which already bundle MPS support.
+#
+# Intel Arc GPU machines (no NVIDIA GPU) can get Arc-accelerated Alignment/
+# Diarization (hardware_detect.py/transcriber.py's "xpu" torch device) by
+# manually switching to the XPU torch build instead:
+#   uv pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/xpu --reinstall
+# This is a deliberate manual step, not a `uv sync --extra xpu` flag: a single
+# torch install can only be built for one GPU backend (CUDA and XPU are
+# separate wheels from separate indexes), and uv's `tool.uv.sources` marker
+# system doesn't cleanly support switching a source based on which extra is
+# requested (tried; produces "conflicting indexes" - it wants one deterministic
+# index per python/platform split, not one that also varies by requested extra).
+# Whisper transcription itself (transcriber.transcribe_openvino(), the
+# "openvino:GPU:medium" model) is unaffected either way - that always runs via
+# OpenVINO regardless of which torch build is installed.
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },

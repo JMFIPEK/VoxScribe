@@ -3,6 +3,7 @@
 import gc
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -119,6 +120,127 @@ REMOTE_MODEL_PREFIX = "server:"
 def is_remote_model(model_size: str) -> bool:
     """Prueft, ob es sich um ein serverseitig gehostetes Modell handelt."""
     return model_size.startswith(REMOTE_MODEL_PREFIX)
+
+
+OPENVINO_MODEL_PREFIX = "openvino:"
+
+
+def is_openvino_model(model_size: str) -> bool:
+    """Prueft, ob die Transkription ueber das Intel-OpenVINO-Backend laufen soll
+    (Arc GPU oder NPU) statt ueber CTranslate2 (WhisperX' Standard-Backend, das
+    keinerlei Intel-GPU/NPU-Unterstuetzung hat - siehe CLAUDE.md)."""
+    return model_size.startswith(OPENVINO_MODEL_PREFIX)
+
+
+def openvino_model_id(ov_device: str, whisper_size: str) -> str:
+    """Baut den model_size-String fuer transcribe(), z.B. 'openvino:GPU:medium'."""
+    return f"{OPENVINO_MODEL_PREFIX}{ov_device}:{whisper_size}"
+
+
+def _parse_openvino_model(model_size: str) -> tuple[str, str]:
+    """'openvino:GPU:medium' -> ('GPU', 'medium')."""
+    rest = model_size[len(OPENVINO_MODEL_PREFIX):]
+    ov_device, whisper_size = rest.split(":", 1)
+    return ov_device, whisper_size
+
+
+_OPENVINO_LANG_TOKEN_RE = re.compile(r"<\|([a-z]{2})\|>")
+
+
+def _detect_language_from_token_ids(processor, generated_ids) -> str | None:
+    """Extrahiert den von Whisper erkannten Sprach-Token (z.B. '<|de|>') aus den
+    ersten generierten Tokens, wenn generate() ohne forcierte Sprache lief."""
+    tokens = processor.tokenizer.convert_ids_to_tokens(generated_ids[0].tolist()[:3])
+    for tok in tokens:
+        m = _OPENVINO_LANG_TOKEN_RE.match(tok)
+        if m:
+            return m.group(1)
+    return None
+
+
+_OPENVINO_CHUNK_SECONDS = 30
+
+
+def transcribe_openvino(
+    audio_path: str,
+    language: str | None,
+    ov_device: str,
+    whisper_size: str,
+    on_progress=None,
+) -> dict:
+    """Transkribiert ueber Intel's OpenVINO-Backend (Arc GPU oder NPU) statt CTranslate2.
+
+    CTranslate2 (der Standard-WhisperX-Inferenz-Backend, siehe transcribe()) hat
+    keinerlei Intel-GPU/NPU-Support - dieser Pfad laedt stattdessen ein per
+    `optimum-intel` nach OpenVINO IR exportiertes Whisper-Modell (Export-Schritt
+    siehe download_models.py::export_openvino_model()) und transkribiert es auf
+    dem gewuenschten OpenVINO-Device ("GPU" = Arc, "NPU" = Intel AI Boost, "CPU").
+
+    Chunking ist manuell in 30s-Fenstern implementiert statt ueber HuggingFace's
+    eigene ASR-Pipeline (`transformers.pipeline("automatic-speech-recognition",
+    chunk_length_s=...)`), weil deren interne Chunking-Iteratoren zwingend
+    `torchcodec` importieren (ffmpeg-basiert) - das ist in diesem Projekt bewusst
+    nicht installiert, siehe load_audio_universal()/load_audio_without_ffmpeg()
+    an anderer Stelle in dieser Datei fuer denselben ffmpeg-Vermeidungs-Grund.
+
+    Liefert dieselbe {"segments": [...], "language": ...}-Form wie der
+    CTranslate2-Pfad zurueck, damit der nachfolgende Alignment-Schritt (der die
+    hier fehlenden Wort-Zeitstempel ergaenzt) und Diarization unveraendert
+    weiterlaufen koennen.
+    """
+    from transformers import AutoProcessor
+    from optimum.intel.openvino import OVModelForSpeechSeq2Seq
+
+    bundled = _get_bundled_models_dir()
+    if not bundled:
+        raise FileNotFoundError(
+            "Kein bundled_models-Ordner gefunden - 'python download_models.py' "
+            "ausfuehren, um das OpenVINO-Modell zu exportieren."
+        )
+    model_dir = os.path.join(bundled, "openvino", f"whisper-{whisper_size}")
+    if not os.path.isdir(model_dir):
+        raise FileNotFoundError(
+            f"OpenVINO-Modell nicht gefunden: {model_dir}. "
+            "Erst 'python download_models.py' ausfuehren."
+        )
+    cache_dir = os.path.join(bundled, "openvino", "_ov_cache")
+
+    processor = AutoProcessor.from_pretrained(model_dir)
+    model = OVModelForSpeechSeq2Seq.from_pretrained(
+        model_dir, device=ov_device, ov_config={"CACHE_DIR": cache_dir}
+    )
+
+    audio = load_audio_universal(audio_path)
+    sr = SAMPLE_RATE
+    chunk_samples = _OPENVINO_CHUNK_SECONDS * sr
+    n_chunks = max(1, -(-len(audio) // chunk_samples))
+
+    detected_language = language
+    segments = []
+    for i, start in enumerate(range(0, len(audio), chunk_samples)):
+        chunk = audio[start:start + chunk_samples]
+        inputs = processor(chunk, sampling_rate=sr, return_tensors="pt")
+        gen_kwargs = {"task": "transcribe"}
+        if detected_language:
+            gen_kwargs["language"] = detected_language
+        generated_ids = model.generate(inputs["input_features"], **gen_kwargs)
+        if detected_language is None:
+            # Whisper erkennt die Sprache im ersten (unforcierten) Aufruf selbst -
+            # ab hier fuer alle weiteren Chunks konsistent forcieren, analog zum
+            # CTranslate2-Pfad, der ebenfalls nur die ersten 30s zur Erkennung nutzt.
+            detected_language = _detect_language_from_token_ids(processor, generated_ids) or "de"
+        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+        if text:
+            segments.append({
+                "start": start / sr,
+                "end": min(start + chunk_samples, len(audio)) / sr,
+                "text": text,
+            })
+        if on_progress:
+            on_progress((i + 1) / n_chunks * 100)
+
+    del model
+    return {"segments": segments, "language": detected_language or "de"}
 
 
 class _PayloadTooLarge(Exception):
@@ -503,27 +625,41 @@ def transcribe(
         Dict mit "segments", "language" und ggf. Speaker-Labels
     """
     if device is None:
+        # Prioritaet dGPU > iGPU > CPU: CUDA (dedizierte NVIDIA-GPU) zuerst,
+        # dann Intel XPU (Arc-GPU - nur verfuegbar, wenn torch mit einem
+        # XPU-faehigen Build installiert ist, siehe pyproject.toml's "xpu"-Extra;
+        # die Standard-CUDA-Installation hat torch.xpu.is_available() == False
+        # und faellt hier transparent durch), dann Apple MPS.
         if torch.cuda.is_available():
             device = "cuda"
+        elif getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
+            device = "xpu"
         elif torch.backends.mps.is_available():
             device = "mps"
         else:
             device = "cpu"
 
-    # CTranslate2 (WhisperX' Inference-Backend) kennt nur "cuda"/"cpu" - kein
-    # MPS. Alignment (wav2vec2) und Diarization (pyannote) sind plain PyTorch
-    # und koennen MPS dagegen nutzen, daher zwei getrennte Device-Variablen.
+    # CTranslate2 (WhisperX' Inference-Backend) kennt nur "cuda"/"cpu" - weder
+    # MPS noch XPU. Alignment (wav2vec2) und Diarization (pyannote) sind plain
+    # PyTorch und koennen MPS/XPU dagegen nutzen, daher zwei getrennte
+    # Device-Variablen.
     whisper_device = device if device == "cuda" else "cpu"
     torch_device = device
 
     compute_type = "float16" if whisper_device == "cuda" else "int8"
     remote = is_remote_model(model_size)
     apple = is_apple_model(model_size)
+    openvino = is_openvino_model(model_size)
 
     if apple:
         print(f"Device: Transkription=Apple Neural Engine (SpeechAnalyzer), Diarization={torch_device}")
+    elif openvino:
+        ov_device, _ = _parse_openvino_model(model_size)
+        print(f"Device: Transkription=Intel OpenVINO ({ov_device}), Alignment/Diarization={torch_device}")
     elif device == "mps":
         print(f"Device: Whisper={whisper_device} ({compute_type}), Alignment/Diarization={torch_device} (Apple MPS)")
+    elif device == "xpu":
+        print(f"Device: Whisper={whisper_device} ({compute_type}), Alignment/Diarization={torch_device} (Intel Arc GPU)")
     else:
         print(f"Device: {device} ({compute_type})")
     print(f"Modell: {model_size}")
@@ -570,6 +706,24 @@ def transcribe(
         print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
         print(f"     {n_segs} Segmente erkannt")
         _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
+    elif openvino:
+        ov_device, whisper_size = _parse_openvino_model(model_size)
+        print(f"1/3  Transkription via Intel OpenVINO ({ov_device})...")
+        _prog(0.0, "OpenVINO-Modell laden...")
+
+        def _openvino_progress(frac):
+            mapped = frac / 100 * 0.40
+            _prog(mapped, f"Transkription... {frac:.0f}%")
+
+        result = transcribe_openvino(
+            audio_path, language, ov_device, whisper_size, on_progress=_openvino_progress)
+        audio = load_audio_universal(audio_path)
+
+        t1 = time.time()
+        n_segs = len(result["segments"])
+        print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} Segmente erkannt")
+        _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
     elif remote:
         remote_model_name = model_size[len(REMOTE_MODEL_PREFIX):]
         print(f"1/3  Transkription via Server-Modell ({remote_model_name})...")
@@ -596,17 +750,22 @@ def transcribe(
         print("1/3  Transkription laeuft...")
         _prog(0.0, "Whisper-Modell laden...")
 
-        whisper_download_root = None
+        whisper_arch = model_size
         whisper_local_only = False
         if bundled:
             whisper_path = os.path.join(bundled, "whisper", model_size)
             if os.path.isdir(whisper_path):
-                whisper_download_root = whisper_path
+                # faster_whisper's WhisperModel takes a directory as-is (no HF
+                # lookup at all) if given a path directly - passing it via
+                # download_root instead would be treated as a cache_dir expecting
+                # the models--org--name/snapshots/<rev>/... HF cache layout, which
+                # download_models.py's flat output_dir=... download doesn't produce.
+                whisper_arch = whisper_path
                 whisper_local_only = True
 
         model = whisperx.load_model(
-            model_size, whisper_device, compute_type=compute_type, language=language,
-            download_root=whisper_download_root, local_files_only=whisper_local_only,
+            whisper_arch, whisper_device, compute_type=compute_type, language=language,
+            download_root=None, local_files_only=whisper_local_only,
         )
 
         _prog(0.10, "Audio laden...")
@@ -671,6 +830,8 @@ def transcribe(
         gc.collect()
         if torch_device == "cuda":
             torch.cuda.empty_cache()
+        elif torch_device == "xpu":
+            torch.xpu.empty_cache()
         elif torch_device == "mps":
             torch.mps.empty_cache()
 
@@ -745,6 +906,8 @@ def transcribe(
             gc.collect()
             if torch_device == "cuda":
                 torch.cuda.empty_cache()
+            elif torch_device == "xpu":
+                torch.xpu.empty_cache()
             elif torch_device == "mps":
                 torch.mps.empty_cache()
     else:
