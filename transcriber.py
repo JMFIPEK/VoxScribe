@@ -498,15 +498,40 @@ def _apple_speechanalyzer_binary_path() -> str:
     return os.path.join(_get_base_dir(), "macos", "SpeechAnalyzerTranscribe")
 
 
-def default_model_size() -> str:
-    """Plattform-Default fuer model_size, wenn der Aufrufer keinen expliziten Wunsch hat.
+DEFAULT_SERVER_MODEL = f"{REMOTE_MODEL_PREFIX}kit.whisper-large-v3"
 
-    Auf macOS ist Apples SpeechAnalyzer (Neural Engine) die einzige lokale
-    Transkriptions-Engine - kein Whisper-Modell-Download/-Inferenz mehr, siehe
-    CLAUDE.md ("Apple Silicon (MPS) acceleration is partial by design"). Auf
-    Windows/Linux bleibt WhisperX (lokal) unveraendert der Default.
+
+def default_model_size() -> str:
+    """Plattform-uebergreifender Default fuer model_size, wenn der Aufrufer keinen
+    expliziten Wunsch hat: KIT ToolBox (Server) - schnell nutzbar ohne lokalen
+    Modell-Download, unabhaengig von der jeweiligen Hardware. transcribe()
+    faellt automatisch auf default_local_model_size() zurueck, falls der
+    Server-Aufruf fehlschlaegt (Netzwerk, kein API-Key, Server down, ...), siehe
+    dort. Das aendert die vorherige "100% lokal by default"-Zusicherung bewusst -
+    lokal bleibt weiterhin explizit waehlbar und ist der automatische Fallback,
+    ist aber nicht mehr der Default selbst.
     """
-    return APPLE_SPEECHANALYZER_MODEL if sys.platform == "darwin" else "large-v2"
+    return DEFAULT_SERVER_MODEL
+
+
+def default_local_model_size() -> str:
+    """Empfohlenes *lokales* Modell - genutzt als Fallback, wenn das Server-Modell
+    (der eigentliche Default, siehe default_model_size()) fehlschlaegt, und
+    ueberall dort, wo explizit ein lokales statt des Server-Modells gewuenscht
+    ist. Plattform-/Hardware-abhaengig:
+    - macOS: immer Apples SpeechAnalyzer (Neural Engine) - die einzige lokale
+      Transkriptions-Engine dort, kein Whisper-Modell-Download/-Inferenz mehr,
+      siehe CLAUDE.md ("Apple Silicon (MPS) acceleration is partial by design").
+    - Windows/Linux: die von hardware_detect.recommend_model() ermittelte
+      Empfehlung - eine dedizierte NVIDIA-GPU (CUDA) empfiehlt large-v3/medium/
+      base je nach VRAM, eine Intel Arc GPU (kein CUDA vorhanden) empfiehlt das
+      OpenVINO-Modell, sonst faellt es auf eine RAM-basierte CPU-Groesse zurueck.
+    """
+    if sys.platform == "darwin":
+        return APPLE_SPEECHANALYZER_MODEL
+    from hardware_detect import recommend_model
+    model_size, _device, _reason = recommend_model()
+    return model_size
 
 
 def transcribe_apple(
@@ -735,11 +760,23 @@ def transcribe(
             _prog(mapped, f"Sende Audio an Server... {frac * 100:.0f}%")
 
         _prog(0.10, f"Sende Audio an Server ({remote_model_name})...")
-        result = transcribe_remote(
-            audio, language, remote_model_name,
-            api_key=api_key, base_url=api_base_url,
-            on_progress=_remote_progress,
-        )
+        try:
+            result = transcribe_remote(
+                audio, language, remote_model_name,
+                api_key=api_key, base_url=api_base_url,
+                on_progress=_remote_progress,
+            )
+        except Exception as e:
+            fallback_model = default_local_model_size()
+            print(f"     [WARNUNG] Server-Modell fehlgeschlagen ({e}) "
+                  f"- Fallback auf lokales Modell ({fallback_model})")
+            _prog(0.0, f"Server-Modell fehlgeschlagen - Fallback auf {fallback_model}...")
+            return transcribe(
+                audio_path, language=language, model_size=fallback_model, diarize=diarize,
+                hf_token=hf_token, min_speakers=min_speakers, max_speakers=max_speakers,
+                batch_size=batch_size, device=device, on_progress=on_progress,
+                api_key=api_key, api_base_url=api_base_url,
+            )
 
         t1 = time.time()
         n_segs = len(result["segments"])

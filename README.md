@@ -2,7 +2,7 @@
 
 **VoxScribe** ist die Spracheingabe-Komponente für **ORION** (Obsidian Retrieval for Information and Organized Notes).
 
-Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain/whisperX). Unterstützt Mikrofon- und System-Audio-Aufnahme (z.B. Teams/Zoom via WASAPI Loopback) sowie Video-Dateien (MKV, MP4, ...) als Eingabe, mit anschließender Transkription inkl. Speaker Diarization und Sprecher-Wiedererkennung. Läuft standardmäßig 100 % lokal nach einmaligem Modell-Download — optional kann die Transkription auch an einen gehosteten Server (KIT ToolBox) ausgelagert werden.
+Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain/whisperX). Unterstützt Mikrofon- und System-Audio-Aufnahme (z.B. Teams/Zoom via WASAPI Loopback) sowie Video-Dateien (MKV, MP4, ...) als Eingabe, mit anschließender Transkription inkl. Speaker Diarization und Sprecher-Wiedererkennung. Standardmäßig wird für die Transkription der gehostete Server (KIT ToolBox) verwendet — läuft die Anfrage dorthin ins Leere (kein Netzwerk, Server nicht erreichbar, ...), wird automatisch auf das für die jeweilige Hardware/Plattform empfohlene lokale Modell zurückgefallen. Ein rein lokales Modell kann jederzeit auch explizit gewählt werden — dann läuft die komplette Pipeline 100 % lokal nach einmaligem Modell-Download.
 
 ## Features
 
@@ -313,7 +313,7 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 |--------|---------|-------------|
 | `--source` | `mic` | `mic`, `system` (WASAPI Loopback) oder `both` (Mikrofon + System) |
 | `--language`, `-l` | `de` | Sprache (de, en, fr, es, ...) oder `auto` für automatische Erkennung |
-| `--model`, `-m` | `large-v2` (Windows/Linux), `apple:speechanalyzer` (macOS) | Whisper-Modell (large-v2, large-v3, medium, base), `openvino:GPU:medium` (Intel Arc GPU, nur Windows, siehe [Intel Arc GPU](#intel-arc-gpu-windows)), Server-Modell (`server:kit.whisper-large-v3`) oder `apple:speechanalyzer` (nur macOS) |
+| `--model`, `-m` | `server:kit.whisper-large-v3` (fällt bei Fehlern automatisch auf das empfohlene lokale Modell zurück) | Whisper-Modell (large-v2, large-v3, medium, base), `openvino:GPU:medium` (Intel Arc GPU, nur Windows, siehe [Intel Arc GPU](#intel-arc-gpu-windows)), Server-Modell (`server:kit.whisper-large-v3`) oder `apple:speechanalyzer` (nur macOS) |
 | `--diarize` / `--no-diarize` | `--diarize` | Speaker Diarization an/aus |
 | `--min-speakers` | – | Minimale Sprecheranzahl |
 | `--max-speakers` | – | Maximale Sprecheranzahl |

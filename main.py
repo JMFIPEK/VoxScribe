@@ -189,9 +189,11 @@ def main():
     )
     sub_transcribe.add_argument(
         "--model", "-m", default=None,
-        help=("Whisper-Modell (large-v2, large-v3, medium, base), Server-Modell "
+        help=("Whisper-Modell (large-v2, large-v3, medium, base), OpenVINO-Modell "
+              "(openvino:GPU:medium, Intel Arc GPU), Server-Modell "
               "(z.B. server:kit.whisper-large-v3) oder apple:speechanalyzer. "
-              "Default: large-v2 (Windows/Linux) bzw. apple:speechanalyzer (macOS)")
+              "Default: KIT ToolBox (Server) - faellt bei Fehlern automatisch auf "
+              "das empfohlene lokale Modell zurueck (Hardware-/Plattform-abhaengig)")
     )
     sub_transcribe.add_argument(
         "--diarize", action="store_true", default=True,
