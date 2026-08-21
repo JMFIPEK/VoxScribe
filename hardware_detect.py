@@ -7,7 +7,12 @@ import torch
 
 
 def get_gpu_info() -> dict | None:
-    """Ermittelt GPU-Informationen (Name, VRAM, Backend) falls CUDA oder MPS verfuegbar."""
+    """Ermittelt GPU-Informationen (Name, VRAM, Backend) falls CUDA, Intel XPU oder
+    MPS verfuegbar sind. Prioritaet dGPU > iGPU > integrierte Alternative: CUDA
+    (dedizierte NVIDIA-GPU) wird zuerst geprueft, dann Intel XPU (Arc-iGPU/dGPU -
+    nur verfuegbar, wenn torch mit einem XPU-faehigen Build installiert wurde,
+    siehe pyproject.toml's "xpu"-Extra; die staerker verbreitete CUDA-Standard-
+    Installation hat torch.xpu.is_available() == False), dann Apple MPS."""
     if torch.cuda.is_available():
         try:
             gpu_name = torch.cuda.get_device_name(0)
@@ -16,6 +21,16 @@ def get_gpu_info() -> dict | None:
             vram_bytes = getattr(props, "total_memory", None) or getattr(props, "total_mem", 0)
             vram_total = vram_bytes / (1024 ** 3)  # GB
             return {"name": gpu_name, "vram_gb": vram_total, "backend": "cuda"}
+        except Exception:
+            return None
+
+    if getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
+        try:
+            gpu_name = torch.xpu.get_device_name(0)
+            props = torch.xpu.get_device_properties(0)
+            vram_bytes = getattr(props, "total_memory", 0)
+            vram_total = vram_bytes / (1024 ** 3)  # GB
+            return {"name": gpu_name, "vram_gb": vram_total, "backend": "xpu"}
         except Exception:
             return None
 
@@ -57,13 +72,42 @@ def get_cpu_info() -> dict:
     return {"name": cpu_name, "cores": cpu_count, "ram_gb": ram_gb}
 
 
+def get_openvino_devices() -> list[str] | None:
+    """Ermittelt die von OpenVINO erkannten Inferenz-Geraete (z.B. ['CPU','GPU','NPU']
+    fuer eine Intel Arc GPU + NPU). Gibt None zurueck, wenn das optionale
+    `optimum-intel[openvino]`-Paket nicht installiert ist (nur auf Windows in
+    pyproject.toml vorgesehen, siehe transcriber.transcribe_openvino())."""
+    try:
+        from openvino import Core
+    except ImportError:
+        return None
+    try:
+        return Core().available_devices
+    except Exception:
+        return None
+
+
+def _bundled_openvino_model_exists(whisper_size: str = "medium") -> bool:
+    """Prueft, ob download_models.py::export_openvino_model() bereits gelaufen ist
+    (bundled_models/openvino/whisper-<size>/) - ohne dieses Modell kann
+    transcribe_openvino() nichts laden, auch wenn eine Arc GPU/NPU erkannt wird."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    marker = os.path.join(base, "bundled_models", "openvino", f"whisper-{whisper_size}",
+                           "openvino_encoder_model.bin")
+    return os.path.isfile(marker)
+
+
 def recommend_model() -> tuple[str, str, str]:
     """Empfiehlt das optimale Modell basierend auf der verfuegbaren Hardware.
 
     Returns:
         Tuple (model_name, device, reason)
-        - model_name: "large-v3", "large-v2", "medium", oder "base"
-        - device: "cuda", "mps" oder "cpu"
+        - model_name: "large-v3", "large-v2", "medium", "base" oder
+          "openvino:GPU:medium" (Intel Arc GPU via OpenVINO)
+        - device: "cuda", "xpu", "mps" oder "cpu" - Geraet fuer Alignment/Diarization
+          (plain PyTorch). Bei "openvino:..."-Modellen laeuft die eigentliche
+          Whisper-Transkription unabhaengig davon immer ueber OpenVINO auf dem im
+          model_name kodierten Geraet, siehe transcriber.transcribe_openvino()
         - reason: Begruendung der Empfehlung
     """
     gpu = get_gpu_info()
@@ -82,6 +126,25 @@ def recommend_model() -> tuple[str, str, str]:
         else:
             return ("base", "cuda",
                     f"GPU {gpu['name']} mit {vram:.1f} GB VRAM — base empfohlen")
+
+    # Keine CUDA-GPU: Intel Arc GPU via OpenVINO pruefen, bevor auf reine
+    # CPU-Transkription (CTranslate2) zurueckgefallen wird - im Benchmark auf
+    # einem Core Ultra 7 258V (Arc 140V) rund 6x schneller als CPU-int8.
+    ov_devices = get_openvino_devices() or []
+    if "GPU" in ov_devices and _bundled_openvino_model_exists("medium"):
+        # Alignment/Diarization (plain PyTorch) koennen dieselbe Arc GPU nur
+        # nutzen, wenn torch selbst mit einem XPU-faehigen Build installiert
+        # ist (siehe pyproject.toml's "xpu"-Extra) - der Standard-Install
+        # (CUDA-Build) hat torch.xpu.is_available() == False, dann laeuft nur
+        # die Whisper-Transkription selbst (via OpenVINO) auf der Arc GPU.
+        if gpu is not None and gpu["backend"] == "xpu":
+            return ("openvino:GPU:medium", "xpu",
+                    f"Intel Arc GPU erkannt — Transkription (OpenVINO) und "
+                    "Alignment/Diarization (torch XPU) laufen beide auf der GPU")
+        return ("openvino:GPU:medium", "cpu",
+                "Intel Arc GPU erkannt (OpenVINO) — deutlich schneller als CPU-Transkription "
+                "(CTranslate2 unterstuetzt keine Intel-GPUs, siehe CLAUDE.md). "
+                "Alignment/Diarization laufen auf der CPU (torch ohne XPU-Build installiert)")
 
     # Kein CUDA (auch Apple Silicon/MPS): Modellgroesse anhand RAM/Kerne
     # waehlen, da die eigentliche Whisper-Transkription ueber CTranslate2
@@ -119,5 +182,16 @@ def get_hardware_summary() -> str:
                       "— beschleunigt Alignment/Diarization, Whisper-Transkription läuft auf der CPU")
     else:
         lines.append("GPU: Keine CUDA- oder MPS-fähige GPU erkannt")
+
+    # Zusaetzlich zu CUDA/MPS: Intel Arc GPU/NPU via OpenVINO (siehe
+    # get_openvino_devices()) - unabhaengig von obigem gpu-Wert, da
+    # get_gpu_info() nur CUDA/MPS kennt und Arc-Hardware separat erkannt wird.
+    ov_devices = get_openvino_devices()
+    if ov_devices:
+        intel_devices = [d for d in ov_devices if d != "CPU"]
+        if intel_devices:
+            bundled = _bundled_openvino_model_exists("medium")
+            status = "" if bundled else " (Modell noch nicht exportiert - 'python download_models.py' ausfuehren)"
+            lines.append(f"Intel OpenVINO: {', '.join(intel_devices)} erkannt{status}")
 
     return "\n".join(lines)

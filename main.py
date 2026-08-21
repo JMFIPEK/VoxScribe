@@ -220,9 +220,11 @@ def main():
         help="Batch-Groesse (kleiner = weniger VRAM). Default: 16"
     )
     sub_transcribe.add_argument(
-        "--device-compute", choices=["cuda", "mps", "cpu"], default=None,
-        help="Compute Device (auto-detect wenn nicht gesetzt). 'mps' beschleunigt "
-             "auf Apple Silicon nur Alignment/Diarization, nicht die Whisper-Transkription."
+        "--device-compute", choices=["cuda", "xpu", "mps", "cpu"], default=None,
+        help="Compute Device fuer Alignment/Diarization (auto-detect wenn nicht "
+             "gesetzt). 'mps'/'xpu' beschleunigen nur Alignment/Diarization, nicht "
+             "die Whisper-Transkription (ausser bei 'openvino:...'-Modellen, die "
+             "immer unabhaengig via OpenVINO laufen)."
     )
     sub_transcribe.add_argument("--output", "-o", help="Ausgabe-Pfad (ohne Endung)")
     sub_transcribe.add_argument(
@@ -252,7 +254,7 @@ def main():
     sub_run.add_argument("--max-speakers", type=int, default=None)
     sub_run.add_argument("--batch-size", type=int, default=16)
     sub_run.add_argument(
-        "--device-compute", choices=["cuda", "mps", "cpu"], default=None
+        "--device-compute", choices=["cuda", "xpu", "mps", "cpu"], default=None
     )
     sub_run.add_argument("--format", "-f", default="txt")
     sub_run.set_defaults(func=cmd_run)

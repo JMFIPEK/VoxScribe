@@ -13,6 +13,7 @@ MODEL_DISPLAY_NAMES = {
     "large-v2": "large-v2",
     "medium": "medium",
     "base": "base",
+    "openvino:GPU:medium": "medium (Intel Arc GPU)",
     "server:kit.whisper-large-v3": "KIT ToolBox (Server)",
 }
 MODEL_IDS_BY_DISPLAY = {v: k for k, v in MODEL_DISPLAY_NAMES.items()}
