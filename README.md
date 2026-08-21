@@ -6,7 +6,7 @@ Lokale Audio-Aufnahme und Transkription mit [WhisperX](https://github.com/m-bain
 
 ## Features
 
-- **GUI** — **PySide6/Qt** (`gui_qt.py`), die Standard-GUI von VoxScribe: vier Tabs (Aufnahme, Transkription, Live-Zusammenfassung, Einstellungen), aktiv weiterentwickelt. Die ursprüngliche CustomTkinter-GUI (`gui.py`) funktioniert weiterhin, ist aber Legacy und bekommt keine neuen Features mehr
+- **GUI** — **PySide6/Qt** (`gui_qt.py`): vier Tabs (Aufnahme, Transkription, Live-Zusammenfassung, Einstellungen)
 - **Live-Zusammenfassung** (Premium, nur KIT ToolBox) — während einer laufenden Aufnahme wird die Besprechung in periodischen Intervallen live transkribiert und zusammengefasst, siehe [eigener Tab](#tab-live-zusammenfassung)
 - **Mehrere Dateien gleichzeitig transkribieren** — im Transkriptions-Tab können mehrere Audio-/Video-Dateien auf einmal ausgewählt werden; sie werden nacheinander transkribiert und zu einem durchgehenden Transkript zusammengefügt (Zeitstempel fortlaufend, Sprecher pro Datei getrennt, außer bereits per Voice-Print erkannte)
 - **Mikrofon-Aufnahme** — direktes Aufnehmen von Gesprächen (alle Plattformen)
@@ -162,7 +162,7 @@ Oder mit uv (ohne manuelle Aktivierung):
 uv run python gui_qt.py
 ```
 
-`gui_qt.py` (PySide6/Qt) ist die Standard-GUI von VoxScribe. Die alte CustomTkinter-GUI ist weiterhin über `python gui.py` erreichbar (Legacy, funktional nahezu identisch, aber ohne neue Features) — Tab-/Seitenaufteilung und Bedienung sind im Folgenden am Beispiel von `gui_qt.py` beschrieben. Auf macOS zeigt die Transkriptions-Seite **keine** Modellwahl (siehe unten) — das ist kein Bug, sondern weil Apples SpeechAnalyzer dort die einzige Transkriptions-Engine ist.
+Auf macOS zeigt die Transkriptions-Seite **keine** Modellwahl (siehe unten) — das ist kein Bug, sondern weil Apples SpeechAnalyzer dort die einzige Transkriptions-Engine ist.
 
 Die GUI hat drei Tabs:
 
@@ -280,9 +280,8 @@ python main.py run --source system -l de -m large-v2 --min-speakers 2 --max-spea
 ## Projektstruktur
 
 ```
-├── gui_qt.py              # Standard-GUI (PySide6/Qt), aktiv weiterentwickelt
+├── gui_qt.py              # GUI Entry Point (PySide6/Qt)
 ├── qt_app/                # PySide6-GUI-Code: main_window.py, controllers.py, theme.py, pages/, widgets/
-├── gui.py                 # Legacy-GUI (CustomTkinter) — funktioniert weiterhin, keine neuen Features
 ├── main.py                # CLI Entry Point
 ├── recorder.py            # Audio-Aufnahme (Mikrofon + WASAPI Loopback/ScreenCaptureKit + kombiniert)
 ├── transcriber.py         # WhisperX/Apple-SpeechAnalyzer Transkription + Alignment + Diarization + Server-Modell + Video-Input

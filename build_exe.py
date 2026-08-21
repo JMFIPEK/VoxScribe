@@ -59,7 +59,7 @@ def get_hidden_imports():
         "scipy",
         "scipy.signal",
         "numpy",
-        "customtkinter",
+        "PySide6",
         "dotenv",
         "psutil",
         "PIL",
@@ -135,10 +135,10 @@ def build():
         "--collect-all=whisperx",
         "--collect-all=faster_whisper",
         "--collect-all=ctranslate2",
-        "--collect-all=customtkinter",
+        "--collect-all=PySide6",
         "--collect-all=pyannote.audio",
         "--collect-all=speechbrain",
-        os.path.join(BASE_DIR, "gui.py"),
+        os.path.join(BASE_DIR, "gui_qt.py"),
     ]
 
     print("  Befehl:", " ".join(cmd[:10]), "...")

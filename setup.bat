@@ -74,11 +74,11 @@ echo.
 echo Naechste Schritte:
 echo   1. .env Datei erstellen und HF_TOKEN eintragen
 echo   2. Modelle herunterladen: uv run python download_models.py
-echo   3. GUI starten: uv run python gui.py
+echo   3. GUI starten: uv run python gui_qt.py
 echo.
 echo Oder virtuelle Umgebung aktivieren und Befehle direkt ausfuehren:
 echo   call .venv\Scripts\activate
-echo   python gui.py
+echo   python gui_qt.py
 echo.
 
 endlocal

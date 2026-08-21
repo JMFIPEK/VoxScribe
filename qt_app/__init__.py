@@ -1,4 +1,4 @@
-"""VoxScribe — PySide6 GUI (Nachfolger von gui.py/CustomTkinter).
+"""VoxScribe — PySide6 GUI.
 
 Struktur:
     main_window.py   MainWindow mit Seitenleiste + QStackedWidget

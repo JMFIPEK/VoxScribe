@@ -6,8 +6,7 @@ soundfile>=0.13
 scipy
 numpy
 python-dotenv
-customtkinter>=5.2   # Alte GUI (gui.py) - wird schrittweise durch PySide6 (gui_qt.py) ersetzt
-PySide6>=6.7          # Neue GUI (gui_qt.py)
+PySide6>=6.7          # GUI (gui_qt.py)
 psutil
 av                    # Video-container audio extraction (MKV, MP4, ...)
 requests              # KIT ToolBox (Server) remote transcription

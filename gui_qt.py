@@ -1,8 +1,7 @@
-"""VoxScribe — PySide6 GUI Entry Point (Nachfolger von gui.py/CustomTkinter).
+"""VoxScribe — PySide6 GUI Entry Point.
 
-Baut auf demselben Backend auf wie gui.py (recorder.py, transcriber.py,
-hardware_detect.py, speaker_profiles.py) - siehe qt_app/ fuer die
-Seiten-Implementierung (main_window.py, pages/, widgets/).
+Baut auf recorder.py/transcriber.py/hardware_detect.py/speaker_profiles.py auf
+- siehe qt_app/ fuer die Seiten-Implementierung (main_window.py, pages/, widgets/).
 """
 
 import os
