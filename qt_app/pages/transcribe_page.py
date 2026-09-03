@@ -228,7 +228,7 @@ class TranscribePage(QWidget):
         providers can change on the Settings page at any time."""
         if self.model_combo is None:
             return
-        import providers
+        import voxscribe.providers as providers
 
         previous = self.model_combo.currentText()
         self._model_ids_by_display = dict(MODEL_DISPLAY_NAMES)
@@ -470,7 +470,7 @@ class TranscribePage(QWidget):
             return
         self._apply_speaker_names()
 
-        from transcriber import save_transcript
+        from voxscribe.transcriber import save_transcript
         formats = [fmt for fmt, cb in self.format_checks.items() if cb.isChecked()] or ["txt"]
         first_file = self._selected_files[0] if self._selected_files else "transcript"
         base = os.path.splitext(first_file)[0]
@@ -565,7 +565,7 @@ class TranscribePage(QWidget):
         if not mapping or not self._transcription_result:
             return
 
-        import speaker_profiles
+        import voxscribe.speaker_profiles as speaker_profiles
 
         result = self._transcription_result
         speaker_id_map = result.setdefault("speaker_id_map", {})

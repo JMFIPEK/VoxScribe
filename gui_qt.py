@@ -1,7 +1,8 @@
 """VoxScribe — PySide6 GUI entry point.
 
-Builds on recorder.py/transcriber.py/hardware_detect.py/speaker_profiles.py -
-see qt_app/ for the page implementations (main_window.py, pages/, widgets/).
+Builds on voxscribe/recorder.py, voxscribe/transcriber.py,
+voxscribe/hardware_detect.py, voxscribe/speaker_profiles.py - see qt_app/ for
+the page implementations (main_window.py, pages/, widgets/).
 """
 
 import os
@@ -81,9 +82,9 @@ def main():
 
     # Must happen before any torch import (including the deferred one in
     # HardwareInfoController/TranscribeController's background threads) - see
-    # gpu_setup.py: makes sure torch matches the actual GPU (Intel Arc vs.
-    # NVIDIA) before any code path loads torch.
-    import gpu_setup
+    # voxscribe/gpu_setup.py: makes sure torch matches the actual GPU (Intel
+    # Arc vs. NVIDIA) before any code path loads torch.
+    from voxscribe import gpu_setup
 
     def _gpu_status(msg):
         splash.showMessage(msg, Qt.AlignBottom | Qt.AlignHCenter, Qt.white)

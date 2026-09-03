@@ -44,7 +44,9 @@ def _get_base_dir() -> str:
     if getattr(sys, "frozen", False):
         # PyInstaller --onedir: the exe lives in dist/VoxScribe/
         return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+    # Non-frozen: this file lives in voxscribe/, the project root (where
+    # bundled_models/ and macos/ actually live) is one level up.
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _get_bundled_models_dir() -> str | None:
@@ -428,7 +430,7 @@ def default_model_size() -> str:
     back to a local model automatically if a chosen provider call fails
     (network, server down, ...), see there.
     """
-    from providers import get_default_provider
+    from voxscribe.providers import get_default_provider
     provider = get_default_provider()
     if provider:
         return remote_model_id(provider["id"])
@@ -450,7 +452,7 @@ def default_local_model_size() -> str:
     """
     if sys.platform == "darwin":
         return APPLE_SPEECHANALYZER_MODEL
-    from hardware_detect import recommend_model
+    from voxscribe.hardware_detect import recommend_model
     model_size, _device, _reason = recommend_model()
     return model_size
 
@@ -676,7 +678,7 @@ def transcribe(
         print(f"     {n_segs} segments detected")
         _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
     elif remote:
-        from providers import get_provider
+        from voxscribe.providers import get_provider
 
         provider_id = model_size[len(REMOTE_MODEL_PREFIX):]
         provider = get_provider(provider_id)
@@ -834,12 +836,21 @@ def transcribe(
                 token=hf_token, device=torch_device, cache_dir=diarize_cache
             )
 
+            def _diarize_progress(pct_within):
+                """pct_within: 0-100 from whisperx's DiarizationPipeline
+                (which itself maps pyannote's two internal steps -
+                segmentation, embeddings - into one 0-100 range) -> mapped to
+                0.80-0.92."""
+                mapped = 0.80 + (pct_within / 100) * 0.12
+                _prog(mapped, f"Running speaker diarization... {pct_within:.0f}%")
+
             _prog(0.80, "Running speaker diarization...")
             diarize_segments, speaker_embeddings = diarize_model(
                 audio,
                 min_speakers=min_speakers,
                 max_speakers=max_speakers,
                 return_embeddings=True,
+                progress_callback=_diarize_progress,
             )
 
             _prog(0.92, "Assigning speakers...")
@@ -854,7 +865,7 @@ def transcribe(
             speaker_id_map = {spk: spk for spk in (speaker_embeddings or {})}
             if speaker_embeddings:
                 try:
-                    from speaker_profiles import match_speakers
+                    from voxscribe.speaker_profiles import match_speakers
                     suggestions = match_speakers(speaker_embeddings)
                 except Exception:
                     suggestions = {}

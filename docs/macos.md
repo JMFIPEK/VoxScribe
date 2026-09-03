@@ -16,20 +16,24 @@
 
 There's no CUDA on a Mac - `pyproject.toml`/`requirements.txt` already mark
 the CUDA torch index as `win32`/`linux`-only, so macOS automatically gets
-plain PyPI `torch` with MPS support. A single `uv sync` is enough here too:
+plain PyPI `torch` with MPS support:
 
 ```bash
-# 1. Install uv (if not already installed)
+# 1. Get the code
+git clone https://gitlab.kit.edu/kit/ipek/acm/voxscribe.git
+cd voxscribe
+
+# 2. Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. Install Xcode Command Line Tools (if not already installed) -
+# 3. Install Xcode Command Line Tools (if not already installed) -
 #    needed to build the two Swift helpers in macos/
 xcode-select --install
 
-# 3. Install dependencies (creates .venv automatically, incl. PySide6)
+# 4. Install dependencies (creates .venv automatically, incl. PySide6)
 uv sync
 
-# 4. Build the Swift helpers (system-audio recording + SpeechAnalyzer transcription)
+# 5. Build the Swift helpers (system-audio recording + SpeechAnalyzer transcription)
 cd macos
 ./build.sh
 cd ..

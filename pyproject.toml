@@ -33,20 +33,19 @@ whisperx-recorder = "main:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-# Top-level scripts (main.py, gui_qt.py, ...) are plain modules, not a package -
-# list them explicitly as py-modules. `qt_app/` is the one real package here;
+# main.py/gui_qt.py/download_models.py/build_exe.py are thin root-level entry
+# points (kept there so the documented `python main.py ...` etc. commands
+# keep working) - list them explicitly as py-modules. The actual backend
+# logic lives in the voxscribe/ package, `qt_app/` is the GUI package.
 # setuptools' automatic flat-layout discovery otherwise also picks up
 # `macos/` (Swift sources, no __init__.py) and the gitignored runtime output
 # dirs `recordings/`/`bundled_models/` as ambiguous "top-level packages" and
 # refuses to build at all.
 [tool.setuptools]
-py-modules = [
-    "main", "gui_qt", "recorder", "transcriber", "gpu_setup",
-    "hardware_detect", "speaker_profiles", "download_models", "build_exe",
-]
+py-modules = ["main", "gui_qt", "download_models", "build_exe"]
 
 [tool.setuptools.packages.find]
-include = ["qt_app*"]
+include = ["qt_app*", "voxscribe*"]
 
 # PyPI's default torch wheels on Windows/Linux are CPU-only; pin torch/torchaudio/
 # torchvision to the CUDA build there so a plain `uv sync` installs a GPU-enabled,

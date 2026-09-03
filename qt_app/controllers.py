@@ -14,7 +14,7 @@ from datetime import datetime
 
 from PySide6.QtCore import QObject, Signal
 
-from recorder import AudioRecorder, get_devices
+from voxscribe.recorder import AudioRecorder, get_devices
 
 
 class RecorderController(QObject):
@@ -63,7 +63,7 @@ class TranscribeController(QObject):
                 # module top - `transcriber` imports whisperx/torch, which
                 # can cold-take 1-3 minutes; in the GUI thread that would
                 # freeze the UI for the whole time.
-                from transcriber import transcribe
+                from voxscribe.transcriber import transcribe
                 result = transcribe(
                     on_progress=lambda pct, msg: self.progressUpdated.emit(pct, msg),
                     **kwargs,
@@ -80,7 +80,7 @@ class TranscribeController(QObject):
         transcriber.transcribe_multi() for how the results are merged."""
         def _run():
             try:
-                from transcriber import transcribe_multi
+                from voxscribe.transcriber import transcribe_multi
                 result = transcribe_multi(
                     on_progress=lambda pct, msg: self.progressUpdated.emit(pct, msg),
                     **kwargs,
@@ -109,8 +109,8 @@ class HardwareInfoController(QObject):
 
     def _run(self):
         try:
-            from hardware_detect import recommend_model, get_hardware_summary
-            from transcriber import _get_bundled_models_dir
+            from voxscribe.hardware_detect import recommend_model, get_hardware_summary
+            from voxscribe.transcriber import _get_bundled_models_dir
 
             hw_summary = get_hardware_summary()
             recommended_model, _device, reason = recommend_model()

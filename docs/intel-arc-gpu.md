@@ -12,7 +12,7 @@ support, so this is a separate, parallel path. Benchmarked at roughly
 2. Export the model to OpenVINO IR (one-time, ~3 GB download): `python download_models.py` (step 4/4)
 3. In the GUI's Transcription tab, pick **"medium (Intel Arc GPU)"** as the model, or via CLI: `python main.py transcribe -i recordings/meeting.wav -m openvino:GPU:medium`
 
-This part is fully automatic: `gpu_setup.py` detects an Arc GPU on every app
+This part is fully automatic: `voxscribe/gpu_setup.py` detects an Arc GPU on every app
 start and, if needed, switches `torch` to the correct build for you (see
 below) - no manual steps required for the common case.
 
@@ -23,7 +23,7 @@ installed. But alignment (wav2vec2) and diarization (pyannote) are plain
 PyTorch, so they need `torch` itself built with Intel XPU support to use the
 Arc GPU - the standard install uses the CUDA build.
 
-**This is automatic**: `gpu_setup.py` runs at every app start (GUI and CLI),
+**This is automatic**: `voxscribe/gpu_setup.py` runs at every app start (GUI and CLI),
 detects the GPU present via a fast WMI query, and switches `torch` to the
 matching build automatically if it doesn't match - CUDA for a dedicated
 NVIDIA GPU, XPU for an Intel Arc GPU (dGPU takes priority if both are

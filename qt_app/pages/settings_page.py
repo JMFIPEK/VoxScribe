@@ -3,7 +3,9 @@ and (as its own section at the bottom) the Info content (models/licenses) -
 deliberately not its own tab."""
 
 import sys
+import threading
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from qt_app import theme
 from qt_app.pages.common import PAGE_MARGINS, PAGE_SPACING
 from qt_app.pages.info_content import INFO_TEXT
 
@@ -32,6 +35,11 @@ from qt_app.pages.info_content import INFO_TEXT
 class ProviderDialog(QDialog):
     """Add/edit dialog for a single transcription provider (OpenAI-compatible
     endpoint: name, base URL, API key, model)."""
+
+    # Runs on a background thread (network call) - Qt auto-marshals a signal
+    # emitted off the GUI thread to the connected slot, same pattern as
+    # qt_app/controllers.py.
+    _test_finished = Signal(bool, str)
 
     def __init__(self, parent=None, provider=None):
         super().__init__(parent)
@@ -62,10 +70,47 @@ class ProviderDialog(QDialog):
         self.model_entry.setPlaceholderText("e.g. whisper-large-v3")
         form.addRow("Model:", self.model_entry)
 
+        test_row = QWidget()
+        test_row_layout = QHBoxLayout(test_row)
+        test_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.test_btn = QPushButton("Test")
+        self.test_btn.setToolTip(
+            "Sends a tiny silent test clip to the endpoint above to check "
+            "the URL/API key/model actually work")
+        test_row_layout.addWidget(self.test_btn)
+        self.test_status = QLabel("")
+        self.test_status.setWordWrap(True)
+        test_row_layout.addWidget(self.test_status, 1)
+        form.addRow("", test_row)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+        self.test_btn.clicked.connect(self._on_test)
+        self._test_finished.connect(self._on_test_finished)
+
+    def _on_test(self):
+        base_url = self.base_url_entry.text().strip()
+        api_key = self.api_key_entry.text().strip()
+        model = self.model_entry.text().strip()
+
+        self.test_btn.setEnabled(False)
+        self.test_status.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        self.test_status.setText("Testing...")
+
+        def _run():
+            import voxscribe.providers as providers
+            ok, msg = providers.test_provider(base_url, api_key, model)
+            self._test_finished.emit(ok, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_test_finished(self, ok: bool, message: str):
+        self.test_btn.setEnabled(True)
+        self.test_status.setStyleSheet(f"color: {theme.SUCCESS if ok else theme.DANGER};")
+        self.test_status.setText(message)
 
     def _on_accept(self):
         if not self.name_entry.text().strip() or not self.base_url_entry.text().strip():
@@ -214,7 +259,7 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ providers
     def _reload_providers(self):
-        import providers
+        import voxscribe.providers as providers
 
         providers.migrate_from_env()
         self._providers = providers.list_providers()
@@ -235,7 +280,7 @@ class SettingsPage(QWidget):
         return item.data(1) if item else None
 
     def _add_provider(self):
-        import providers
+        import voxscribe.providers as providers
 
         dlg = ProviderDialog(self)
         if dlg.exec() == QDialog.Accepted:
@@ -244,7 +289,7 @@ class SettingsPage(QWidget):
             self._reload_providers()
 
     def _edit_provider(self):
-        import providers
+        import voxscribe.providers as providers
 
         pid = self._selected_provider_id()
         if not pid:
@@ -257,7 +302,7 @@ class SettingsPage(QWidget):
             self._reload_providers()
 
     def _delete_provider(self):
-        import providers
+        import voxscribe.providers as providers
 
         pid = self._selected_provider_id()
         if not pid:
@@ -266,7 +311,7 @@ class SettingsPage(QWidget):
         self._reload_providers()
 
     def _set_default_provider(self):
-        import providers
+        import voxscribe.providers as providers
 
         pid = self._selected_provider_id()
         if not pid:

@@ -22,7 +22,7 @@ fallback behavior.
 ## How it works
 
 Provider configuration lives in `~/.voxscribe/providers.json` (see
-`providers.py`), a small local JSON store - one entry per provider:
+`voxscribe/providers.py`), a small local JSON store - one entry per provider:
 
 ```json
 {

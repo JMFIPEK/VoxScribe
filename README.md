@@ -1,8 +1,10 @@
 # VoxScribe
 
-Local audio recording and transcription with [WhisperX](https://github.com/m-bain/whisperX). Supports microphone and system-audio recording (e.g. Teams/Zoom via WASAPI loopback), video files (MKV, MP4, ...) as input, speaker diarization, and speaker recognition.
+Local audio recording and transcription with [WhisperX](https://github.com/m-bain/whisperX). Record a meeting (microphone, system audio, or both), transcribe it with word-accurate timestamps and speaker labels, rename speakers once and have them recognized automatically next time, and export a clean transcript — all from one desktop app, with a CLI available for scripting the same pipeline.
 
 Transcription uses your configured default [provider](docs/providers.md) if one is set up; if that's unreachable, it falls back automatically to the best local model for your hardware/platform. A local model can also be chosen explicitly, in which case the whole pipeline runs 100% locally after a one-time model download.
+
+![VoxScribe — Record tab](docs/images/screenshot.png)
 
 ## Features
 
@@ -18,21 +20,21 @@ Transcription uses your configured default [provider](docs/providers.md) if one 
 
 ## Install
 
-### Windows — prebuilt .exe (no Python needed)
-
-Download a release, extract it, and run `VoxScribe.exe` — no installation needed. Add a `.env` file with `HF_TOKEN` next to the `.exe` for speaker diarization (see below). The `.exe` doesn't bundle local models; they download automatically the first time they're actually needed.
-
-### Windows — from source
+### Windows
 
 ```bash
-# 1. Install uv (if not already installed)
+# 1. Get the code
+git clone https://gitlab.kit.edu/kit/ipek/acm/voxscribe.git
+cd voxscribe
+
+# 2. Install uv (if not already installed)
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# 2. Install dependencies (creates .venv automatically, incl. CUDA PyTorch)
+# 3. Install dependencies (creates .venv automatically, incl. CUDA PyTorch)
 uv sync
 ```
 
-`pyproject.toml` already pins `torch`/`torchaudio`/`torchvision` to the CUDA 12.8 index, so that one command is enough on a machine with an NVIDIA GPU. For an Intel Arc GPU instead, see [Intel Arc GPU](docs/intel-arc-gpu.md) — handled automatically at runtime either way.
+`pyproject.toml` already pins `torch`/`torchaudio`/`torchvision` to the CUDA 12.8 index, so that's enough on a machine with an NVIDIA GPU. For an Intel Arc GPU instead, see [Intel Arc GPU](docs/intel-arc-gpu.md) — handled automatically at runtime either way.
 
 ### macOS / Linux
 
@@ -75,22 +77,26 @@ Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
 ## Project structure
 
 ```
-├── gui_qt.py              # GUI entry point (PySide6/Qt)
-├── qt_app/                # GUI code: main_window.py, controllers.py, theme.py, pages/, widgets/
-├── main.py                # CLI entry point
-├── recorder.py             # Audio recording (microphone + WASAPI loopback/ScreenCaptureKit + combined)
-├── transcriber.py          # WhisperX/Apple SpeechAnalyzer transcription + alignment + diarization + provider models + video input
-├── providers.py            # Persistent transcription-provider configuration
-├── speaker_profiles.py     # Persistent speaker profiles (voice prints) for recognition
-├── hardware_detect.py      # GPU/CPU detection + model recommendation
-├── gpu_setup.py             # Automatic CUDA/XPU torch backend correction (Windows)
-├── download_models.py      # Pre-download models for offline/bundled operation
-├── build_exe.py             # PyInstaller build for a standalone .exe (Windows)
-├── macos/                   # macOS Swift helpers: SystemAudioCapture.swift, SpeechAnalyzerTranscribe.swift, build.sh
-├── docs/                    # Detailed docs: providers, Intel Arc GPU, macOS, CLI reference
-├── pyproject.toml           # Python dependencies (incl. CUDA PyTorch pinning), primary source for `uv`
-├── .env                     # HuggingFace token (not committed!)
-└── recordings/               # Recordings + transcripts
+├── gui_qt.py                    # GUI entry point (PySide6/Qt) - thin, delegates to qt_app/
+├── main.py                      # CLI entry point - thin, delegates to voxscribe/cli.py
+├── download_models.py            # Thin entry point -> voxscribe/download_models.py
+├── build_exe.py                  # Thin entry point -> voxscribe/build_exe.py
+├── qt_app/                       # GUI code: main_window.py, controllers.py, theme.py, pages/, widgets/
+├── voxscribe/                    # Backend package
+│   ├── cli.py                     # CLI command implementations
+│   ├── recorder.py                # Audio recording (microphone + WASAPI loopback/ScreenCaptureKit + combined)
+│   ├── transcriber.py             # WhisperX/Apple SpeechAnalyzer transcription + alignment + diarization + provider models + video input
+│   ├── providers.py               # Persistent transcription-provider configuration
+│   ├── speaker_profiles.py        # Persistent speaker profiles (voice prints) for recognition
+│   ├── hardware_detect.py         # GPU/CPU detection + model recommendation
+│   ├── gpu_setup.py               # Automatic CUDA/XPU torch backend correction (Windows)
+│   ├── download_models.py         # Pre-download models for offline/bundled operation
+│   └── build_exe.py               # PyInstaller build for a standalone .exe (Windows)
+├── macos/                        # macOS Swift helpers: SystemAudioCapture.swift, SpeechAnalyzerTranscribe.swift, build.sh
+├── docs/                          # Detailed docs: providers, Intel Arc GPU, macOS, CLI reference
+├── pyproject.toml                 # Python dependencies (incl. CUDA PyTorch pinning), primary source for `uv`
+├── .env                           # HuggingFace token (not committed!)
+└── recordings/                    # Recordings + transcripts
 ```
 
 ## Notes

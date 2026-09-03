@@ -178,7 +178,8 @@ def _mix_sources(mic_audio: np.ndarray, sys_audio: np.ndarray) -> np.ndarray:
 
 def _macos_system_audio_binary_path() -> str:
     """Path to the compiled ScreenCaptureKit helper (see macos/README.md)."""
-    base = os.path.dirname(os.path.abspath(__file__))
+    # This file lives in voxscribe/, macos/ is one level up at the project root.
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, "macos", "SystemAudioCapture")
 
 

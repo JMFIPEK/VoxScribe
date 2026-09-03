@@ -91,7 +91,9 @@ def _bundled_openvino_model_exists(whisper_size: str = "medium") -> bool:
     run (bundled_models/openvino/whisper-<size>/) - without this model,
     transcribe_openvino() has nothing to load, even if an Arc GPU/NPU is
     detected."""
-    base = os.path.dirname(os.path.abspath(__file__))
+    # This file lives in voxscribe/, bundled_models/ is one level up at the
+    # project root.
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     marker = os.path.join(base, "bundled_models", "openvino", f"whisper-{whisper_size}",
                            "openvino_encoder_model.bin")
     return os.path.isfile(marker)

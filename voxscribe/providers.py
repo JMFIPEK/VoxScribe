@@ -127,6 +127,54 @@ def set_default_provider(provider_id: str) -> None:
         _save_raw(data)
 
 
+def test_provider(base_url: str, api_key: str, model: str, timeout: float = 15.0) -> tuple[bool, str]:
+    """Sends a tiny synthetic audio clip to the provider's
+    `/audio/transcriptions` endpoint to verify the URL/API key/model actually
+    work end-to-end - used by the "Test" button in the Settings provider
+    dialog. Deliberately only uses `requests`/`soundfile`/`numpy` (already
+    lightweight dependencies) instead of going through
+    `transcriber.transcribe_remote()`, so this stays fast: importing
+    `transcriber` pulls in whisperx/torch, a 1-3 minute cold import that would
+    make clicking "Test" in the GUI look frozen.
+
+    Returns (ok, message).
+    """
+    if not base_url:
+        return False, "Base URL is required."
+    if not api_key:
+        return False, "API key is required."
+
+    import io
+    import numpy as np
+    import soundfile as sf
+    import requests
+
+    # 0.5s of silence is enough to exercise the real upload/auth/response
+    # path without needing an actual recording.
+    silence = np.zeros(int(0.5 * 16000), dtype=np.int16)
+    buf = io.BytesIO()
+    sf.write(buf, silence, 16000, format="FLAC")
+    buf.seek(0)
+
+    url = base_url.rstrip("/") + "/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    data = {"model": model} if model else {}
+    files = {"file": ("test.flac", buf, "audio/flac")}
+
+    try:
+        resp = requests.post(url, headers=headers, data=data, files=files, timeout=timeout)
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection failed: {e}"
+
+    if resp.status_code == 200:
+        return True, "Success - the provider accepted the request."
+    if resp.status_code == 401:
+        return False, "Authentication failed (401) - check the API key."
+    if resp.status_code == 404:
+        return False, "Endpoint not found (404) - check the base URL."
+    return False, f"Server returned HTTP {resp.status_code}: {resp.text[:200]}"
+
+
 def migrate_from_env() -> dict | None:
     """One-time migration: if providers.json doesn't exist yet but the old
     single-server env vars (KIT_TOOLBOX_API_KEY/_BASE_URL) are set, create a
