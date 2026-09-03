@@ -41,7 +41,7 @@ build-backend = "setuptools.build_meta"
 # refuses to build at all.
 [tool.setuptools]
 py-modules = [
-    "main", "gui_qt", "recorder", "transcriber",
+    "main", "gui_qt", "recorder", "transcriber", "gpu_setup",
     "hardware_detect", "speaker_profiles", "download_models", "build_exe",
 ]
 

@@ -102,6 +102,10 @@ def _cli_progress(state):
 
 def cmd_transcribe(args):
     """Transkribiert eine Audio-Datei."""
+    # Muss vor dem ersten torch-Import passieren, siehe gpu_setup.py.
+    import gpu_setup
+    gpu_setup.ensure_correct_torch_backend()
+
     from transcriber import DEFAULT_API_BASE_URL, default_model_size, transcribe, save_transcript
 
     if not os.path.isfile(args.input):
@@ -157,7 +161,7 @@ def cmd_run(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="VoxScribe — 100%% lokal",
+        description="VoxScribe",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", help="Verfuegbare Befehle")

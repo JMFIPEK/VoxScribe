@@ -83,6 +83,18 @@ def main():
     splash.show()
     app.processEvents()
 
+    # Muss vor jedem torch-Import passieren (auch dem verzoegerten in
+    # HardwareInfoController/TranscribeController's Background-Threads) - siehe
+    # gpu_setup.py: stellt sicher, dass torch zur tatsaechlichen GPU passt
+    # (Intel Arc vs. NVIDIA), bevor irgendein Code-Pfad torch laedt.
+    import gpu_setup
+
+    def _gpu_status(msg):
+        splash.showMessage(msg, Qt.AlignBottom | Qt.AlignHCenter, Qt.white)
+        app.processEvents()
+
+    gpu_setup.ensure_correct_torch_backend(on_status=_gpu_status)
+
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
