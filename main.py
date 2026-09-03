@@ -1,26 +1,26 @@
-"""VoxScribe — CLI Entry Point für ORION.
+"""VoxScribe — CLI entry point.
 
-Befehle:
-    python main.py devices                      Audio-Geraete auflisten
-    python main.py record --source mic           Mikrofon-Aufnahme
-    python main.py record --source system        System-Audio (Teams/Zoom)
-    python main.py record --source both          Mikrofon + System-Audio
-    python main.py transcribe --input audio.wav  Transkription starten
-    python main.py run --source mic              Aufnahme + Transkription
+Commands:
+    python main.py devices                      List audio devices
+    python main.py record --source mic           Microphone recording
+    python main.py record --source system        System audio (Teams/Zoom)
+    python main.py record --source both          Microphone + system audio
+    python main.py transcribe --input audio.wav  Start transcription
+    python main.py run --source mic              Record + transcribe
 """
 
 import os
 import ssl
 import warnings
 
-# --- Warnungen unterdruecken ---
+# --- Suppress warnings ---
 warnings.filterwarnings("ignore")
 os.environ["PYTHONWARNINGS"] = "ignore"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["TORCH_LOGS"] = "-all"
 os.environ["TORCHAUDIO_NO_BACKEND_CHECK"] = "1"
 
-# --- Firmen-Proxy: SSL-Verifikation deaktivieren (vor allen anderen Imports) ---
+# --- Corporate proxy: disable SSL verification (before any other imports) ---
 os.environ["CURL_CA_BUNDLE"] = ""
 os.environ["REQUESTS_CA_BUNDLE"] = ""
 os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
@@ -50,13 +50,13 @@ load_dotenv()
 
 
 def cmd_devices(_args):
-    """Zeigt alle verfuegbaren Audio-Geraete."""
+    """Shows all available audio devices."""
     from recorder import list_devices
     list_devices()
 
 
 def cmd_record(args):
-    """Startet eine Audio-Aufnahme."""
+    """Starts an audio recording."""
     from recorder import (
         record_microphone,
         record_microphone_and_system,
@@ -76,18 +76,18 @@ def cmd_record(args):
     elif args.source == "both":
         record_microphone_and_system(output, device_index=args.device)
     else:
-        print(f"Unbekannte Quelle: {args.source}")
+        print(f"Unknown source: {args.source}")
         sys.exit(1)
 
     return output
 
 
 def _cli_progress(state):
-    """Erstellt einen on_progress-Callback, der eine einzeilige Fortschrittsanzeige
-    ausgibt (per \\r ueberschrieben), damit lange Schritte (v.a. Diarization) nicht
-    wie ein Haenger aussehen."""
+    """Creates an on_progress callback that prints a single-line progress
+    indicator (overwritten via \\r), so long steps (diarization especially)
+    don't look like a hang."""
     def _callback(pct, message):
-        # Nur alle ~0.5% aktualisieren, um das Terminal nicht zu fluten
+        # Only update every ~0.5% to avoid flooding the terminal
         shown = int(pct * 200)
         if shown == state.get("last") and pct < 1.0:
             return
@@ -101,21 +101,19 @@ def _cli_progress(state):
 
 
 def cmd_transcribe(args):
-    """Transkribiert eine Audio-Datei."""
-    # Muss vor dem ersten torch-Import passieren, siehe gpu_setup.py.
+    """Transcribes an audio file."""
+    # Must happen before the first torch import, see gpu_setup.py.
     import gpu_setup
     gpu_setup.ensure_correct_torch_backend()
 
-    from transcriber import DEFAULT_API_BASE_URL, default_model_size, transcribe, save_transcript
+    from transcriber import default_model_size, transcribe, save_transcript
 
     if not os.path.isfile(args.input):
-        print(f"Datei nicht gefunden: {args.input}")
+        print(f"File not found: {args.input}")
         sys.exit(1)
 
     hf_token = args.hf_token or os.getenv("HF_TOKEN") or None
-    api_key = args.api_key or os.getenv("KIT_TOOLBOX_API_KEY") or None
-    api_base_url = args.api_base_url or os.getenv("KIT_TOOLBOX_BASE_URL") or DEFAULT_API_BASE_URL
-    language = None if args.language.lower() in ("auto", "automatisch") else args.language
+    language = None if args.language.lower() == "auto" else args.language
     model = args.model or default_model_size()
 
     result = transcribe(
@@ -128,12 +126,12 @@ def cmd_transcribe(args):
         max_speakers=args.max_speakers,
         batch_size=args.batch_size,
         device=args.device_compute,
-        api_key=api_key,
-        api_base_url=api_base_url,
+        api_key=args.api_key,
+        api_base_url=args.api_base_url,
         on_progress=_cli_progress({}),
     )
 
-    # Output-Pfad bestimmen
+    # Determine output path
     output = args.output
     if not output:
         base = os.path.splitext(args.input)[0]
@@ -147,12 +145,12 @@ def cmd_transcribe(args):
 
 
 def cmd_run(args):
-    """Aufnahme + sofortige Transkription."""
-    # Erst aufnehmen
+    """Record + transcribe immediately."""
+    # Record first
     audio_path = cmd_record(args)
     print("\n" + "=" * 60 + "\n")
 
-    # Dann transkribieren
+    # Then transcribe
     args.input = audio_path
     if not args.output:
         args.output = os.path.splitext(audio_path)[0]
@@ -164,92 +162,94 @@ def main():
         description="VoxScribe",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    subparsers = parser.add_subparsers(dest="command", help="Verfuegbare Befehle")
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # --- devices ---
-    sub_devices = subparsers.add_parser("devices", help="Audio-Geraete auflisten")
+    sub_devices = subparsers.add_parser("devices", help="List audio devices")
     sub_devices.set_defaults(func=cmd_devices)
 
     # --- record ---
-    sub_record = subparsers.add_parser("record", help="Audio aufnehmen")
+    sub_record = subparsers.add_parser("record", help="Record audio")
     sub_record.add_argument(
         "--source", choices=["mic", "system", "both"], default="mic",
-        help=("Audio-Quelle: mic, system (WASAPI Loopback) oder "
-              "both (Mikrofon + System)")
+        help=("Audio source: mic, system (WASAPI loopback), or "
+              "both (microphone + system)")
     )
-    sub_record.add_argument("--output", "-o", help="Ausgabe-Pfad (WAV)")
+    sub_record.add_argument("--output", "-o", help="Output path (WAV)")
     sub_record.add_argument(
         "--device", type=int, default=None,
-        help="Geraete-Index (siehe 'devices' Befehl)"
+        help="Device index (see the 'devices' command)"
     )
     sub_record.set_defaults(func=cmd_record)
 
     # --- transcribe ---
-    sub_transcribe = subparsers.add_parser("transcribe", help="Audio transkribieren")
-    sub_transcribe.add_argument("--input", "-i", required=True, help="Audio-Datei")
+    sub_transcribe = subparsers.add_parser("transcribe", help="Transcribe audio")
+    sub_transcribe.add_argument("--input", "-i", required=True, help="Audio file")
     sub_transcribe.add_argument(
-        "--language", "-l", default="de",
-        help="Sprache (z.B. de, en) oder 'auto' fuer automatische Erkennung. Default: de"
+        "--language", "-l", default="auto",
+        help="Language (e.g. en, de) or 'auto' for automatic detection. Default: auto"
     )
     sub_transcribe.add_argument(
         "--model", "-m", default=None,
-        help=("Whisper-Modell (large-v2, large-v3, medium, base), OpenVINO-Modell "
-              "(openvino:GPU:medium, Intel Arc GPU), Server-Modell "
-              "(z.B. server:kit.whisper-large-v3) oder apple:speechanalyzer. "
-              "Default: KIT ToolBox (Server) - faellt bei Fehlern automatisch auf "
-              "das empfohlene lokale Modell zurueck (Hardware-/Plattform-abhaengig)")
+        help=("Whisper model (large-v2, large-v3, medium, base), OpenVINO model "
+              "(openvino:GPU:medium, Intel Arc GPU), a configured provider "
+              "(server:<provider-id>, see providers.py/Settings), or "
+              "apple:speechanalyzer. Default: your configured default provider, "
+              "if any - falls back automatically to the recommended local "
+              "model on failure (hardware-/platform-dependent), see "
+              "transcriber.default_model_size()")
     )
     sub_transcribe.add_argument(
         "--diarize", action="store_true", default=True,
-        help="Speaker Diarization aktivieren (Default: an)"
+        help="Enable speaker diarization (default: on)"
     )
     sub_transcribe.add_argument(
         "--no-diarize", dest="diarize", action="store_false",
-        help="Speaker Diarization deaktivieren"
+        help="Disable speaker diarization"
     )
     sub_transcribe.add_argument(
         "--hf-token", default=None,
-        help="HuggingFace Token (alternativ: HF_TOKEN in .env)"
+        help="HuggingFace token (alternatively: HF_TOKEN in .env)"
     )
     sub_transcribe.add_argument(
         "--api-key", default=None,
-        help="API-Key fuer Server-Modelle (alternativ: KIT_TOOLBOX_API_KEY in .env)"
+        help="API key for ad-hoc provider use, overriding a configured provider's key"
     )
     sub_transcribe.add_argument(
         "--api-base-url", default=None,
-        help="Basis-URL fuer Server-Modelle (alternativ: KIT_TOOLBOX_BASE_URL in .env)"
+        help="Base URL for ad-hoc provider use, overriding a configured provider's URL"
     )
     sub_transcribe.add_argument("--min-speakers", type=int, default=None)
     sub_transcribe.add_argument("--max-speakers", type=int, default=None)
     sub_transcribe.add_argument(
         "--batch-size", type=int, default=16,
-        help="Batch-Groesse (kleiner = weniger VRAM). Default: 16"
+        help="Batch size (smaller = less VRAM). Default: 16"
     )
     sub_transcribe.add_argument(
         "--device-compute", choices=["cuda", "xpu", "mps", "cpu"], default=None,
-        help="Compute Device fuer Alignment/Diarization (auto-detect wenn nicht "
-             "gesetzt). 'mps'/'xpu' beschleunigen nur Alignment/Diarization, nicht "
-             "die Whisper-Transkription (ausser bei 'openvino:...'-Modellen, die "
-             "immer unabhaengig via OpenVINO laufen)."
+        help="Compute device for alignment/diarization (auto-detected if not "
+             "set). 'mps'/'xpu' only accelerate alignment/diarization, not "
+             "Whisper transcription itself (except for 'openvino:...' models, "
+             "which always run independently via OpenVINO)."
     )
-    sub_transcribe.add_argument("--output", "-o", help="Ausgabe-Pfad (ohne Endung)")
+    sub_transcribe.add_argument("--output", "-o", help="Output path (without extension)")
     sub_transcribe.add_argument(
         "--format", "-f", default="txt",
-        help="Ausgabe-Format(e), kommagetrennt: txt, srt, json. Default: txt"
+        help="Output format(s), comma-separated: txt, srt, json. Default: txt"
     )
     sub_transcribe.set_defaults(func=cmd_transcribe)
 
     # --- run ---
     sub_run = subparsers.add_parser(
-        "run", help="Aufnahme + sofortige Transkription"
+        "run", help="Record + transcribe immediately"
     )
     sub_run.add_argument(
         "--source", choices=["mic", "system", "both"], default="mic",
-        help="Audio-Quelle: mic, system oder both"
+        help="Audio source: mic, system, or both"
     )
     sub_run.add_argument("--output", "-o", default=None)
     sub_run.add_argument("--device", type=int, default=None)
-    sub_run.add_argument("--language", "-l", default="de")
+    sub_run.add_argument("--language", "-l", default="auto")
     sub_run.add_argument("--model", "-m", default=None)
     sub_run.add_argument("--diarize", action="store_true", default=True)
     sub_run.add_argument("--no-diarize", dest="diarize", action="store_false")

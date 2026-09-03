@@ -1,9 +1,9 @@
 """VoxScribe — PySide6 GUI.
 
-Struktur:
-    main_window.py   MainWindow mit Seitenleiste + QStackedWidget
-    controllers.py    Thread-sichere Qt-Signal-Bruecken zu recorder.py/transcriber.py
-    theme.py          Farben + Stylesheet (dunkles Theme)
-    pages/            Eine Datei pro Seite (Aufnahme, Transkription, Einstellungen)
-    widgets/          Wiederverwendbare Widgets (Pegelanzeige, ...)
+Structure:
+    main_window.py   MainWindow with a top tab bar (QTabWidget)
+    controllers.py    Thread-safe Qt signal bridges to recorder.py/transcriber.py
+    theme.py          Colors + stylesheet (dark theme)
+    pages/            One file per page (Record, Transcription, Settings)
+    widgets/          Reusable widgets (level meter, ...)
 """

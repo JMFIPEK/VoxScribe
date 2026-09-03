@@ -1,7 +1,7 @@
-"""Gemeinsame Layout-Konstanten/Helfer, damit alle Seiten (Aufnahme,
-Transkription, Einstellungen) dieselben Aussenraender, Abstaende und
-Karten-Optik verwenden - sonst wirkt der Inhalt beim Tab-Wechsel
-"springend", weil sich Breite/Position der Karten je Seite unterscheiden."""
+"""Shared layout constants/helpers, so all pages (Record, Transcription,
+Settings) use the same outer margins, spacing, and card look - otherwise the
+content "jumps" when switching tabs, since card width/position would differ
+per page."""
 
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
@@ -13,8 +13,7 @@ CARD_SPACING = 8
 
 
 def page_root(widget) -> QVBoxLayout:
-    """Erstellt das äussere QVBoxLayout einer Seite mit den einheitlichen
-    Raendern/Abstaenden."""
+    """Creates a page's outer QVBoxLayout with the shared margins/spacing."""
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(*PAGE_MARGINS)
     layout.setSpacing(PAGE_SPACING)
@@ -22,8 +21,8 @@ def page_root(widget) -> QVBoxLayout:
 
 
 def card(title: str | None = None):
-    """Erstellt eine Karte (QFrame[role=card]) mit einheitlichem Innenraum
-    und optionalem Abschnitts-Titel."""
+    """Creates a card (QFrame[role=card]) with shared inner spacing and an
+    optional section title."""
     frame = QFrame()
     frame.setProperty("role", "card")
     layout = QVBoxLayout(frame)

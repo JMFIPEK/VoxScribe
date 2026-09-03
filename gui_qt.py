@@ -1,7 +1,7 @@
-"""VoxScribe — PySide6 GUI Entry Point.
+"""VoxScribe — PySide6 GUI entry point.
 
-Baut auf recorder.py/transcriber.py/hardware_detect.py/speaker_profiles.py auf
-- siehe qt_app/ fuer die Seiten-Implementierung (main_window.py, pages/, widgets/).
+Builds on recorder.py/transcriber.py/hardware_detect.py/speaker_profiles.py -
+see qt_app/ for the page implementations (main_window.py, pages/, widgets/).
 """
 
 import os
@@ -9,16 +9,16 @@ import ssl
 import sys
 import warnings
 
-APP_ID = "orion.voxscribe"
+APP_ID = "voxscribe.app"
 
-# --- Warnungen unterdruecken ---
+# --- Suppress warnings ---
 warnings.filterwarnings("ignore")
 os.environ["PYTHONWARNINGS"] = "ignore"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["TORCH_LOGS"] = "-all"
 os.environ["TORCHAUDIO_NO_BACKEND_CHECK"] = "1"
 
-# --- Firmen-Proxy: SSL-Verifikation deaktivieren (vor allen anderen Imports) ---
+# --- Corporate proxy: disable SSL verification (before any other imports) ---
 os.environ["CURL_CA_BUNDLE"] = ""
 os.environ["REQUESTS_CA_BUNDLE"] = ""
 os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
@@ -30,15 +30,15 @@ if sys.platform == "win32":
 
 
 def _build_splash_pixmap(logo_path):
-    """Baut ein vollstaendig gefuelltes Splash-Bild (Hintergrund + Rahmen +
-    Logo + Titel), statt nur das Logo auf transparentem Grund zu zeigen -
-    QSplashScreen(QPixmap) uebernimmt sonst die (fehlende) Transparenz der
-    Quell-Pixmap 1:1 als Fensterhintergrund."""
+    """Builds a fully-filled splash image (background + border + logo +
+    title) instead of just showing the logo on a transparent background -
+    QSplashScreen(QPixmap) otherwise inherits the source pixmap's (missing)
+    transparency 1:1 as the window background."""
     from PySide6.QtCore import Qt, QRectF
     from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 
     from qt_app import theme
-    from qt_app.constants import APP_NAME, APP_SUBTITLE
+    from qt_app.constants import APP_NAME
 
     width, height = 480, 380
     pix = QPixmap(width, height)
@@ -58,11 +58,7 @@ def _build_splash_pixmap(logo_path):
 
     painter.setPen(QColor(theme.TEXT))
     painter.setFont(QFont("Segoe UI Semibold", 20))
-    painter.drawText(QRectF(0, 235, width, 30), Qt.AlignCenter, APP_NAME)
-
-    painter.setPen(QColor(theme.TEXT_MUTED))
-    painter.setFont(QFont("Segoe UI", 12))
-    painter.drawText(QRectF(0, 265, width, 24), Qt.AlignCenter, APP_SUBTITLE)
+    painter.drawText(QRectF(0, 245, width, 30), Qt.AlignCenter, APP_NAME)
 
     painter.end()
     return pix
@@ -79,14 +75,14 @@ def main():
     logo_path = os.path.join(os.path.dirname(__file__), "Logo.png")
     splash = QSplashScreen(_build_splash_pixmap(logo_path))
     splash.showMessage(
-        "Module werden geladen...", Qt.AlignBottom | Qt.AlignHCenter, Qt.white)
+        "Loading modules...", Qt.AlignBottom | Qt.AlignHCenter, Qt.white)
     splash.show()
     app.processEvents()
 
-    # Muss vor jedem torch-Import passieren (auch dem verzoegerten in
-    # HardwareInfoController/TranscribeController's Background-Threads) - siehe
-    # gpu_setup.py: stellt sicher, dass torch zur tatsaechlichen GPU passt
-    # (Intel Arc vs. NVIDIA), bevor irgendein Code-Pfad torch laedt.
+    # Must happen before any torch import (including the deferred one in
+    # HardwareInfoController/TranscribeController's background threads) - see
+    # gpu_setup.py: makes sure torch matches the actual GPU (Intel Arc vs.
+    # NVIDIA) before any code path loads torch.
     import gpu_setup
 
     def _gpu_status(msg):
@@ -119,7 +115,7 @@ def main():
     app.setStyleSheet(theme.build_stylesheet())
 
     splash.showMessage(
-        "GUI wird aufgebaut...", Qt.AlignBottom | Qt.AlignHCenter, Qt.white)
+        "Building UI...", Qt.AlignBottom | Qt.AlignHCenter, Qt.white)
     app.processEvents()
 
     from qt_app.main_window import MainWindow

@@ -1,6 +1,6 @@
 @echo off
-REM VoxScribe - Setup Script mit uv
-REM Erstellt virtuelle Umgebung und installiert alle Abhaengigkeiten
+REM VoxScribe - Setup script using uv
+REM Creates a virtual environment and installs all dependencies
 
 setlocal enabledelayedexpansion
 
@@ -9,74 +9,74 @@ echo   VoxScribe - Installation
 echo ============================================================
 echo.
 
-REM 1. Pruefen ob uv installiert ist
+REM 1. Check whether uv is installed
 where uv >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [1/5] uv nicht gefunden - wird installiert...
+    echo [1/5] uv not found - installing...
     powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
     if !errorlevel! neq 0 (
-        echo FEHLER: uv Installation fehlgeschlagen.
-        echo Bitte installieren Sie uv manuell: https://docs.astral.sh/uv/getting-started/installation/
+        echo ERROR: uv installation failed.
+        echo Please install uv manually: https://docs.astral.sh/uv/getting-started/installation/
         exit /b 1
     )
-    REM uv zur PATH hinzufuegen (fuer diese Session) - benutze vollstaendigen Pfad
+    REM Add uv to PATH (for this session) - use the full path
     set "UV_PATH=%USERPROFILE%\.local\bin\uv.exe"
     set "PATH=%USERPROFILE%\.local\bin;%PATH%"
     echo.
-    echo   uv wurde installiert unter: %UV_PATH%
+    echo   uv was installed to: %UV_PATH%
     echo.
 ) else (
-    echo [1/5] uv gefunden
+    echo [1/5] uv found
     set "UV_PATH=uv"
 )
 
-REM 2. Virtuelle Umgebung erstellen (bestehende ueberschreiben)
-echo [2/5] Virtuelle Umgebung wird erstellt...
+REM 2. Create virtual environment (overwrite existing)
+echo [2/5] Creating virtual environment...
 %UV_PATH% venv --python 3.11 --force
 if !errorlevel! neq 0 (
-    echo FEHLER: Virtuelle Umgebung konnte nicht erstellt werden.
-    echo Stellen Sie sicher, dass Python 3.11 installiert ist.
+    echo ERROR: Could not create virtual environment.
+    echo Make sure Python 3.11 is installed.
     exit /b 1
 )
-echo   Aktiviere virtuelle Umgebung...
+echo   Activating virtual environment...
 call .venv\Scripts\activate.bat
 
-REM 3. PyTorch mit CUDA installieren
-echo [3/5] PyTorch mit CUDA 12.8 wird installiert (dauert einige Minuten)...
+REM 3. Install PyTorch with CUDA
+echo [3/5] Installing PyTorch with CUDA 12.8 (takes a few minutes)...
 %UV_PATH% pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128
 if !errorlevel! neq 0 (
-    echo FEHLER: PyTorch Installation fehlgeschlagen.
+    echo ERROR: PyTorch installation failed.
     exit /b 1
 )
-echo   PyTorch Installation erfolgreich.
+echo   PyTorch installation successful.
 
-REM 4. Weitere Abhaengigkeiten installieren
-echo [4/5] Weitere Abhaengigkeiten werden installiert...
+REM 4. Install remaining dependencies
+echo [4/5] Installing remaining dependencies...
 %UV_PATH% pip install -r requirements.txt
 if !errorlevel! neq 0 (
-    echo FEHLER: Installation der Abhaengigkeiten fehlgeschlagen.
+    echo ERROR: Dependency installation failed.
     exit /b 1
 )
 
-REM 5. PyTorch CUDA-Version sicherstellen
-echo [5/5] Sichere CUDA-Version von PyTorch...
+REM 5. Make sure the CUDA build of PyTorch is used
+echo [5/5] Ensuring PyTorch CUDA build...
 %UV_PATH% pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
 if !errorlevel! neq 0 (
-    echo FEHLER: CUDA-Version Update fehlgeschlagen.
+    echo ERROR: CUDA build update failed.
     exit /b 1
 )
 
 echo.
 echo ============================================================
-echo   Installation erfolgreich abgeschlossen!
+echo   Installation completed successfully!
 echo ============================================================
 echo.
-echo Naechste Schritte:
-echo   1. .env Datei erstellen und HF_TOKEN eintragen
-echo   2. Modelle herunterladen: uv run python download_models.py
-echo   3. GUI starten: uv run python gui_qt.py
+echo Next steps:
+echo   1. Create a .env file and add HF_TOKEN
+echo   2. Download models: uv run python download_models.py
+echo   3. Start the GUI: uv run python gui_qt.py
 echo.
-echo Oder virtuelle Umgebung aktivieren und Befehle direkt ausfuehren:
+echo Or activate the virtual environment and run commands directly:
 echo   call .venv\Scripts\activate
 echo   python gui_qt.py
 echo.

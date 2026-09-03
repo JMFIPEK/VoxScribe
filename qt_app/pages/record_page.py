@@ -1,5 +1,5 @@
-"""Seite "Aufnahme": Quelle/Geraet waehlen, Live-Pegel/Timer und Start/Stop -
-alles auf einer Seite (wie in der alten CTk-GUI)."""
+"""Page "Record": choose source/device, live level/timer, and start/stop -
+all on one page (matching the previous CustomTkinter GUI)."""
 
 import sys
 import time
@@ -21,7 +21,7 @@ from qt_app.controllers import make_recording_output_path
 from qt_app.pages.common import card, page_root
 from qt_app.widgets.level_meter import LevelMeter
 
-CHANNEL_LABELS = {"mic": "Mikrofon", "system": "System"}
+CHANNEL_LABELS = {"mic": "Microphone", "system": "System"}
 
 
 class RecordPage(QWidget):
@@ -43,12 +43,12 @@ class RecordPage(QWidget):
     def _build_ui(self):
         root = page_root(self)
 
-        header = QLabel("Aufnahme")
+        header = QLabel("Record")
         header.setProperty("role", "title")
         root.addWidget(header)
 
-        # --- Quelle ---
-        source_card, source_layout = card("QUELLE")
+        # --- Source ---
+        source_card, source_layout = card("SOURCE")
         root.addWidget(source_card)
 
         source_row = QHBoxLayout()
@@ -58,7 +58,7 @@ class RecordPage(QWidget):
         self.source_combo = QComboBox()
         self.source_combo.addItems(source_values)
         self.source_combo.setCurrentText(default_source)
-        source_row.addWidget(QLabel("Quelle:"))
+        source_row.addWidget(QLabel("Source:"))
         source_row.addWidget(self.source_combo, 1)
 
         if source_hint:
@@ -67,23 +67,23 @@ class RecordPage(QWidget):
             hint_lbl.setWordWrap(True)
             source_layout.addWidget(hint_lbl)
 
-        # --- Geraet ---
-        device_card, device_layout = card("GERÄT")
+        # --- Device ---
+        device_card, device_layout = card("DEVICE")
         root.addWidget(device_card)
         device_row = QHBoxLayout()
         device_layout.addLayout(device_row)
-        device_row.addWidget(QLabel("Gerät:"))
+        device_row.addWidget(QLabel("Device:"))
         self.device_combo = QComboBox()
-        self.device_combo.addItem("Lade...")
+        self.device_combo.addItem("Loading...")
         device_row.addWidget(self.device_combo, 1)
         self.refresh_btn = QPushButton()
         self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.refresh_btn.setToolTip("Geräte aktualisieren")
+        self.refresh_btn.setToolTip("Refresh devices")
         self.refresh_btn.setFixedWidth(36)
         device_row.addWidget(self.refresh_btn)
 
-        # --- Pegel + Timer ---
-        meter_card, meter_layout = card("PEGEL")
+        # --- Level + timer ---
+        meter_card, meter_layout = card("LEVEL")
         root.addWidget(meter_card)
 
         self._meters = {}
@@ -104,8 +104,8 @@ class RecordPage(QWidget):
         self.timer_label.setStyleSheet("font-size: 28px; font-weight: 700;")
         meter_layout.addWidget(self.timer_label)
 
-        # --- Start/Stop ---
-        self.record_btn = QPushButton("  Aufnahme starten")
+        # --- Start/stop ---
+        self.record_btn = QPushButton("  Start recording")
         self.record_btn.setIcon(QIcon(theme.get_icons()["record"]))
         self.record_btn.setIconSize(QSize(18, 18))
         self.record_btn.setProperty("role", "danger")
@@ -113,12 +113,12 @@ class RecordPage(QWidget):
         self.record_btn.setCursor(Qt.PointingHandCursor)
         root.addWidget(self.record_btn)
 
-        self.status_label = QLabel("Bereit")
+        self.status_label = QLabel("Ready")
         self.status_label.setProperty("role", "muted")
         self.status_label.setAlignment(Qt.AlignCenter)
         root.addWidget(self.status_label)
 
-        self.auto_transcribe_check = QCheckBox("Nach Aufnahme automatisch transkribieren")
+        self.auto_transcribe_check = QCheckBox("Automatically transcribe after recording")
         root.addWidget(self.auto_transcribe_check, 0, Qt.AlignHCenter)
 
         root.addStretch(1)
@@ -126,18 +126,18 @@ class RecordPage(QWidget):
 
     def _platform_source_options(self):
         if sys.platform == "win32":
-            return ["Mikrofon", "System-Audio", "Mikrofon + System"], "Mikrofon + System", None
+            return ["Microphone", "System audio", "Microphone + system"], "Microphone + system", None
         if sys.platform == "darwin":
             return (
-                ["Mikrofon", "System-Audio", "Mikrofon + System"],
-                "Mikrofon",
-                "⚠ System-Audio ist auf macOS experimentell (ScreenCaptureKit) — "
-                "erfordert die Berechtigung „Bildschirm- und Systemaudioaufnahme“.",
+                ["Microphone", "System audio", "Microphone + system"],
+                "Microphone",
+                "⚠ System audio is experimental on macOS (ScreenCaptureKit) — "
+                "requires the \"Screen & System Audio Recording\" permission.",
             )
         return (
-            ["Mikrofon"],
-            "Mikrofon",
-            "System-Audio (Meeting-Mitschnitt) ist auf diesem Betriebssystem noch nicht verfügbar.",
+            ["Microphone"],
+            "Microphone",
+            "System audio (meeting recording) isn't available on this OS yet.",
         )
 
     # --------------------------------------------------------------- wire
@@ -159,14 +159,14 @@ class RecordPage(QWidget):
         self._device_map = {}
         self.device_combo.clear()
 
-        if value == "System-Audio" and sys.platform == "darwin":
-            label = "Gesamte System-Wiedergabe (keine Geräteauswahl)"
+        if value == "System audio" and sys.platform == "darwin":
+            label = "Entire system playback (no device selection)"
             self.device_combo.addItem(label)
             self.device_combo.setEnabled(False)
             self._device_map[label] = None
         else:
             self.device_combo.setEnabled(True)
-            if value in ("Mikrofon", "Mikrofon + System"):
+            if value in ("Microphone", "Microphone + system"):
                 devices = self._all_devices.get("microphones", [])
             else:
                 devices = self._all_devices.get("loopback", [])
@@ -185,14 +185,14 @@ class RecordPage(QWidget):
             if names:
                 self.device_combo.addItems(names)
             else:
-                self.device_combo.addItem("Kein Gerät gefunden")
+                self.device_combo.addItem("No device found")
 
         self._apply_channel_visibility()
 
     def _apply_channel_visibility(self):
         value = self.source_combo.currentText()
-        show_mic = value in ("Mikrofon", "Mikrofon + System")
-        show_sys = value in ("System-Audio", "Mikrofon + System")
+        show_mic = value in ("Microphone", "Microphone + system")
+        show_sys = value in ("System audio", "Microphone + system")
         for channel, visible in (("mic", show_mic), ("system", show_sys)):
             lbl, meter = self._meter_rows[channel]
             lbl.setVisible(visible)
@@ -208,16 +208,16 @@ class RecordPage(QWidget):
     def _start_recording(self):
         device_name = self.device_combo.currentText()
         device_index = self._device_map.get(device_name)
-        source_map = {"Mikrofon": "mic", "System-Audio": "system", "Mikrofon + System": "both"}
+        source_map = {"Microphone": "mic", "System audio": "system", "Microphone + system": "both"}
         source = source_map.get(self.source_combo.currentText(), "mic")
 
         output_path = make_recording_output_path(self.window_.settings.get("output_dir"))
         self.window_.recorder_controller.start(output_path, source, device_index)
 
     def _on_recording_started(self):
-        self.record_btn.setText("  Aufnahme stoppen")
+        self.record_btn.setText("  Stop recording")
         self.record_btn.setIcon(QIcon(theme.get_icons()["stop"]))
-        self.status_label.setText("Aufnahme läuft...")
+        self.status_label.setText("Recording...")
         self.source_combo.setEnabled(False)
         self.device_combo.setEnabled(False)
         self.refresh_btn.setEnabled(False)
@@ -230,21 +230,21 @@ class RecordPage(QWidget):
 
     def _on_recording_finished(self, path, duration, error):
         self._timer.stop()
-        self.record_btn.setText("  Aufnahme starten")
+        self.record_btn.setText("  Start recording")
         self.record_btn.setIcon(QIcon(theme.get_icons()["record"]))
         self.source_combo.setEnabled(True)
-        self.device_combo.setEnabled(self.source_combo.currentText() != "System-Audio" or sys.platform != "darwin")
+        self.device_combo.setEnabled(self.source_combo.currentText() != "System audio" or sys.platform != "darwin")
         self.refresh_btn.setEnabled(True)
         self.timer_label.setText("00:00")
         for meter in self._meters.values():
             meter.reset()
 
         if error:
-            self.status_label.setText(f"Fehler: {error}")
+            self.status_label.setText(f"Error: {error}")
             return
 
         if path:
-            self.status_label.setText(f"Gespeichert: {path} ({duration:.1f}s)")
+            self.status_label.setText(f"Saved: {path} ({duration:.1f}s)")
             self.window_.send_to_transcription(path)
             if self.auto_transcribe_check.isChecked():
                 self.window_.navigate_to("transcribe")

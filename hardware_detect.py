@@ -1,4 +1,4 @@
-"""Hardware-Erkennung und automatische Modellauswahl fuer WhisperX."""
+"""Hardware detection and automatic model selection for WhisperX."""
 
 import os
 import platform
@@ -7,12 +7,12 @@ import torch
 
 
 def get_gpu_info() -> dict | None:
-    """Ermittelt GPU-Informationen (Name, VRAM, Backend) falls CUDA, Intel XPU oder
-    MPS verfuegbar sind. Prioritaet dGPU > iGPU > integrierte Alternative: CUDA
-    (dedizierte NVIDIA-GPU) wird zuerst geprueft, dann Intel XPU (Arc-iGPU/dGPU -
-    nur verfuegbar, wenn torch mit einem XPU-faehigen Build installiert wurde,
-    siehe pyproject.toml's "xpu"-Extra; die staerker verbreitete CUDA-Standard-
-    Installation hat torch.xpu.is_available() == False), dann Apple MPS."""
+    """Detects GPU info (name, VRAM, backend) if CUDA, Intel XPU, or MPS is
+    available. Priority dGPU > iGPU > integrated alternative: CUDA (dedicated
+    NVIDIA GPU) is checked first, then Intel XPU (Arc iGPU/dGPU - only
+    available if torch was installed with an XPU-capable build; the more
+    common CUDA-standard install has torch.xpu.is_available() == False),
+    then Apple MPS."""
     if torch.cuda.is_available():
         try:
             gpu_name = torch.cuda.get_device_name(0)
@@ -35,8 +35,8 @@ def get_gpu_info() -> dict | None:
             return None
 
     if torch.backends.mps.is_available():
-        # Apple Silicon: keine dedizierte VRAM-Abfrage moeglich (unified memory
-        # wird mit der CPU geteilt) - RAM-Gesamtgroesse als Naeherung nutzen.
+        # Apple Silicon: no dedicated VRAM query available (unified memory is
+        # shared with the CPU) - use total RAM as an approximation.
         try:
             import psutil
             ram_gb = psutil.virtual_memory().total / (1024 ** 3)
@@ -49,13 +49,12 @@ def get_gpu_info() -> dict | None:
 
 
 def get_cpu_info() -> dict:
-    """Ermittelt CPU-Informationen (Name, Kernanzahl, RAM)."""
+    """Detects CPU info (name, core count, RAM)."""
     import psutil
 
     cpu_count = os.cpu_count() or 4
     ram_gb = psutil.virtual_memory().total / (1024 ** 3)
 
-    # CPU-Name ermitteln
     cpu_name = platform.processor() or "Unknown CPU"
     if platform.system() == "Windows":
         try:
@@ -73,10 +72,10 @@ def get_cpu_info() -> dict:
 
 
 def get_openvino_devices() -> list[str] | None:
-    """Ermittelt die von OpenVINO erkannten Inferenz-Geraete (z.B. ['CPU','GPU','NPU']
-    fuer eine Intel Arc GPU + NPU). Gibt None zurueck, wenn das optionale
-    `optimum-intel[openvino]`-Paket nicht installiert ist (nur auf Windows in
-    pyproject.toml vorgesehen, siehe transcriber.transcribe_openvino())."""
+    """Returns the inference devices OpenVINO detects (e.g. ['CPU','GPU','NPU']
+    for an Intel Arc GPU + NPU). Returns None if the optional
+    `optimum-intel[openvino]` package isn't installed (Windows-only in
+    pyproject.toml, see transcriber.transcribe_openvino())."""
     try:
         from openvino import Core
     except ImportError:
@@ -88,9 +87,10 @@ def get_openvino_devices() -> list[str] | None:
 
 
 def _bundled_openvino_model_exists(whisper_size: str = "medium") -> bool:
-    """Prueft, ob download_models.py::export_openvino_model() bereits gelaufen ist
-    (bundled_models/openvino/whisper-<size>/) - ohne dieses Modell kann
-    transcribe_openvino() nichts laden, auch wenn eine Arc GPU/NPU erkannt wird."""
+    """Checks whether download_models.py::export_openvino_model() has already
+    run (bundled_models/openvino/whisper-<size>/) - without this model,
+    transcribe_openvino() has nothing to load, even if an Arc GPU/NPU is
+    detected."""
     base = os.path.dirname(os.path.abspath(__file__))
     marker = os.path.join(base, "bundled_models", "openvino", f"whisper-{whisper_size}",
                            "openvino_encoder_model.bin")
@@ -98,100 +98,101 @@ def _bundled_openvino_model_exists(whisper_size: str = "medium") -> bool:
 
 
 def recommend_model() -> tuple[str, str, str]:
-    """Empfiehlt das optimale Modell basierend auf der verfuegbaren Hardware.
+    """Recommends the best model based on the available hardware.
 
     Returns:
         Tuple (model_name, device, reason)
-        - model_name: "large-v3", "large-v2", "medium", "base" oder
+        - model_name: "large-v3", "large-v2", "medium", "base", or
           "openvino:GPU:medium" (Intel Arc GPU via OpenVINO)
-        - device: "cuda", "xpu", "mps" oder "cpu" - Geraet fuer Alignment/Diarization
-          (plain PyTorch). Bei "openvino:..."-Modellen laeuft die eigentliche
-          Whisper-Transkription unabhaengig davon immer ueber OpenVINO auf dem im
-          model_name kodierten Geraet, siehe transcriber.transcribe_openvino()
-        - reason: Begruendung der Empfehlung
+        - device: "cuda", "xpu", "mps", or "cpu" - device for alignment/
+          diarization (plain PyTorch). For "openvino:..." models, the actual
+          Whisper transcription always runs via OpenVINO on the device
+          encoded in model_name, independent of this value - see
+          transcriber.transcribe_openvino()
+        - reason: rationale for the recommendation
     """
     gpu = get_gpu_info()
     cpu = get_cpu_info()
 
-    # CUDA-Pfad: Modell anhand VRAM waehlen (WhisperX-Inferenz laeuft direkt auf
-    # der GPU ueber CTranslate2)
+    # CUDA path: pick model size by VRAM (WhisperX inference runs directly on
+    # the GPU via CTranslate2)
     if gpu is not None and gpu["backend"] == "cuda":
         vram = gpu["vram_gb"]
         if vram >= 8:
             return ("large-v3", "cuda",
-                    f"GPU {gpu['name']} mit {vram:.1f} GB VRAM — large-v3 optimal")
+                    f"GPU {gpu['name']} with {vram:.1f} GB VRAM — large-v3 is optimal")
         elif vram >= 5:
             return ("medium", "cuda",
-                    f"GPU {gpu['name']} mit {vram:.1f} GB VRAM — medium empfohlen")
+                    f"GPU {gpu['name']} with {vram:.1f} GB VRAM — medium recommended")
         else:
             return ("base", "cuda",
-                    f"GPU {gpu['name']} mit {vram:.1f} GB VRAM — base empfohlen")
+                    f"GPU {gpu['name']} with {vram:.1f} GB VRAM — base recommended")
 
-    # Keine CUDA-GPU: Intel Arc GPU via OpenVINO pruefen, bevor auf reine
-    # CPU-Transkription (CTranslate2) zurueckgefallen wird - im Benchmark auf
-    # einem Core Ultra 7 258V (Arc 140V) rund 6x schneller als CPU-int8.
+    # No CUDA GPU: check for an Intel Arc GPU via OpenVINO before falling
+    # back to plain CPU transcription (CTranslate2) - about 6x faster than
+    # CPU int8 in benchmarks on a Core Ultra 7 258V (Arc 140V).
     ov_devices = get_openvino_devices() or []
     if "GPU" in ov_devices and _bundled_openvino_model_exists("medium"):
-        # Alignment/Diarization (plain PyTorch) koennen dieselbe Arc GPU nur
-        # nutzen, wenn torch selbst mit einem XPU-faehigen Build installiert
-        # ist (siehe pyproject.toml's "xpu"-Extra) - der Standard-Install
-        # (CUDA-Build) hat torch.xpu.is_available() == False, dann laeuft nur
-        # die Whisper-Transkription selbst (via OpenVINO) auf der Arc GPU.
+        # Alignment/diarization (plain PyTorch) can only use the same Arc GPU
+        # if torch itself was installed with an XPU-capable build - the
+        # standard install (CUDA build) has torch.xpu.is_available() ==
+        # False, in which case only the Whisper transcription itself (via
+        # OpenVINO) runs on the Arc GPU.
         if gpu is not None and gpu["backend"] == "xpu":
             return ("openvino:GPU:medium", "xpu",
-                    f"Intel Arc GPU erkannt — Transkription (OpenVINO) und "
-                    "Alignment/Diarization (torch XPU) laufen beide auf der GPU")
+                    "Intel Arc GPU detected — transcription (OpenVINO) and "
+                    "alignment/diarization (torch XPU) both run on the GPU")
         return ("openvino:GPU:medium", "cpu",
-                "Intel Arc GPU erkannt (OpenVINO) — deutlich schneller als CPU-Transkription "
-                "(CTranslate2 unterstuetzt keine Intel-GPUs, siehe CLAUDE.md). "
-                "Alignment/Diarization laufen auf der CPU (torch ohne XPU-Build installiert)")
+                "Intel Arc GPU detected (OpenVINO) — much faster than CPU transcription "
+                "(CTranslate2 has no Intel GPU support). "
+                "Alignment/diarization run on the CPU (torch installed without the XPU build)")
 
-    # Kein CUDA (auch Apple Silicon/MPS): Modellgroesse anhand RAM/Kerne
-    # waehlen, da die eigentliche Whisper-Transkription ueber CTranslate2
-    # laeuft, das kein MPS unterstuetzt und daher immer auf der CPU rechnet -
-    # MPS beschleunigt hier nur Alignment und Diarization (siehe transcriber.py).
+    # No CUDA (including Apple Silicon/MPS): pick model size by RAM/cores,
+    # since the actual Whisper transcription runs via CTranslate2, which has
+    # no MPS support and therefore always runs on the CPU - MPS here only
+    # accelerates alignment and diarization (see transcriber.py).
     ram = cpu["ram_gb"]
     cores = cpu["cores"]
 
     if ram >= 16 and cores >= 8:
-        model, size_reason = "medium", f"{cpu['name']} mit {ram:.0f} GB RAM, {cores} Kerne — medium moeglich"
+        model, size_reason = "medium", f"{cpu['name']} with {ram:.0f} GB RAM, {cores} cores — medium possible"
     elif ram >= 8:
-        model, size_reason = "base", f"{ram:.0f} GB RAM — base empfohlen"
+        model, size_reason = "base", f"{ram:.0f} GB RAM — base recommended"
     else:
-        model, size_reason = "base", "begrenzte Ressourcen — base empfohlen"
+        model, size_reason = "base", "limited resources — base recommended"
 
     if gpu is not None and gpu["backend"] == "mps":
         return (model, "mps",
-                f"Apple Silicon (MPS) — {size_reason}. Whisper-Transkription "
-                "laeuft CPU-basiert (CTranslate2 unterstuetzt kein MPS), "
-                "Alignment/Diarization nutzen die Apple-GPU")
+                f"Apple Silicon (MPS) — {size_reason}. Whisper transcription "
+                "runs on the CPU (CTranslate2 has no MPS support), "
+                "alignment/diarization use the Apple GPU")
 
-    return (model, "cpu", f"Keine GPU — {size_reason}")
+    return (model, "cpu", f"No GPU — {size_reason}")
 
 
 def get_hardware_summary() -> str:
-    """Gibt eine lesbare Zusammenfassung der Hardware zurueck."""
+    """Returns a readable summary of the hardware."""
     cpu = get_cpu_info()
     gpu = get_gpu_info()
 
-    lines = [f"CPU: {cpu['name']} ({cpu['cores']} Kerne, {cpu['ram_gb']:.1f} GB RAM)"]
+    lines = [f"CPU: {cpu['name']} ({cpu['cores']} cores, {cpu['ram_gb']:.1f} GB RAM)"]
     if gpu and gpu["backend"] == "cuda":
         lines.append(f"GPU: {gpu['name']} ({gpu['vram_gb']:.1f} GB VRAM, CUDA)")
     elif gpu and gpu["backend"] == "mps":
         lines.append(f"GPU: Apple Silicon (MPS, {gpu['vram_gb']:.1f} GB unified memory) "
-                      "— beschleunigt Alignment/Diarization, Whisper-Transkription läuft auf der CPU")
+                      "— accelerates alignment/diarization, Whisper transcription runs on the CPU")
     else:
-        lines.append("GPU: Keine CUDA- oder MPS-fähige GPU erkannt")
+        lines.append("GPU: No CUDA- or MPS-capable GPU detected")
 
-    # Zusaetzlich zu CUDA/MPS: Intel Arc GPU/NPU via OpenVINO (siehe
-    # get_openvino_devices()) - unabhaengig von obigem gpu-Wert, da
-    # get_gpu_info() nur CUDA/MPS kennt und Arc-Hardware separat erkannt wird.
+    # In addition to CUDA/MPS: Intel Arc GPU/NPU via OpenVINO (see
+    # get_openvino_devices()) - independent of the gpu value above, since
+    # get_gpu_info() only knows CUDA/MPS and Arc hardware is detected separately.
     ov_devices = get_openvino_devices()
     if ov_devices:
         intel_devices = [d for d in ov_devices if d != "CPU"]
         if intel_devices:
             bundled = _bundled_openvino_model_exists("medium")
-            status = "" if bundled else " (Modell noch nicht exportiert - 'python download_models.py' ausfuehren)"
-            lines.append(f"Intel OpenVINO: {', '.join(intel_devices)} erkannt{status}")
+            status = "" if bundled else " (model not exported yet - run 'python download_models.py')"
+            lines.append(f"Intel OpenVINO: {', '.join(intel_devices)} detected{status}")
 
     return "\n".join(lines)

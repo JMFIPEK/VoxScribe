@@ -1,26 +1,85 @@
-"""Seite "Einstellungen": Zugangsdaten, Aufnahme-Ordner, Performance, und
-(als eigener Abschnitt am Ende) die Info-Inhalte (Modelle/Lizenzen) - bewusst
-kein eigener Tab mehr dafuer."""
+"""Settings page: providers, HuggingFace token, recording folder, performance,
+and (as its own section at the bottom) the Info content (models/licenses) -
+deliberately not its own tab."""
 
-import os
 import sys
 
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from qt_app.constants import DEFAULT_API_BASE_URL_FALLBACK
 from qt_app.pages.common import PAGE_MARGINS, PAGE_SPACING
 from qt_app.pages.info_content import INFO_TEXT
+
+
+class ProviderDialog(QDialog):
+    """Add/edit dialog for a single transcription provider (OpenAI-compatible
+    endpoint: name, base URL, API key, model)."""
+
+    def __init__(self, parent=None, provider=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Provider" if provider else "Add Provider")
+        self.setMinimumWidth(420)
+
+        form = QFormLayout(self)
+
+        self.name_entry = QLineEdit(provider["name"] if provider else "")
+        self.name_entry.setPlaceholderText("e.g. My Whisper Server")
+        form.addRow("Name:", self.name_entry)
+
+        self.base_url_entry = QLineEdit(provider["base_url"] if provider else "")
+        self.base_url_entry.setPlaceholderText("https://example.com/api/v1")
+        form.addRow("Base URL:", self.base_url_entry)
+
+        self.api_key_entry = QLineEdit(provider["api_key"] if provider else "")
+        self.api_key_entry.setEchoMode(QLineEdit.Password)
+        form.addRow("API key:", self.api_key_entry)
+
+        show_key = QCheckBox("Show API key")
+        show_key.toggled.connect(
+            lambda checked: self.api_key_entry.setEchoMode(
+                QLineEdit.Normal if checked else QLineEdit.Password))
+        form.addRow("", show_key)
+
+        self.model_entry = QLineEdit(provider["model"] if provider else "")
+        self.model_entry.setPlaceholderText("e.g. whisper-large-v3")
+        form.addRow("Model:", self.model_entry)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _on_accept(self):
+        if not self.name_entry.text().strip() or not self.base_url_entry.text().strip():
+            QMessageBox.warning(self, "Missing information", "Name and Base URL are required.")
+            return
+        self.accept()
+
+    def values(self) -> dict:
+        return {
+            "name": self.name_entry.text().strip(),
+            "base_url": self.base_url_entry.text().strip(),
+            "api_key": self.api_key_entry.text().strip(),
+            "model": self.model_entry.text().strip(),
+        }
 
 
 class SettingsPage(QWidget):
@@ -28,6 +87,7 @@ class SettingsPage(QWidget):
         super().__init__()
         self.window_ = window
         self._build_ui()
+        self._reload_providers()
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -44,7 +104,7 @@ class SettingsPage(QWidget):
         root.setContentsMargins(*PAGE_MARGINS)
         root.setSpacing(PAGE_SPACING)
 
-        header = QLabel("Einstellungen")
+        header = QLabel("Settings")
         header.setProperty("role", "title")
         root.addWidget(header)
 
@@ -53,63 +113,30 @@ class SettingsPage(QWidget):
         root.addLayout(grid)
         row = 0
 
-        grid.addWidget(self._bold("HuggingFace Token:"), row, 0)
+        grid.addWidget(self._bold("HuggingFace token:"), row, 0)
         self.hf_entry = QLineEdit(self.window_.settings.get("hf_token", ""))
         self.hf_entry.setEchoMode(QLineEdit.Password)
         self.hf_entry.textChanged.connect(lambda v: self.window_.settings.__setitem__("hf_token", v))
         grid.addWidget(self.hf_entry, row, 1)
         row += 1
 
-        show_hf = QCheckBox("Token anzeigen")
+        show_hf = QCheckBox("Show token")
         show_hf.toggled.connect(
             lambda checked: self.hf_entry.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
         grid.addWidget(show_hf, row, 1)
         row += 1
 
-        self.hf_hint_label = self._muted("Für Speaker Diarization benötigt (wird ermittelt...).")
+        self.hf_hint_label = self._muted("Required for speaker diarization (checking...).")
         grid.addWidget(self.hf_hint_label, row, 0, 1, 2)
         row += 1
 
-        grid.addWidget(self._separator(), row, 0, 1, 2)
-        row += 1
-
-        grid.addWidget(self._bold("KIT ToolBox API-Key:"), row, 0)
-        self.api_key_entry = QLineEdit(self.window_.settings.get("api_key", ""))
-        self.api_key_entry.setEchoMode(QLineEdit.Password)
-        self.api_key_entry.textChanged.connect(lambda v: self.window_.settings.__setitem__("api_key", v))
-        grid.addWidget(self.api_key_entry, row, 1)
-        row += 1
-
-        show_api = QCheckBox("API-Key anzeigen")
-        show_api.toggled.connect(
-            lambda checked: self.api_key_entry.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
-        grid.addWidget(show_api, row, 1)
-        row += 1
-
-        grid.addWidget(self._bold("KIT ToolBox Basis-URL:"), row, 0)
-        default_url = (self.window_.settings.get("api_base_url") or os.getenv("KIT_TOOLBOX_BASE_URL")
-                       or DEFAULT_API_BASE_URL_FALLBACK)
-        self.window_.settings["api_base_url"] = default_url
-        self.api_url_entry = QLineEdit(default_url)
-        self.api_url_entry.textChanged.connect(lambda v: self.window_.settings.__setitem__("api_base_url", v))
-        grid.addWidget(self.api_url_entry, row, 1)
-        row += 1
-
-        grid.addWidget(self._muted(
-            "Für das Server-Modell „KIT ToolBox“ benötigt. Audio wird dafür\n"
-            "an den KIT-Server übertragen (nicht mehr 100% lokal)."), row, 0, 1, 2)
-        row += 1
-
-        grid.addWidget(self._separator(), row, 0, 1, 2)
-        row += 1
-
-        grid.addWidget(self._bold("Aufnahme-Ordner:"), row, 0)
+        grid.addWidget(self._bold("Recording folder:"), row, 0)
         self.output_dir_entry = QLineEdit(self.window_.settings.get("output_dir", "recordings"))
         self.output_dir_entry.textChanged.connect(lambda v: self.window_.settings.__setitem__("output_dir", v))
         grid.addWidget(self.output_dir_entry, row, 1)
         row += 1
 
-        grid.addWidget(self._bold("Batch Size:"), row, 0)
+        grid.addWidget(self._bold("Batch size:"), row, 0)
         self.batch_size_entry = QLineEdit(str(self.window_.settings.get("batch_size", 16)))
         self.batch_size_entry.setFixedWidth(80)
         self.batch_size_entry.textChanged.connect(self._on_batch_size_changed)
@@ -118,27 +145,63 @@ class SettingsPage(QWidget):
 
         grid.addWidget(self._bold("Compute:"), row, 0)
         self.compute_combo = QComboBox()
-        self.compute_combo.addItems(["Auto (CUDA/MPS wenn verfügbar)", "cuda", "mps", "cpu"])
+        self.compute_combo.addItems(["Auto (CUDA/XPU/MPS if available)", "cuda", "xpu", "mps", "cpu"])
         self.compute_combo.currentTextChanged.connect(self._on_compute_changed)
         grid.addWidget(self.compute_combo, row, 1)
         row += 1
 
-        self.hw_summary_label = self._muted("Hardware: wird ermittelt...")
+        self.hw_summary_label = self._muted("Hardware: checking...")
         root.addWidget(self.hw_summary_label)
         if sys.platform == "darwin":
-            # Auf macOS gibt es keine Whisper-Modellwahl mehr (siehe
-            # Kommentar bei self.model_combo in transcribe_page.py) - eine
-            # "empfohlene Modellgroesse" ergibt hier keinen Sinn.
+            # No local Whisper model choice on macOS (see the matching
+            # comment on self.model_combo in transcribe_page.py) - a
+            # "recommended model size" doesn't make sense here.
             self.recommended_model_label = None
         else:
-            self.recommended_model_label = self._muted("Empfohlenes Modell: wird ermittelt...")
+            self.recommended_model_label = self._muted("Recommended model: checking...")
             root.addWidget(self.recommended_model_label)
+
+        root.addWidget(self._separator())
+
+        # --- Providers ---------------------------------------------------
+        prov_header = QLabel("Providers")
+        prov_header.setProperty("role", "title")
+        root.addWidget(prov_header)
+        prov_sub = self._muted(
+            "Add any OpenAI-compatible transcription endpoint (name, base URL, "
+            "API key, model). Audio sent to a provider leaves this machine - "
+            "the local models above never do. Mark one provider as default; "
+            "if it fails at transcription time, the app automatically falls "
+            "back to the best local model for your hardware."
+        )
+        root.addWidget(prov_sub)
+
+        self.provider_list = QListWidget()
+        self.provider_list.setMaximumHeight(140)
+        root.addWidget(self.provider_list)
+
+        prov_btn_row = QHBoxLayout()
+        root.addLayout(prov_btn_row)
+        self.add_provider_btn = QPushButton("Add...")
+        self.edit_provider_btn = QPushButton("Edit...")
+        self.delete_provider_btn = QPushButton("Delete")
+        self.set_default_provider_btn = QPushButton("Set as default")
+        prov_btn_row.addWidget(self.add_provider_btn)
+        prov_btn_row.addWidget(self.edit_provider_btn)
+        prov_btn_row.addWidget(self.delete_provider_btn)
+        prov_btn_row.addWidget(self.set_default_provider_btn)
+        prov_btn_row.addStretch(1)
+
+        self.add_provider_btn.clicked.connect(self._add_provider)
+        self.edit_provider_btn.clicked.connect(self._edit_provider)
+        self.delete_provider_btn.clicked.connect(self._delete_provider)
+        self.set_default_provider_btn.clicked.connect(self._set_default_provider)
 
         root.addWidget(self._separator())
         info_header = QLabel("Info")
         info_header.setProperty("role", "title")
         root.addWidget(info_header)
-        info_sub = QLabel("Funktionsumfang, verwendete Modelle & Lizenzen")
+        info_sub = QLabel("Features, models used & licenses")
         info_sub.setProperty("role", "muted")
         root.addWidget(info_sub)
 
@@ -149,24 +212,87 @@ class SettingsPage(QWidget):
         info_text.setMinimumHeight(320)
         root.addWidget(info_text)
 
+    # ------------------------------------------------------------ providers
+    def _reload_providers(self):
+        import providers
+
+        providers.migrate_from_env()
+        self._providers = providers.list_providers()
+        default = providers.get_default_provider()
+        default_id = default["id"] if default else None
+
+        self.provider_list.clear()
+        for p in self._providers:
+            label = f"{p['name']} ({p['model'] or 'no model set'})"
+            if p["id"] == default_id:
+                label += "  [default]"
+            item = QListWidgetItem(label)
+            item.setData(1, p["id"])
+            self.provider_list.addItem(item)
+
+    def _selected_provider_id(self):
+        item = self.provider_list.currentItem()
+        return item.data(1) if item else None
+
+    def _add_provider(self):
+        import providers
+
+        dlg = ProviderDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            v = dlg.values()
+            providers.add_provider(v["name"], v["base_url"], v["api_key"], v["model"])
+            self._reload_providers()
+
+    def _edit_provider(self):
+        import providers
+
+        pid = self._selected_provider_id()
+        if not pid:
+            return
+        provider = providers.get_provider(pid)
+        dlg = ProviderDialog(self, provider=provider)
+        if dlg.exec() == QDialog.Accepted:
+            v = dlg.values()
+            providers.update_provider(pid, **v)
+            self._reload_providers()
+
+    def _delete_provider(self):
+        import providers
+
+        pid = self._selected_provider_id()
+        if not pid:
+            return
+        providers.delete_provider(pid)
+        self._reload_providers()
+
+    def _set_default_provider(self):
+        import providers
+
+        pid = self._selected_provider_id()
+        if not pid:
+            return
+        providers.set_default_provider(pid)
+        self._reload_providers()
+
+    # ------------------------------------------------------------ hardware
     def apply_hardware_info(self, info: dict):
-        """Slot fuer HardwareInfoController.infoReady - fuellt die
-        Platzhalter, sobald die (im Hintergrund ermittelte) Hardware-/
-        Bundled-Info da ist."""
+        """Slot for HardwareInfoController.infoReady - fills in the
+        placeholders once the (background-thread-determined) hardware/
+        bundled info is available."""
         if "error" in info:
-            self.hw_summary_label.setText("Hardware: konnte nicht ermittelt werden")
+            self.hw_summary_label.setText("Hardware: could not be determined")
             if self.recommended_model_label is not None:
-                self.recommended_model_label.setText("Empfohlenes Modell: ?")
+                self.recommended_model_label.setText("Recommended model: ?")
             return
 
         self.hw_summary_label.setText(f"Hardware: {info['hw_summary']}")
         if self.recommended_model_label is not None:
-            self.recommended_model_label.setText(f"Empfohlenes Modell: {info['recommended_model']}")
+            self.recommended_model_label.setText(f"Recommended model: {info['recommended_model']}")
         if info["diarize_bundled"]:
-            self.hf_hint_label.setText("Diarization-Modelle sind integriert — kein Token nötig.")
+            self.hf_hint_label.setText("Diarization models are bundled - no token needed.")
         else:
             self.hf_hint_label.setText(
-                "Für Speaker Diarization benötigt.\nErstelle einen Read-Token auf huggingface.co/settings/tokens")
+                "Required for speaker diarization.\nCreate a read token at huggingface.co/settings/tokens")
 
     def _on_batch_size_changed(self, value):
         try:
@@ -175,7 +301,7 @@ class SettingsPage(QWidget):
             pass
 
     def _on_compute_changed(self, value):
-        self.window_.settings["compute"] = value if value in ("cuda", "mps", "cpu") else "auto"
+        self.window_.settings["compute"] = value if value in ("cuda", "xpu", "mps", "cpu") else "auto"
 
     @staticmethod
     def _bold(text):
@@ -197,4 +323,4 @@ class SettingsPage(QWidget):
         return sep
 
     def on_page_shown(self):
-        pass
+        self._reload_providers()

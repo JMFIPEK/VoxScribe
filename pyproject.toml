@@ -1,7 +1,7 @@
 [project]
 name = "whisperx-recorder"
 version = "1.0.0"
-description = "Lokale Audio-Aufnahme und Transkription mit WhisperX"
+description = "Local audio recording and transcription with WhisperX"
 requires-python = ">=3.10"
 dependencies = [
     "whisperx>=3.8",
@@ -58,14 +58,16 @@ include = ["qt_app*"]
 #
 # Intel Arc GPU machines (no NVIDIA GPU) can get Arc-accelerated Alignment/
 # Diarization (hardware_detect.py/transcriber.py's "xpu" torch device) by
-# manually switching to the XPU torch build instead:
+# switching to the XPU torch build instead:
 #   uv pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/xpu --reinstall
-# This is a deliberate manual step, not a `uv sync --extra xpu` flag: a single
-# torch install can only be built for one GPU backend (CUDA and XPU are
-# separate wheels from separate indexes), and uv's `tool.uv.sources` marker
-# system doesn't cleanly support switching a source based on which extra is
-# requested (tried; produces "conflicting indexes" - it wants one deterministic
-# index per python/platform split, not one that also varies by requested extra).
+# gpu_setup.py now does this automatically at every app start when it detects
+# an Arc GPU with a mismatched torch build - not wired up as a `uv sync
+# --extra xpu` flag: a single torch install can only be built for one GPU
+# backend (CUDA and XPU are separate wheels from separate indexes), and uv's
+# `tool.uv.sources` marker system doesn't cleanly support switching a source
+# based on which extra is requested (tried; produces "conflicting indexes" -
+# it wants one deterministic index per python/platform split, not one that
+# also varies by requested extra).
 # Whisper transcription itself (transcriber.transcribe_openvino(), the
 # "openvino:GPU:medium" model) is unaffected either way - that always runs via
 # OpenVINO regardless of which torch build is installed.

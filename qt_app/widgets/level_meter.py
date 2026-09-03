@@ -1,4 +1,4 @@
-"""Custom-gezeichnete Pegelanzeige mit Peak-Hold, fuer Live-Monitoring."""
+"""Custom-drawn level meter with peak hold, for live monitoring."""
 
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QColor, QPainter, QLinearGradient
@@ -8,7 +8,7 @@ from qt_app import theme
 
 
 class LevelMeter(QWidget):
-    """Horizontaler Pegelbalken (0..1) mit sanftem Decay und Peak-Hold-Strich."""
+    """Horizontal level bar (0..1) with smooth decay and a peak-hold line."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -20,7 +20,7 @@ class LevelMeter(QWidget):
 
     def set_level(self, value: float):
         value = max(0.0, min(1.0, value))
-        # sanfter Abfall statt hartem Sprung, wirkt "lebendiger"
+        # smooth decay instead of a hard jump, feels more "alive"
         self._level = value if value > self._level else self._level * 0.7 + value * 0.3
         if value >= self._peak:
             self._peak = value
@@ -37,7 +37,7 @@ class LevelMeter(QWidget):
         self._peak_hold_frames = 0
         self.update()
 
-    def paintEvent(self, event):  # noqa: N802 - Qt-Override
+    def paintEvent(self, event):  # noqa: N802 - Qt override
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self.rect().adjusted(1, 1, -1, -1)

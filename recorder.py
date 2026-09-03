@@ -1,15 +1,15 @@
-"""Audio-Aufnahme von Mikrofon (alle Plattformen) und System-Audio (Windows +
-experimentell macOS).
+"""Audio recording from microphone (all platforms) and system audio (Windows +
+experimental macOS).
 
-- Windows: PyAudioWPatch fuer Mikrofon + WASAPI-Loopback (System-Audio/Meeting-
-  Mitschnitt, inkl. kombinierter "Mikrofon + System"-Aufnahme).
-- macOS: `sounddevice` fuers Mikrofon; System-Audio-Aufnahme laeuft ueber einen
-  kleinen nativen Helfer (macos/SystemAudioCapture, ScreenCaptureKit), der als
-  Subprozess gestartet wird - siehe macos/README.md. Kombinierte "Mikrofon +
-  System"-Aufnahme (_record_both_macos()) mischt beide Quellen wie unter
-  Windows. EXPERIMENTELL: der System-Audio-Pfad ist auf echter Apple-Silicon-
-  Hardware getestet, die kombinierte Mikrofon+System-Variante bislang nicht.
-- Linux: nur Mikrofon via `sounddevice`, kein System-Audio-Weg vorhanden.
+- Windows: PyAudioWPatch for microphone + WASAPI loopback (system audio/
+  meeting recording, including combined "microphone + system" recording).
+- macOS: `sounddevice` for the microphone; system-audio recording runs via a
+  small native helper (macos/SystemAudioCapture, ScreenCaptureKit) launched
+  as a subprocess - see macos/README.md. Combined "microphone + system"
+  recording (_record_both_macos()) mixes both sources like on Windows.
+  EXPERIMENTAL: the system-audio path is tested on real Apple Silicon
+  hardware, the combined microphone+system variant is not yet.
+- Linux: microphone only via `sounddevice`, no system-audio path.
 """
 
 from __future__ import annotations
@@ -148,8 +148,8 @@ def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
 
 def _tail_audio_from_frames(frames: list[bytes], channels: int, sample_rate: int,
                             seconds: float) -> np.ndarray:
-    """Wandelt Frame-Chunks in ein Mono-Float64-Array (int16-Wertebereich) um
-    und schneidet auf die letzten `seconds` Sekunden zu - Baustein fuer
+    """Converts frame chunks to a mono float64 array (int16 value range) and
+    trims it to the last `seconds` seconds - building block for
     AudioRecorder.snapshot_recent_audio()."""
     audio = _frames_to_mono_float(frames, channels)
     max_samples = int(seconds * sample_rate)
@@ -159,13 +159,13 @@ def _tail_audio_from_frames(frames: list[bytes], channels: int, sample_rate: int
 
 
 def _mix_sources(mic_audio: np.ndarray, sys_audio: np.ndarray) -> np.ndarray:
-    """Mischt zwei bereits auf dieselbe Sample-Rate resamplete Mono-Signale
-    (Mikrofon + System-Loopback, int16-Wertebereich als float) - gemeinsame
-    Basis fuer den End-Mix nach dem Stop (_record_both()/_record_both_macos())
-    UND fuer den Live-Snapshot waehrend laufender Aufnahme (siehe
-    AudioRecorder.snapshot_recent_audio()). Gibt den int16-Wertebereich
-    zurueck (weder auf -1..1 normalisiert noch nach int16 gecastet) - Aufrufer
-    entscheiden je nach Zweck (WAV-Speicherung vs. STT-Upload)."""
+    """Mixes two mono signals already resampled to the same sample rate
+    (microphone + system loopback, int16 value range as float) - shared basis
+    for both the final mix after stop (_record_both()/_record_both_macos())
+    and a live snapshot while recording is still in progress (see
+    AudioRecorder.snapshot_recent_audio()). Returns the int16 value range
+    (neither normalized to -1..1 nor cast to int16) - callers decide based on
+    their purpose (WAV saving vs. STT upload)."""
     out_len = max(len(mic_audio), len(sys_audio))
     mic_audio = _pad_to_length(mic_audio, out_len)
     sys_audio = _pad_to_length(sys_audio, out_len)
@@ -177,7 +177,7 @@ def _mix_sources(mic_audio: np.ndarray, sys_audio: np.ndarray) -> np.ndarray:
 
 
 def _macos_system_audio_binary_path() -> str:
-    """Pfad zum kompilierten ScreenCaptureKit-Helfer (siehe macos/README.md)."""
+    """Path to the compiled ScreenCaptureKit helper (see macos/README.md)."""
     base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "macos", "SystemAudioCapture")
 
@@ -191,15 +191,15 @@ def _get_loopback_device(p: pyaudio.PyAudio, device_index: int | None = None):
             if int(device["index"]) == int(device_index):
                 return device
     except OSError as e:
-        raise RuntimeError("Keine WASAPI Loopback-Geraete gefunden.") from e
+        raise RuntimeError("No WASAPI loopback devices found.") from e
 
     raise RuntimeError(
-        f"Geraet [{device_index}] ist kein WASAPI Loopback-Geraet."
+        f"Device [{device_index}] is not a WASAPI loopback device."
     )
 
 
 def get_devices():
-    """Gibt alle verfuegbaren Audio-Geraete als strukturierte Listen zurueck."""
+    """Returns all available audio devices as structured lists."""
     if not IS_WINDOWS:
         return _get_devices_sounddevice()
 
@@ -250,10 +250,10 @@ def get_devices():
 
 
 def _get_devices_sounddevice():
-    """get_devices()-Aequivalent fuer macOS/Linux via sounddevice.
+    """get_devices() equivalent for macOS/Linux via sounddevice.
 
-    Liefert nur Mikrofone - System-Audio (Loopback) hat auf diesen Plattformen
-    kein WASAPI-Aequivalent und wird hier bewusst nicht unterstuetzt.
+    Only returns microphones - system audio (loopback) has no WASAPI
+    equivalent on these platforms and is deliberately not supported here.
     """
     microphones = []
     default_input_index = None
@@ -291,7 +291,7 @@ def _get_devices_sounddevice():
 
 
 def compute_rms(data: bytes) -> float:
-    """Berechnet den RMS-Pegel eines Audio-Chunks."""
+    """Computes the RMS level of an audio chunk."""
     samples = np.frombuffer(data, dtype=np.int16)
     if len(samples) == 0:
         return 0.0
@@ -299,7 +299,7 @@ def compute_rms(data: bytes) -> float:
 
 
 class AudioRecorder:
-    """Wiederverwendbarer Audio-Recorder mit Callback-Support fuer GUI."""
+    """Reusable audio recorder with callback support for the GUI."""
 
     def __init__(self):
         self._stop_event = threading.Event()
@@ -307,10 +307,10 @@ class AudioRecorder:
         self._thread = None
         self._channels = 1
         self._sample_rate = 16000
-        # Nur bei source == "both" befuellt (siehe _record_both()/
-        # _record_both_macos()) - getrennte Mikrofon-/System-Puffer, damit
-        # snapshot_recent_audio() beide waehrend laufender Aufnahme live
-        # mischen kann, statt nur einmal am Ende (siehe dort).
+        # Only populated when source == "both" (see _record_both()/
+        # _record_both_macos()) - separate microphone/system buffers, so
+        # snapshot_recent_audio() can mix both live while recording is still
+        # in progress, not just once at the end (see there).
         self._mic_frames = None
         self._sys_frames = None
         self._mic_rate = None
@@ -323,19 +323,19 @@ class AudioRecorder:
     def start(self, output_path: str, source: str = "mic",
               device_index: int | None = None,
               on_level=None, on_done=None):
-        """Startet die Aufnahme in einem Background-Thread."""
+        """Starts recording in a background thread."""
         if not IS_WINDOWS and source != "mic":
             if IS_MACOS and source == "system":
-                pass  # experimentell unterstuetzt, siehe _record_system_macos()
+                pass  # experimentally supported, see _record_system_macos()
             elif IS_MACOS and source == "both":
-                pass  # experimentell unterstuetzt, siehe _record_both_macos()
+                pass  # experimentally supported, see _record_both_macos()
             else:
-                # System-Audio (WASAPI Loopback) gibt es sonst nur unter Windows.
+                # System audio (WASAPI loopback) otherwise only exists on Windows.
                 if on_done:
                     on_done(None, 0,
-                             "System-Audio-Aufnahme wird auf diesem Betriebssystem "
-                             "noch nicht unterstuetzt (nur Windows/WASAPI, "
-                             "experimentell macOS). Bitte Quelle 'Mikrofon' waehlen.")
+                             "System-audio recording isn't supported on this OS yet "
+                             "(Windows/WASAPI only, macOS experimentally). "
+                             "Please choose the 'Microphone' source.")
                 return
 
         self._stop_event.clear()
@@ -349,7 +349,7 @@ class AudioRecorder:
         self._thread.start()
 
     def stop(self):
-        """Stoppt die Aufnahme."""
+        """Stops recording."""
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=3)
@@ -359,23 +359,21 @@ class AudioRecorder:
         return self._thread is not None and self._thread.is_alive()
 
     def snapshot_recent_audio(self, seconds: float = 180.0):
-        """Gibt die letzten `seconds` Sekunden der bisher aufgenommenen
-        Audiodaten als normalisiertes Mono-Float32-Array (Wertebereich -1..1,
-        16kHz) zurueck - OHNE die laufende Aufnahme zu unterbrechen. Fuer die
-        Live-Zusammenfassung (siehe qt_app/controllers.py::LiveMeetingController),
-        die waehrend einer laufenden Aufnahme periodisch kurze Ausschnitte
-        transkribieren will.
+        """Returns the last `seconds` seconds of audio recorded so far as a
+        normalized mono float32 array (range -1..1, 16kHz) - WITHOUT
+        interrupting the ongoing recording.
 
-        Unterstuetzt alle drei Quellen, inkl. "both" (Mikrofon + System): dafuer
-        stellen _record_both()/_record_both_macos() ihre sonst lokalen
-        Mikrofon-/System-Frame-Listen zusaetzlich als Instanzattribute
-        (`self._mic_frames`/`self._sys_frames`) bereit, die hier live
-        zugeschnitten und gemischt werden (_mix_sources() - dieselbe
-        Mischformel wie beim End-Mix nach dem Stop).
+        Supports all three sources, including "both" (microphone + system):
+        for that, _record_both()/_record_both_macos() also expose their
+        otherwise-local microphone/system frame lists as instance attributes
+        (`self._mic_frames`/`self._sys_frames`), which are trimmed and mixed
+        live here (_mix_sources() - the same mix formula as the final mix
+        after stop).
 
-        Threadsicher, weil rein lesend: die Frame-Listen werden vom Aufnahme-
-        Thread nur per `.append()` erweitert (GIL-atomar), `list(...)` kopiert
-        den aktuellen Stand sofort, ohne den Aufnahme-Thread zu blockieren.
+        Thread-safe because it's read-only: the frame lists are only ever
+        extended by the recording thread via `.append()` (GIL-atomic),
+        `list(...)` copies the current state immediately without blocking
+        the recording thread.
         """
         if not self.is_recording:
             return None
@@ -403,10 +401,10 @@ class AudioRecorder:
             return None
         audio = _resample_to_rate(audio, self._sample_rate, OUT_RATE)
 
-        # _frames_to_mono_float liefert den int16-Wertebereich als float64
-        # (fuer die interne Misch-/Resample-Pipeline) - transcribe_remote()
-        # erwartet dagegen auf -1..1 normalisierte Werte, wie sie
-        # load_audio_universal() liefert.
+        # _frames_to_mono_float returns the int16 value range as float64 (for
+        # the internal mix/resample pipeline) - callers processing this for
+        # STT typically expect values normalized to -1..1, like
+        # load_audio_universal() returns.
         return (audio / 32768.0).astype(np.float32)
 
     def _record(self):
@@ -415,8 +413,8 @@ class AudioRecorder:
         elif IS_MACOS and self._source == "both":
             self._record_both_macos()
         elif not IS_WINDOWS:
-            # start() garantiert bereits source == "mic" auf Nicht-Windows
-            # (ausser dem macOS-System-Audio-Zweig oben).
+            # start() already guarantees source == "mic" on non-Windows
+            # (except the macOS system-audio branch above).
             self._record_single_sounddevice()
         elif self._source == "both":
             self._record_both()
@@ -424,7 +422,7 @@ class AudioRecorder:
             self._record_single()
 
     def _record_single_sounddevice(self):
-        """Mikrofon-Aufnahme via sounddevice (macOS/Linux)."""
+        """Microphone recording via sounddevice (macOS/Linux)."""
         level_channel = "mic"
         try:
             if self._device_index is not None:
@@ -458,16 +456,15 @@ class AudioRecorder:
             self._on_done(self._output_path, duration, None)
 
     def _record_system_macos(self):
-        """System-Audio-Aufnahme unter macOS via ScreenCaptureKit-Subprozess.
+        """System-audio recording on macOS via a ScreenCaptureKit subprocess.
 
-        Auf echter Apple-Silicon-Hardware getestet und debuggt (siehe
-        macos/README.md) - der Helfer (macos/SystemAudioCapture) streamt rohe
-        16kHz-Mono-Int16-PCM-Bytes
-        nach stdout, die hier blockierend gelesen werden. Ein separater
-        Watcher-Thread beendet den Subprozess sofort, sobald stop() aufgerufen
-        wird - dadurch schliesst sich stdout (EOF) und der blockierende read()
-        kehrt umgehend zurueck, statt (wie beim urspruenglichen WASAPI-Bug)
-        eine Ressource waehrend eines aktiven Reads von aussen zu schliessen.
+        Tested and debugged on real Apple Silicon hardware (see
+        macos/README.md) - the helper (macos/SystemAudioCapture) streams raw
+        16kHz mono int16 PCM bytes to stdout, read here in a blocking loop. A
+        separate watcher thread terminates the subprocess as soon as stop()
+        is called - this closes stdout (EOF), so the blocking read() returns
+        immediately instead of closing a resource from another thread while a
+        read is still active (the original WASAPI bug this pattern avoids).
         """
         level_channel = "system"
         binary = _macos_system_audio_binary_path()
@@ -475,13 +472,13 @@ class AudioRecorder:
             if self._on_done:
                 self._on_done(
                     None, 0,
-                    "System-Audio-Helfer nicht gefunden. Bitte zuerst in "
-                    "macos/ './build.sh' ausfuehren (siehe macos/README.md)."
+                    "System-audio helper not found. Run './build.sh' in "
+                    "macos/ first (see macos/README.md)."
                 )
             return
 
         self._channels = 1
-        self._sample_rate = OUT_RATE  # SystemAudioCapture ist fest auf 16kHz/mono konfiguriert
+        self._sample_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
         chunk_bytes = CHUNK * SAMPLE_WIDTH
 
         proc = None
@@ -513,19 +510,19 @@ class AudioRecorder:
                 proc.kill()
                 proc.wait(timeout=2)
 
-            # -15/-2 = per SIGTERM/SIGINT sauber beendet (erwarteter Stop-Weg)
+            # -15/-2 = terminated cleanly via SIGTERM/SIGINT (the expected stop path)
             if proc.returncode not in (0, None, -15, -2):
                 stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
-                    stderr_output or f"SystemAudioCapture beendet mit Code {proc.returncode}")
+                    stderr_output or f"SystemAudioCapture exited with code {proc.returncode}")
 
             if not self._frames:
                 stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
                     stderr_output or
-                    "Keine Audiodaten empfangen. Ist die Berechtigung "
-                    "'Bildschirm- und Systemaudioaufnahme' erteilt? "
-                    "(Systemeinstellungen > Datenschutz & Sicherheit)")
+                    "No audio data received. Has the 'Screen & System Audio "
+                    "Recording' permission been granted? "
+                    "(System Settings > Privacy & Security)")
         except Exception as e:
             if proc is not None and proc.poll() is None:
                 proc.kill()
@@ -541,22 +538,23 @@ class AudioRecorder:
             self._on_done(self._output_path, duration, None)
 
     def _record_both_macos(self):
-        """Nimmt gleichzeitig Mikrofon (sounddevice) und System-Audio
-        (ScreenCaptureKit-Subprozess, siehe _record_system_macos()) auf und
-        mischt beides - macOS-Aequivalent zu _record_both() unter Windows.
+        """Records the microphone (sounddevice) and system audio
+        (ScreenCaptureKit subprocess, see _record_system_macos())
+        simultaneously and mixes them - macOS equivalent of _record_both() on
+        Windows.
 
-        Das Mikrofon laeuft ueber sounddevice's eigenen Callback-Thread, die
-        System-Audio-Seite wird blockierend im aktuellen Thread gelesen
-        (identisch zu _record_system_macos()); beide Frame-Listen werden erst
-        nach dem Stop gemischt.
+        The microphone runs on sounddevice's own callback thread, the
+        system-audio side is read in a blocking loop on the current thread
+        (identical to _record_system_macos()); both frame lists are only
+        mixed after stop.
         """
         binary = _macos_system_audio_binary_path()
         if not os.path.isfile(binary):
             if self._on_done:
                 self._on_done(
                     None, 0,
-                    "System-Audio-Helfer nicht gefunden. Bitte zuerst in "
-                    "macos/ './build.sh' ausfuehren (siehe macos/README.md)."
+                    "System-audio helper not found. Run './build.sh' in "
+                    "macos/ first (see macos/README.md)."
                 )
             return
 
@@ -573,15 +571,15 @@ class AudioRecorder:
         mic_ch = 1
         mic_rate = int(mic_info["default_samplerate"])
         sys_ch = 1
-        sys_rate = OUT_RATE  # SystemAudioCapture ist fest auf 16kHz/mono konfiguriert
+        sys_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
         chunk_bytes = CHUNK * SAMPLE_WIDTH
 
         mic_frames = []
         sys_frames = []
 
-        # Fuer Live-Zusammenfassung (siehe snapshot_recent_audio()) - dieselben
-        # Listenobjekte, mic_callback()/die Lese-Schleife unten haengen per
-        # `.append()` weiter daran an.
+        # Exposed as instance attributes for snapshot_recent_audio() - same
+        # list objects, mic_callback()/the read loop below keep extending
+        # them via `.append()`.
         self._mic_frames = mic_frames
         self._mic_rate = mic_rate
         self._mic_channels = mic_ch
@@ -630,11 +628,11 @@ class AudioRecorder:
                 proc.kill()
                 proc.wait(timeout=2)
 
-            # -15/-2 = per SIGTERM/SIGINT sauber beendet (erwarteter Stop-Weg)
+            # -15/-2 = terminated cleanly via SIGTERM/SIGINT (the expected stop path)
             if proc.returncode not in (0, None, -15, -2):
                 stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
-                    stderr_output or f"SystemAudioCapture beendet mit Code {proc.returncode}")
+                    stderr_output or f"SystemAudioCapture exited with code {proc.returncode}")
         except Exception as e:
             if proc is not None and proc.poll() is None:
                 proc.kill()
@@ -651,14 +649,14 @@ class AudioRecorder:
 
         if not mic_frames:
             if self._on_done:
-                self._on_done(None, 0, "Mikrofon hat keine Audiodaten geliefert.")
+                self._on_done(None, 0, "Microphone produced no audio data.")
             return
         if not sys_frames:
             if self._on_done:
-                self._on_done(None, 0, "System-Audio hat keine Audiodaten geliefert.")
+                self._on_done(None, 0, "System audio produced no audio data.")
             return
 
-        # Beide Streams zu Mono 16kHz mischen (identisch zu _record_both())
+        # Mix both streams down to mono 16kHz (identical to _record_both())
         mic_audio = _frames_to_mono_float(mic_frames, mic_ch)
         sys_audio = _frames_to_mono_float(sys_frames, sys_ch)
         mic_audio = _resample_to_rate(mic_audio, mic_rate, OUT_RATE)
@@ -705,9 +703,9 @@ class AudioRecorder:
 
             while not self._stop_event.is_set():
                 if self._source == "system" and stream.get_read_available() < CHUNK:
-                    # WASAPI-Loopback liefert bei Systemstille keine Pakete -
-                    # ohne dieses Polling wuerde read() beliebig lange
-                    # blockieren und "Stoppen" wuerde nicht reagieren.
+                    # WASAPI loopback delivers no packets while the system is
+                    # silent - without this polling, read() would block
+                    # indefinitely and "stop" wouldn't respond.
                     self._stop_event.wait(0.02)
                     continue
                 data = stream.read(CHUNK, exception_on_overflow=False)
@@ -733,7 +731,7 @@ class AudioRecorder:
             self._on_done(self._output_path, duration, None)
 
     def _record_both(self):
-        """Nimmt gleichzeitig Mikrofon + System-Audio auf und mischt beides."""
+        """Records microphone + system audio simultaneously and mixes them."""
         p = pyaudio.PyAudio()
         mic_frames = []
         sys_frames = []
@@ -744,7 +742,7 @@ class AudioRecorder:
         read_errors = []
 
         try:
-            # Mikrofon einrichten
+            # Set up microphone
             if self._device_index is not None:
                 mic_info = p.get_device_info_by_index(self._device_index)
             else:
@@ -754,16 +752,16 @@ class AudioRecorder:
             mic_ch = 1
             mic_chunk = _chunk_size_for_rate(mic_rate)
 
-            # System-Audio (Loopback) einrichten
+            # Set up system audio (loopback)
             loopback = p.get_default_wasapi_loopback()
             sys_idx = loopback["index"]
             sys_rate = int(loopback["defaultSampleRate"])
             sys_ch = loopback["maxInputChannels"]
             sys_chunk = _chunk_size_for_rate(sys_rate)
 
-            # Fuer Live-Zusammenfassung (siehe snapshot_recent_audio()) -
-            # dieselben Listenobjekte, `read_loop()` haengt per `.append()`
-            # weiter daran an.
+            # Exposed as instance attributes for snapshot_recent_audio() -
+            # same list objects, `read_loop()` keeps extending them via
+            # `.append()`.
             self._mic_frames = mic_frames
             self._mic_rate = mic_rate
             self._mic_channels = mic_ch
@@ -782,15 +780,14 @@ class AudioRecorder:
                 frames_per_buffer=sys_chunk)
 
             def read_loop(stream, frames, chunk_size, level_channel):
-                # WASAPI-Loopback-Streams liefern keine Pakete, solange auf dem
-                # System nichts wiedergegeben wird - ein blockierender read()
-                # kann dadurch beliebig lange haengen. Wuerde man in diesem
-                # Zustand stoppen und den Stream aus einem anderen Thread
-                # schliessen, waehrend read() noch blockiert, stuerzt der
-                # Prozess nativ ab (kein Python-Traceback, keine Ausgabe).
-                # Deshalb per get_read_available() pollen und read() nur
-                # aufrufen, wenn wirklich genug Daten bereitstehen - so bleibt
-                # die Schleife jederzeit auf stop_event reaktionsfaehig.
+                # WASAPI loopback streams deliver no packets while nothing is
+                # playing on the system - a blocking read() can therefore
+                # hang indefinitely. If you stop and close the stream from
+                # another thread while read() is still blocked in that state,
+                # the process crashes natively (no Python traceback, no
+                # output). So poll via get_read_available() and only call
+                # read() once enough data is actually available - this keeps
+                # the loop responsive to stop_event at all times.
                 while not self._stop_event.is_set():
                     try:
                         available = stream.get_read_available()
@@ -836,10 +833,9 @@ class AudioRecorder:
                 self._on_done(None, 0, str(e))
             return
         finally:
-            # Defensiv: einen Stream NIE schliessen, solange sein Lese-Thread
-            # theoretisch noch in stream.read() haengen koennte (siehe
-            # Kommentar in read_loop) - das ist ein nativer Absturz, kein
-            # abfangbarer Python-Fehler.
+            # Defensive: never close a stream while its read thread could
+            # theoretically still be stuck in stream.read() (see comment in
+            # read_loop) - that's a native crash, not a catchable Python error.
             for stream, thread in ((mic_stream, mic_thread), (sys_stream, sys_thread)):
                 if stream is None:
                     continue
@@ -857,14 +853,14 @@ class AudioRecorder:
 
         if not mic_frames:
             if self._on_done:
-                self._on_done(None, 0, "Mikrofon hat keine Audiodaten geliefert.")
+                self._on_done(None, 0, "Microphone produced no audio data.")
             return
         if not sys_frames:
             if self._on_done:
-                self._on_done(None, 0, "System-Audio hat keine Audiodaten geliefert.")
+                self._on_done(None, 0, "System audio produced no audio data.")
             return
 
-        # Beide Streams zu Mono 16kHz mischen
+        # Mix both streams down to mono 16kHz
         mic_audio = _frames_to_mono_float(mic_frames, mic_ch)
         sys_audio = _frames_to_mono_float(sys_frames, sys_ch)
         mic_audio = _resample_to_rate(mic_audio, mic_rate, OUT_RATE)
@@ -884,60 +880,59 @@ class AudioRecorder:
 
 
 def list_devices():
-    """Zeigt alle verfuegbaren Audio-Geraete (Mikrofone + WASAPI Loopback)."""
+    """Shows all available audio devices (microphones + WASAPI loopback)."""
     devices = get_devices()
-    print("\n=== Verfuegbare Audio-Geraete ===\n")
+    print("\n=== Available audio devices ===\n")
 
-    print("--- Mikrofone (Eingabegeraete) ---")
+    print("--- Microphones (input devices) ---")
     if devices["microphones"]:
         for device in devices["microphones"]:
             host_api = f", API: {device['host_api']}" if device.get("host_api") else ""
             print(f"  [{device['index']}] {device['name']}")
-            print(f"      Kanaele: {device['channels']}, "
-                  f"Samplerate: {device['sample_rate']} Hz{host_api}")
+            print(f"      Channels: {device['channels']}, "
+                  f"Sample rate: {device['sample_rate']} Hz{host_api}")
     else:
-        print("  Keine Mikrofone gefunden.")
+        print("  No microphones found.")
 
-    print("\n--- System-Audio (WASAPI Loopback) ---")
+    print("\n--- System audio (WASAPI loopback) ---")
     if IS_MACOS:
-        print("  Experimentell via ScreenCaptureKit (siehe macos/README.md) - "
-              "keine Geraeteauswahl, nimmt die gesamte System-Wiedergabe auf.")
+        print("  Experimental via ScreenCaptureKit (see macos/README.md) - "
+              "no device selection, captures the entire system playback.")
     elif not IS_WINDOWS:
-        print("  Nicht unterstuetzt auf diesem Betriebssystem (nur Windows/WASAPI).")
+        print("  Not supported on this OS (Windows/WASAPI only).")
     elif devices["loopback"]:
         for device in devices["loopback"]:
             host_api = f", API: {device['host_api']}" if device.get("host_api") else ""
             print(f"  [{device['index']}] {device['name']}")
-            print(f"      Kanaele: {device['channels']}, "
-                  f"Samplerate: {device['sample_rate']} Hz{host_api}")
+            print(f"      Channels: {device['channels']}, "
+                  f"Sample rate: {device['sample_rate']} Hz{host_api}")
     else:
-        print("  Keine WASAPI Loopback-Geraete gefunden.")
+        print("  No WASAPI loopback devices found.")
 
     default_loopback = devices.get("default_loopback")
     if default_loopback is not None:
-        print(f"\n  Standard-Loopback: [{default_loopback}]")
+        print(f"\n  Default loopback: [{default_loopback}]")
 
     print()
 
 
 def _level_bar(data: bytes, channels: int) -> str:
-    """Erzeugt einen einfachen Lautstaerke-Balken fuer die Konsole."""
+    """Builds a simple volume bar for the console."""
     samples = np.frombuffer(data, dtype=np.int16)
     if len(samples) == 0:
         return ""
-    # RMS berechnen
     rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
-    # Normalisieren auf 0-50 Zeichen
+    # Normalize to 0-50 characters
     level = min(int(rms / 500), 50)
     bar = "█" * level + "░" * (50 - level)
-    return f"\r  Pegel: |{bar}| {rms:6.0f}"
+    return f"\r  Level: |{bar}| {rms:6.0f}"
 
 
 def record_microphone(output_path: str, device_index: int | None = None,
                       sample_rate: int | None = None, channels: int = 1):
-    """Nimmt Audio vom Mikrofon auf und speichert es als WAV.
+    """Records audio from the microphone and saves it as a WAV file.
 
-    Stoppt bei Enter-Tastendruck.
+    Stops on Enter.
     """
     if IS_WINDOWS:
         return _record_microphone_pyaudio(output_path, device_index, sample_rate, channels)
@@ -946,18 +941,18 @@ def record_microphone(output_path: str, device_index: int | None = None,
 
 def _record_microphone_sounddevice(output_path: str, device_index: int | None = None,
                                    sample_rate: int | None = None, channels: int = 1):
-    """Mikrofon-Aufnahme via sounddevice (macOS/Linux). Stoppt bei ENTER."""
+    """Microphone recording via sounddevice (macOS/Linux). Stops on ENTER."""
     if device_index is not None:
         info = sd.query_devices(device_index)
-        print(f"Mikrofon: [{device_index}] {info['name']}")
+        print(f"Microphone: [{device_index}] {info['name']}")
     else:
         info = sd.query_devices(kind="input")
         device_index = None
-        print(f"Standard-Mikrofon: {info['name']}")
+        print(f"Default microphone: {info['name']}")
 
     if sample_rate is None:
         sample_rate = int(info["default_samplerate"])
-    print(f"  Kanaele: {channels}, Samplerate: {sample_rate} Hz")
+    print(f"  Channels: {channels}, Sample rate: {sample_rate} Hz")
 
     frames = []
     stop_event = threading.Event()
@@ -974,7 +969,7 @@ def _record_microphone_sounddevice(output_path: str, device_index: int | None = 
     listener = threading.Thread(target=wait_for_enter, daemon=True)
     listener.start()
 
-    print("Aufnahme laeuft... Druecke ENTER zum Stoppen.\n")
+    print("Recording... Press ENTER to stop.\n")
 
     with sd.InputStream(samplerate=sample_rate, channels=channels, dtype="int16",
                         device=device_index, blocksize=CHUNK, callback=callback):
@@ -984,7 +979,7 @@ def _record_microphone_sounddevice(output_path: str, device_index: int | None = 
         except KeyboardInterrupt:
             pass
 
-    print("\n\nAufnahme beendet.")
+    print("\n\nRecording stopped.")
 
     _save_wav(output_path, frames, channels, sample_rate)
     return output_path
@@ -996,15 +991,15 @@ def _record_microphone_pyaudio(output_path: str, device_index: int | None = None
 
     if device_index is not None:
         info = p.get_device_info_by_index(device_index)
-        print(f"Mikrofon: [{device_index}] {info['name']}")
+        print(f"Microphone: [{device_index}] {info['name']}")
     else:
         info = p.get_default_input_device_info()
         device_index = info["index"]
-        print(f"Standard-Mikrofon: [{device_index}] {info['name']}")
+        print(f"Default microphone: [{device_index}] {info['name']}")
 
     if sample_rate is None:
         sample_rate = int(info["defaultSampleRate"])
-    print(f"  Kanaele: {channels}, Samplerate: {sample_rate} Hz")
+    print(f"  Channels: {channels}, Sample rate: {sample_rate} Hz")
 
     stream = p.open(
         format=FORMAT,
@@ -1025,7 +1020,7 @@ def _record_microphone_pyaudio(output_path: str, device_index: int | None = None
     listener = threading.Thread(target=wait_for_enter, daemon=True)
     listener.start()
 
-    print("Aufnahme laeuft... Druecke ENTER zum Stoppen.\n")
+    print("Recording... Press ENTER to stop.\n")
 
     try:
         while not stop_event.is_set():
@@ -1035,7 +1030,7 @@ def _record_microphone_pyaudio(output_path: str, device_index: int | None = None
     except KeyboardInterrupt:
         pass
 
-    print("\n\nAufnahme beendet.")
+    print("\n\nRecording stopped.")
 
     stream.stop_stream()
     stream.close()
@@ -1046,19 +1041,19 @@ def _record_microphone_pyaudio(output_path: str, device_index: int | None = None
 
 
 def record_system_audio(output_path: str, device_index: int | None = None):
-    """Nimmt System-Audio auf und speichert es als WAV. Stoppt bei Enter-Tastendruck.
+    """Records system audio and saves it as a WAV file. Stops on Enter.
 
-    Windows: WASAPI Loopback. macOS: experimentell via ScreenCaptureKit (siehe
-    macos/README.md) - device_index wird dort ignoriert, es gibt keine
-    Geraeteauswahl. Linux: nicht unterstuetzt.
+    Windows: WASAPI loopback. macOS: experimental via ScreenCaptureKit (see
+    macos/README.md) - device_index is ignored there, there's no device
+    selection. Linux: not supported.
     """
     if IS_MACOS:
         return _record_system_audio_macos_cli(output_path)
 
     if not IS_WINDOWS:
         raise RuntimeError(
-            "System-Audio-Aufnahme wird auf diesem Betriebssystem noch nicht "
-            "unterstuetzt (nur Windows, experimentell macOS). Nutze --source mic."
+            "System-audio recording isn't supported on this OS yet "
+            "(Windows only, macOS experimentally). Use --source mic."
         )
     p = pyaudio.PyAudio()
 
@@ -1069,15 +1064,15 @@ def record_system_audio(output_path: str, device_index: int | None = None):
         if isinstance(e, RuntimeError):
             raise
         raise RuntimeError(
-            "Kein WASAPI Loopback-Geraet gefunden. "
-            "Stelle sicher, dass ein Audio-Ausgabegeraet aktiv ist."
+            "No WASAPI loopback device found. "
+            "Make sure an audio output device is active."
         ) from e
 
     channels = loopback["maxInputChannels"]
     sample_rate = int(loopback["defaultSampleRate"])
 
-    print(f"System-Audio (Loopback): [{loopback['index']}] {loopback['name']}")
-    print(f"  Kanaele: {channels}, Samplerate: {sample_rate} Hz")
+    print(f"System audio (loopback): [{loopback['index']}] {loopback['name']}")
+    print(f"  Channels: {channels}, Sample rate: {sample_rate} Hz")
 
     stream = p.open(
         format=FORMAT,
@@ -1098,7 +1093,7 @@ def record_system_audio(output_path: str, device_index: int | None = None):
     listener = threading.Thread(target=wait_for_enter, daemon=True)
     listener.start()
 
-    print("Aufnahme laeuft... Druecke ENTER zum Stoppen.\n")
+    print("Recording... Press ENTER to stop.\n")
 
     try:
         while not stop_event.is_set():
@@ -1108,7 +1103,7 @@ def record_system_audio(output_path: str, device_index: int | None = None):
     except KeyboardInterrupt:
         pass
 
-    print("\n\nAufnahme beendet.")
+    print("\n\nRecording stopped.")
 
     stream.stop_stream()
     stream.close()
@@ -1119,10 +1114,10 @@ def record_system_audio(output_path: str, device_index: int | None = None):
 
 
 def _record_system_audio_macos_cli(output_path: str):
-    """CLI-Variante der experimentellen macOS-Systemaudio-Aufnahme (ENTER stoppt).
+    """CLI variant of the experimental macOS system-audio recording (ENTER stops).
 
-    Nutzt AudioRecorder._record_system_macos() unter der Haube (Subprozess-
-    basierter ScreenCaptureKit-Helfer) - siehe macos/README.md fuer Status.
+    Uses AudioRecorder._record_system_macos() under the hood (subprocess-based
+    ScreenCaptureKit helper) - see macos/README.md for status.
     """
     audio_recorder = AudioRecorder()
     done_event = threading.Event()
@@ -1139,13 +1134,13 @@ def _record_system_audio_macos_cli(output_path: str):
         input()
         stop_requested.set()
 
-    print("System-Audio (macOS, experimentell via ScreenCaptureKit)")
+    print("System audio (macOS, experimental via ScreenCaptureKit)")
     audio_recorder.start(output_path=output_path, source="system", on_done=on_done)
 
     listener = threading.Thread(target=wait_for_enter, daemon=True)
     listener.start()
 
-    print("Aufnahme laeuft... Druecke ENTER zum Stoppen.\n")
+    print("Recording... Press ENTER to stop.\n")
     try:
         while not stop_requested.is_set() and not done_event.is_set():
             done_event.wait(0.1)
@@ -1153,10 +1148,10 @@ def _record_system_audio_macos_cli(output_path: str):
         pass
 
     if not done_event.is_set():
-        print("\n\nAufnahme beendet. Speichere...")
+        print("\n\nRecording stopped. Saving...")
         audio_recorder.stop()
         if not done_event.wait(timeout=120):
-            raise RuntimeError("Aufnahme konnte nicht abgeschlossen werden.")
+            raise RuntimeError("Recording could not be completed.")
 
     if result["error"]:
         raise RuntimeError(result["error"])
@@ -1166,7 +1161,7 @@ def _record_system_audio_macos_cli(output_path: str):
 
 def record_microphone_and_system(output_path: str,
                                  device_index: int | None = None):
-    """Nimmt Mikrofon + System-Audio auf und speichert den Mix als WAV."""
+    """Records microphone + system audio and saves the mix as a WAV file."""
     recorder = AudioRecorder()
     done_event = threading.Event()
     stop_requested = threading.Event()
@@ -1182,7 +1177,7 @@ def record_microphone_and_system(output_path: str,
         input()
         stop_requested.set()
 
-    print("Mikrofon + System-Audio")
+    print("Microphone + system audio")
     recorder.start(
         output_path=output_path,
         source="both",
@@ -1193,7 +1188,7 @@ def record_microphone_and_system(output_path: str,
     listener = threading.Thread(target=wait_for_enter, daemon=True)
     listener.start()
 
-    print("Aufnahme laeuft... Druecke ENTER zum Stoppen.\n")
+    print("Recording... Press ENTER to stop.\n")
     try:
         while not stop_requested.is_set() and not done_event.is_set():
             done_event.wait(0.1)
@@ -1201,10 +1196,10 @@ def record_microphone_and_system(output_path: str,
         pass
 
     if not done_event.is_set():
-        print("\n\nAufnahme beendet. Speichere...")
+        print("\n\nRecording stopped. Saving...")
         recorder.stop()
         if not done_event.wait(timeout=120):
-            raise RuntimeError("Aufnahme konnte nicht abgeschlossen werden.")
+            raise RuntimeError("Recording could not be completed.")
 
     if result["error"]:
         raise RuntimeError(result["error"])
@@ -1214,7 +1209,7 @@ def record_microphone_and_system(output_path: str,
 
 def _save_wav(output_path: str, frames: list[bytes], channels: int,
               sample_rate: int):
-    """Speichert aufgenommene Frames als WAV-Datei."""
+    """Saves recorded frames as a WAV file."""
     import os
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -1226,4 +1221,4 @@ def _save_wav(output_path: str, frames: list[bytes], channels: int,
 
     duration = len(b"".join(frames)) / (sample_rate * channels * SAMPLE_WIDTH)
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
-    print(f"Gespeichert: {output_path} ({duration:.1f}s, {size_mb:.1f} MB)")
+    print(f"Saved: {output_path} ({duration:.1f}s, {size_mb:.1f} MB)")

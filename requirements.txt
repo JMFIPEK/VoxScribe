@@ -1,17 +1,17 @@
 # Core
 whisperx>=3.8
-PyAudioWPatch>=0.2.12; sys_platform == 'win32'  # Mikrofon + WASAPI-Loopback (nur Windows)
-sounddevice>=0.4; sys_platform != 'win32'       # Mikrofon (macOS/Linux) - kein System-Audio
+PyAudioWPatch>=0.2.12; sys_platform == 'win32'  # microphone + WASAPI loopback (Windows only)
+sounddevice>=0.4; sys_platform != 'win32'       # microphone (macOS/Linux) - no system audio
 soundfile>=0.13
 scipy
 numpy
 python-dotenv
 PySide6>=6.7          # GUI (gui_qt.py)
 psutil
-av                    # Video-container audio extraction (MKV, MP4, ...)
-requests              # KIT ToolBox (Server) remote transcription
+av                    # video-container audio extraction (MKV, MP4, ...)
+requests              # remote provider transcription
 
-# PyTorch mit CUDA 12.8 (separat installieren, siehe README)
+# PyTorch with CUDA 12.8 (install separately, see README)
 # torch>=2.11
 # torchaudio>=2.11
 # torchvision>=0.26

@@ -1,32 +1,31 @@
 #!/bin/bash
-# Baut die macOS-Hilfsprozesse: ScreenCaptureKit (System-Audio-Aufnahme) und
-# SpeechAnalyzer (Transkription).
+# Builds the macOS helper processes: ScreenCaptureKit (system-audio recording)
+# and SpeechAnalyzer (transcription).
 #
-# Voraussetzung: Xcode Command Line Tools (`xcode-select --install`).
+# Requirement: Xcode Command Line Tools (`xcode-select --install`).
 #
-# Nutzung:
+# Usage:
 #   cd macos
 #   ./build.sh
 #
-# Erzeugt ./SystemAudioCapture und ./SpeechAnalyzerTranscribe - recorder.py
-# bzw. transcriber.py suchen die Binaries genau dort.
+# Produces ./SystemAudioCapture and ./SpeechAnalyzerTranscribe - recorder.py
+# and transcriber.py look for the binaries exactly there.
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-echo "Baue SystemAudioCapture..."
+echo "Building SystemAudioCapture..."
 swiftc -O SystemAudioCapture.swift -o SystemAudioCapture
 
-echo "Baue SpeechAnalyzerTranscribe..."
+echo "Building SpeechAnalyzerTranscribe..."
 swiftc -O SpeechAnalyzerTranscribe.swift -o SpeechAnalyzerTranscribe
 
-echo "Fertig: $(pwd)/SystemAudioCapture, $(pwd)/SpeechAnalyzerTranscribe"
+echo "Done: $(pwd)/SystemAudioCapture, $(pwd)/SpeechAnalyzerTranscribe"
 echo
-echo "Kurzer Test SystemAudioCapture (Ctrl+C zum Stoppen, sollte KEINE"
-echo "Fehlermeldung zu fehlenden Berechtigungen zeigen - falls doch:"
-echo "Systemeinstellungen > Datenschutz & Sicherheit > Bildschirm- und"
-echo "Systemaudioaufnahme > Terminal/VoxScribe erlauben):"
+echo "Quick test SystemAudioCapture (Ctrl+C to stop, should show NO error"
+echo "about missing permissions - if it does: System Settings > Privacy &"
+echo "Security > Screen & System Audio Recording > allow Terminal/VoxScribe):"
 echo "  ./SystemAudioCapture > /tmp/test.raw"
 echo
-echo "Kurzer Test SpeechAnalyzerTranscribe (mit einer 16kHz-Mono-WAV-Datei):"
-echo "  ./SpeechAnalyzerTranscribe /pfad/zu/audio.wav de-DE"
+echo "Quick test SpeechAnalyzerTranscribe (with a 16kHz mono WAV file):"
+echo "  ./SpeechAnalyzerTranscribe /path/to/audio.wav en-US"

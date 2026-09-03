@@ -1,78 +1,77 @@
-# System-Audio-Aufnahme unter macOS
+# System-audio recording on macOS
 
-`SystemAudioCapture.swift` ist ein kleiner Kommandozeilen-Helfer, der System-Audio
-via Apples ScreenCaptureKit aufnimmt und als rohe 16kHz-Mono-Int16-PCM-Bytes nach
-stdout schreibt. `recorder.py` startet ihn als Subprozess (siehe
-`_record_system_macos()`), analog dazu, wie unter Windows PyAudioWPatch und unter
-macOS/Linux `sounddevice` fuers Mikrofon genutzt werden.
+`SystemAudioCapture.swift` is a small command-line helper that captures system
+audio via Apple's ScreenCaptureKit and writes it to stdout as raw 16kHz mono
+int16 PCM bytes. `recorder.py` launches it as a subprocess (see
+`_record_system_macos()`), the same way PyAudioWPatch is used on Windows and
+`sounddevice` is used for the microphone on macOS/Linux.
 
-**Status: auf echter Apple-Silicon-Hardware (macOS 26) gebaut, getestet und
-debuggt.** Zwei Bugs wurden dabei gefunden und behoben: ein Swift-Kompilierfehler
-(String/`Data`-Typkonflikt im Fehlerlogging) und ein Python-Importfehler
-(`recorder.py` referenzierte `pyaudio.PyAudio` in einer Typannotation, obwohl
-`pyaudio` unter macOS gar nicht importiert wird - das crashte den kompletten
-Import bereits beim Programmstart, siehe `from __future__ import annotations`
-in `recorder.py`). Nach den Fixes funktioniert die Aufnahme end-to-end:
-Berechtigungsabfrage, echte (nicht-stille) Audiodaten, sauberes Beenden in
-~10ms ohne haengenden Prozess.
+**Status: built, tested, and debugged on real Apple Silicon hardware (macOS
+26).** Two bugs were found and fixed along the way: a Swift compile error
+(string/`Data` type mismatch in the error-logging path) and a Python
+import-time crash (`recorder.py` referenced `pyaudio.PyAudio` in a type
+annotation even though `pyaudio` is never imported on macOS - this crashed
+the whole import at program start, see `from __future__ import annotations`
+in `recorder.py`). After the fixes, recording works end-to-end: permission
+prompt, real (non-silent) audio data, clean shutdown in ~10ms with no
+orphaned process.
 
-## Voraussetzungen
+## Requirements
 
-- macOS 13 (Ventura) oder neuer
+- macOS 13 (Ventura) or newer
 - Xcode Command Line Tools: `xcode-select --install`
-- Berechtigung "Bildschirm- und Systemaudioaufnahme" fuer den Prozess, der das
-  Binary ausfuehrt (Terminal beim manuellen Testen, spaeter die gepackte
-  VoxScribe-App) unter Systemeinstellungen > Datenschutz & Sicherheit
+- The "Screen & System Audio Recording" permission for the process running
+  the binary (Terminal while testing manually, later the packaged VoxScribe
+  app), under System Settings > Privacy & Security
 
-## Bauen
+## Building
 
 ```bash
 cd macos
 ./build.sh
 ```
 
-Erzeugt `macos/SystemAudioCapture` - genau dort sucht `recorder.py` danach.
+Produces `macos/SystemAudioCapture` - exactly where `recorder.py` looks for it.
 
-## Manuell testen (unabhaengig von VoxScribe)
+## Testing manually (independent of VoxScribe)
 
 ```bash
 cd macos
 ./SystemAudioCapture > /tmp/test.raw
-# ein paar Sekunden laufen lassen waehrend z.B. Musik/ein Video laeuft, dann Ctrl+C
+# let it run for a few seconds while e.g. music/a video is playing, then Ctrl+C
 ```
 
-Die Datei `/tmp/test.raw` enthaelt danach rohe 16-bit-PCM-Samples (kein WAV-Header!).
-Zum Anhoeren z.B. mit ffmpeg in eine WAV-Datei konvertieren:
+`/tmp/test.raw` then contains raw 16-bit PCM samples (no WAV header!). To
+listen to it, convert it to a WAV file with e.g. ffmpeg:
 
 ```bash
 ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/test.raw /tmp/test.wav
 ```
 
-## Bekannte offene Punkte / worauf beim Debuggen zu achten ist
+## Known open items / things to watch when debugging
 
-- **Berechtigungsdialog**: Verifiziert - das Programm bricht ohne erteilte
-  Berechtigung mit einem klaren Fehler ab (TCC-Error -3801, "Benutzer:in hat
-  TCCs fuer die Aufnahme durch Apps, Fenster, Displays abgelehnt"). Die
-  Berechtigung muss manuell unter Systemeinstellungen > Datenschutz &
-  Sicherheit > Bildschirm- und Systemaudioaufnahme fuer den ausfuehrenden
-  Prozess (Terminal, spaeter die gepackte App) erteilt werden; danach muss
-  der Prozess (Terminal) neu gestartet werden, damit macOS das TCC-Update
-  uebernimmt.
-- **Sample-Format**: Verifiziert - ScreenCaptureKit liefert bei
-  `sampleRate = 16000`/`channelCount = 1` tatsaechlich zuverlaessig
-  16kHz-Mono-Float32, die Konvertierung nach Int16 in
-  `stream(_:didOutputSampleBuffer:of:)` erzeugt korrekte, hoerbare PCM-Daten.
-- **`excludingDesktopWindows`/`onScreenWindowsOnly`**: Aktuell wird das erste
-  gefundene Display genutzt (`content.displays.first`) - bei Mehrschirm-Setups
-  waere ggf. eine Display-Auswahl noetig (noch nicht getestet).
-- **Sauberes Beenden**: Verifiziert - SIGTERM beendet den Prozess sauber
-  (`signal(...)`-Handler + `exit(0)`), `subprocess.terminate()` von
-  `recorder.py` aus fuehrt zu keinem haengenden Prozess und `stop()` kehrt in
-  ~10ms zurueck.
-- **Kombinierte Aufnahme "Mikrofon + System"**: Umgesetzt in
-  `recorder.py::AudioRecorder._record_both_macos()` (Mikrofon via
-  `sounddevice`, System-Audio via dieser Subprozess-Pipe, danach wie unter
-  Windows gemischt). Anders als der reine System-Audio-Pfad oben aber noch
-  NICHT auf echter Hardware getestet - beim ersten echten Test besonders auf
-  Sync-Drift zwischen den beiden Quellen und auf das Verhalten bei fehlender
-  Aufnahme-Berechtigung fuer eine der beiden Seiten achten.
+- **Permission dialog**: Verified - the program aborts with a clear error if
+  the permission hasn't been granted (TCC error -3801, "User declined TCC
+  for capturing screens/windows/apps"). The permission must be granted
+  manually under System Settings > Privacy & Security > Screen & System
+  Audio Recording for the process running it (Terminal, later the packaged
+  app); the process (Terminal) then needs to be restarted for macOS to pick
+  up the TCC update.
+- **Sample format**: Verified - at `sampleRate = 16000`/`channelCount = 1`,
+  ScreenCaptureKit reliably delivers 16kHz mono float32, and the conversion
+  to int16 in `stream(_:didOutputSampleBuffer:of:)` produces correct,
+  audible PCM data.
+- **`excludingDesktopWindows`/`onScreenWindowsOnly`**: Currently uses the
+  first display found (`content.displays.first`) - a multi-monitor setup
+  might need display selection (not yet tested).
+- **Clean shutdown**: Verified - SIGTERM terminates the process cleanly
+  (`signal(...)` handler + `exit(0)`), `subprocess.terminate()` from
+  `recorder.py` doesn't leave a hanging process, and `stop()` returns in
+  ~10ms.
+- **Combined "microphone + system" recording**: Implemented in
+  `recorder.py::AudioRecorder._record_both_macos()` (microphone via
+  `sounddevice`, system audio via this subprocess pipe, mixed afterward like
+  on Windows). Unlike the plain system-audio path above, this has **not**
+  been tested on real hardware yet - when first testing it for real, watch
+  especially for sync drift between the two sources and behavior when
+  recording permission is missing for only one side.

@@ -1,18 +1,18 @@
-"""Build-Skript: Erstellt die VoxScribe .exe mit PyInstaller.
+"""Build script: creates the VoxScribe .exe with PyInstaller.
 
-Verwendung:
+Usage:
     python build_exe.py
 
-Das Ergebnis liegt in dist/VoxScribe/VoxScribe.exe
+The result is in dist/VoxScribe/VoxScribe.exe
 
-Baut bewusst "online-first" - ohne bundled_models/ vorab einzubetten. Die App
-laedt lokale Modelle ohnehin nur bei Bedarf herunter (KIT ToolBox (Server) ist
-der Default, siehe transcriber.default_model_size()), und die Modelle machen
-mit ~4-9 GB den grossen Teil der Groesse einer eingebetteten .exe aus. Wer
-zusaetzlich eine volloffline-faehige .exe will, kann nach dem Build manuell
-`python download_models.py` ausfuehren und den Ergebnisordner
-(bundled_models/) in dist/VoxScribe/ hineinkopieren - transcriber.py erkennt
-ihn automatisch (siehe _get_bundled_models_dir()), ganz ohne Code-Aenderung.
+Deliberately builds "online-first" - without pre-embedding bundled_models/.
+The app only downloads local models when actually needed (a configured
+provider is the default, see transcriber.default_model_size()), and models
+make up ~4-9 GB, the bulk of an embedded .exe's size. Anyone who also wants a
+fully-offline-capable .exe can manually run `python download_models.py` after
+the build and copy the resulting folder (bundled_models/) into
+dist/VoxScribe/ - transcriber.py picks it up automatically (see
+_get_bundled_models_dir()), no code change needed.
 """
 
 import os
@@ -25,17 +25,17 @@ BUILD_DIR = os.path.join(BASE_DIR, "build")
 
 
 def check_prerequisites():
-    """Prueft ob alle Voraussetzungen erfuellt sind."""
+    """Checks that all prerequisites are met."""
     try:
         import PyInstaller
         print(f"  [OK] PyInstaller {PyInstaller.__version__}")
     except ImportError:
-        print("  [!] PyInstaller nicht installiert. Installiere mit: pip install pyinstaller")
+        print("  [!] PyInstaller not installed. Install with: pip install pyinstaller")
         sys.exit(1)
 
 
 def get_hidden_imports():
-    """Liste der Hidden Imports die PyInstaller nicht automatisch erkennt."""
+    """List of hidden imports PyInstaller doesn't detect automatically."""
     return [
         "whisperx",
         "faster_whisper",
@@ -69,17 +69,17 @@ def get_hidden_imports():
 
 
 def build():
-    """Fuehrt den PyInstaller-Build aus."""
+    """Runs the PyInstaller build."""
     print("=" * 60)
-    print("  VoxScribe — .exe Build")
+    print("  VoxScribe — .exe build")
     print("=" * 60)
     print()
 
-    print("[1/3] Voraussetzungen pruefen...")
+    print("[1/3] Checking prerequisites...")
     check_prerequisites()
     print()
 
-    print("[2/3] PyInstaller-Konfiguration erstellen...")
+    print("[2/3] Building PyInstaller configuration...")
 
     # Icon
     icon_path = os.path.join(BASE_DIR, "Logo.png")
@@ -94,7 +94,7 @@ def build():
             icon_arg = [f"--icon={ico_path}"]
             print(f"  [OK] Icon: {ico_path}")
         except Exception as e:
-            print(f"  [!] Icon-Konvertierung fehlgeschlagen: {e}")
+            print(f"  [!] Icon conversion failed: {e}")
 
     # Hidden imports
     hidden_imports = get_hidden_imports()
@@ -105,16 +105,16 @@ def build():
     # Data files - bundled_models is deliberately not embedded, see module
     # docstring ("online-first" build).
     data_args = []
-    # Logo mitliefern - gui_qt.py looks this up via __file__, which for the
+    # Include the logo - gui_qt.py looks this up via __file__, which for the
     # frozen entry script resolves under _internal/, so this one DOES need
     # --add-data (unlike bundled_models above).
     if os.path.exists(icon_path):
         data_args.append(f"--add-data={icon_path};.")
 
-    print(f"  [OK] {len(hidden_imports)} Hidden Imports konfiguriert")
+    print(f"  [OK] {len(hidden_imports)} hidden imports configured")
     print()
 
-    print("[3/3] Build starten (das dauert einige Minuten)...")
+    print("[3/3] Starting build (this takes a few minutes)...")
     print()
 
     cmd = [
@@ -146,26 +146,26 @@ def build():
         os.path.join(BASE_DIR, "gui_qt.py"),
     ]
 
-    print("  Befehl:", " ".join(cmd[:10]), "...")
+    print("  Command:", " ".join(cmd[:10]), "...")
     print()
 
     result = subprocess.run(cmd, cwd=BASE_DIR)
 
     if result.returncode != 0:
-        print("\n  [FEHLER] Build fehlgeschlagen!")
+        print("\n  [ERROR] Build failed!")
         sys.exit(1)
 
     dist_app_dir = os.path.join(DIST_DIR, "VoxScribe")
 
     print()
     print("=" * 60)
-    print("  Build erfolgreich!")
-    print(f"  Ergebnis: {dist_app_dir}\\VoxScribe.exe")
+    print("  Build successful!")
+    print(f"  Result: {dist_app_dir}\\VoxScribe.exe")
     print()
-    print("  Den gesamten Ordner dist/VoxScribe/ weitergeben.")
-    print("  Die .exe startet direkt ohne Installation. Lokale Modelle werden")
-    print("  automatisch heruntergeladen, sobald sie tatsaechlich gebraucht")
-    print("  werden (KIT ToolBox (Server) ist der Standard und braucht keine).")
+    print("  Distribute the whole dist/VoxScribe/ folder.")
+    print("  The .exe runs directly, no installation needed. Local models are")
+    print("  downloaded automatically only when actually needed (a configured")
+    print("  provider is the default and doesn't need any).")
     print("=" * 60)
 
 

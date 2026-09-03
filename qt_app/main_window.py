@@ -1,4 +1,4 @@
-"""MainWindow: Tab-Leiste (oben) mit den drei Hauptseiten."""
+"""MainWindow: top tab bar with the main pages."""
 
 import os
 
@@ -7,45 +7,38 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from qt_app import theme
-from qt_app.constants import APP_NAME, APP_SUBTITLE
+from qt_app.constants import APP_NAME
 from qt_app.controllers import HardwareInfoController, RecorderController, TranscribeController
 from qt_app.pages.record_page import RecordPage
 from qt_app.pages.transcribe_page import TranscribePage
-from qt_app.pages.live_meeting_page import LiveMeetingPage
 from qt_app.pages.settings_page import SettingsPage
 
-# icon-Key (aus theme.get_icons(), None = kein Icon) + Label je Tab
+# icon key (from theme.get_icons(), None = no icon) + label per tab
 TAB_ITEMS = [
-    ("record", "record", "  Aufnahme"),
-    ("transcribe", "speech_bubble", "  Transkription"),
-    ("live", "live_summary", "  Live-Zusammenfassung"),
-    ("settings", None, "⚙  Einstellungen"),
+    ("record", "record", "  Record"),
+    ("transcribe", "speech_bubble", "  Transcription"),
+    ("settings", None, "⚙  Settings"),
 ]
 
 
 class MainWindow(QMainWindow):
-    """Haelt die geteilten Controller/Settings und die vier Haupt-Tabs.
+    """Holds the shared controllers/settings and the main tabs.
 
-    Aufnahme (Quelle/Geraet waehlen + Live-Pegel/Timer/Stop) ist eine
-    einzelne Seite - wie in der alten CTk-GUI. Die Info-Inhalte (Modelle,
-    Lizenzen) sind an das Ende der Einstellungen-Seite angehaengt statt
-    einen eigenen Tab zu bekommen. "Live-Zusammenfassung" ist ein separates
-    Premium-Feature (siehe qt_app/pages/live_meeting_page.py) mit eigener,
-    vereinfachter Aufnahme-Steuerung - bewusst kein Teil des normalen
-    Aufnahme-/Transkriptions-Flows.
+    Record (pick source/device + live level/timer/stop) is a single page -
+    matching the previous CustomTkinter GUI. The Info content (models,
+    licenses) is appended to the end of the Settings page instead of getting
+    its own tab.
     """
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} — {APP_SUBTITLE}")
+        self.setWindowTitle(APP_NAME)
         self.resize(980, 760)
         self.setMinimumSize(820, 620)
 
         self.settings = {
             "output_dir": "recordings",
             "hf_token": os.getenv("HF_TOKEN", ""),
-            "api_key": os.getenv("KIT_TOOLBOX_API_KEY", ""),
-            "api_base_url": None,  # per Settings-Seite mit DEFAULT_API_BASE_URL befuellt
             "batch_size": 16,
             "compute": "auto",
         }
@@ -57,9 +50,9 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
 
-        # Erst NACH dem UI-Aufbau starten, damit die Seiten schon existieren
-        # (und ihre apply_hardware_info()-Platzhalter zeigen), wenn das
-        # Ergebnis (verzoegert, siehe HardwareInfoController) eintrifft.
+        # Only start AFTER the UI is built, so the pages already exist (and
+        # show their apply_hardware_info() placeholders) by the time the
+        # result (delayed, see HardwareInfoController) arrives.
         self.hardware_info_controller.infoReady.connect(self.pages["settings"].apply_hardware_info)
         self.hardware_info_controller.infoReady.connect(self.pages["transcribe"].apply_hardware_info)
         self.hardware_info_controller.start()
@@ -74,7 +67,6 @@ class MainWindow(QMainWindow):
         self.pages = {}
         self._add_page("record", RecordPage(self))
         self._add_page("transcribe", TranscribePage(self))
-        self._add_page("live", LiveMeetingPage(self))
         self._add_page("settings", SettingsPage(self))
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -99,15 +91,12 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------- cross-page glue
     def send_to_transcription(self, audio_path: str):
-        """Wird von RecordPage nach einer fertigen Aufnahme aufgerufen, um
-        die Datei direkt in der Transkriptions-Seite vorzubelegen."""
+        """Called by RecordPage after a finished recording, to pre-fill the
+        Transcription page with the file directly."""
         self.last_audio_path = audio_path
         self.pages["transcribe"].set_audio_file(audio_path)
 
-    def closeEvent(self, event):  # noqa: N802 - Qt-Override
+    def closeEvent(self, event):  # noqa: N802 - Qt override
         if self.recorder_controller.is_recording:
             self.recorder_controller.stop()
-        live_page = self.pages.get("live")
-        if live_page is not None and live_page.live_controller.is_running:
-            live_page.live_controller.stop()
         super().closeEvent(event)

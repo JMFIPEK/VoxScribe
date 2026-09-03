@@ -1,4 +1,4 @@
-"""WhisperX-basierte Transkription mit Alignment und Speaker Diarization."""
+"""WhisperX-based transcription with alignment and speaker diarization."""
 
 import gc
 import json
@@ -15,21 +15,22 @@ import whisperx
 from whisperx.diarize import DiarizationPipeline
 from whisperx.utils import LANGUAGES as _WHISPER_LANGUAGE_NAMES
 
-# Muss vor der ersten MPS-Operation gesetzt sein: pyannote/wav2vec2 nutzen
-# vereinzelt Ops, die (noch) nicht fuer Apple's MPS-Backend implementiert sind -
-# ohne Fallback wuerde das mit einem NotImplementedError abstuerzen, statt
-# transparent auf die CPU auszuweichen.
+# Must be set before the first MPS op: pyannote/wav2vec2 use a few ops that
+# aren't (yet) implemented for Apple's MPS backend - without the fallback
+# flag those crash with NotImplementedError instead of transparently running
+# on CPU.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 SAMPLE_RATE = 16000
 
-# Volle Sprachnamen (z.B. "german", wie von OpenAI-kompatiblen APIs zurueckgegeben)
-# auf ISO-639-1-Codes (z.B. "de") abbilden, wie sie whisperx fuer Alignment erwartet.
+# Map full language names (e.g. "german", as returned by OpenAI-compatible
+# APIs) to ISO-639-1 codes (e.g. "de"), which is what whisperx expects for
+# alignment.
 _LANGUAGE_NAME_TO_CODE = {name.lower(): code for code, name in _WHISPER_LANGUAGE_NAMES.items()}
 
 
 def _normalize_language_code(raw: str | None, fallback: str | None = None) -> str | None:
-    """Normalisiert einen von einer Server-API zurueckgegebenen Sprachbezeichner (Name oder Code)."""
+    """Normalizes a language identifier (name or code) returned by a server API."""
     if not raw:
         return fallback
     raw = raw.strip().lower()
@@ -39,15 +40,15 @@ def _normalize_language_code(raw: str | None, fallback: str | None = None) -> st
 
 
 def _get_base_dir() -> str:
-    """Gibt das Basisverzeichnis der Anwendung zurueck (PyInstaller-kompatibel)."""
+    """Returns the application's base directory (PyInstaller-compatible)."""
     if getattr(sys, "frozen", False):
-        # PyInstaller --onedir: exe liegt in dist/VoxScribe/
+        # PyInstaller --onedir: the exe lives in dist/VoxScribe/
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def _get_bundled_models_dir() -> str | None:
-    """Gibt den Pfad zum bundled_models Ordner zurueck, falls vorhanden."""
+    """Returns the path to the bundled_models folder, if present."""
     base = _get_base_dir()
     models_dir = os.path.join(base, "bundled_models")
     if os.path.isdir(models_dir):
@@ -56,12 +57,10 @@ def _get_bundled_models_dir() -> str | None:
 
 
 def load_audio_without_ffmpeg(audio_path: str) -> np.ndarray:
-    """Laedt Audio-Datei und konvertiert zu 16kHz Mono float32 (ohne ffmpeg)."""
+    """Loads an audio file and converts it to 16kHz mono float32 (no ffmpeg)."""
     data, sr = sf.read(audio_path, dtype="float32")
-    # Zu Mono konvertieren
     if data.ndim > 1:
         data = data.mean(axis=1)
-    # Auf 16kHz resamplen
     if sr != SAMPLE_RATE:
         from scipy.signal import resample_poly
         from math import gcd
@@ -71,10 +70,10 @@ def load_audio_without_ffmpeg(audio_path: str) -> np.ndarray:
 
 
 def _load_audio_via_container(audio_path: str) -> np.ndarray:
-    """Extrahiert die Audiospur aus einem beliebigen Container (MKV, MP4, MOV, ...) via PyAV.
+    """Extracts the audio track from an arbitrary container (MKV, MP4, MOV, ...) via PyAV.
 
-    Wird als Fallback genutzt, wenn soundfile das Format nicht direkt lesen kann
-    (z.B. Video-Container wie MKV, bei denen nur die Audiospur benoetigt wird).
+    Used as a fallback when soundfile can't read the format directly (e.g.
+    video containers like MKV, where only the audio track is needed).
     """
     import av
 
@@ -82,7 +81,7 @@ def _load_audio_via_container(audio_path: str) -> np.ndarray:
     stream = next((s for s in container.streams if s.type == "audio"), None)
     if stream is None:
         container.close()
-        raise ValueError(f"Keine Audiospur gefunden in: {audio_path}")
+        raise ValueError(f"No audio track found in: {audio_path}")
 
     resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
     chunks = []
@@ -101,11 +100,11 @@ def _load_audio_via_container(audio_path: str) -> np.ndarray:
 
 
 def load_audio_universal(audio_path: str) -> np.ndarray:
-    """Laedt eine Audio- oder Video-Datei als 16kHz Mono float32 Array.
+    """Loads an audio or video file as a 16kHz mono float32 array.
 
-    Versucht zuerst soundfile (schnell, fuer WAV/FLAC/OGG etc.). Schlaegt das
-    fehl (z.B. bei Video-Containern wie MKV/MP4 oder komprimierten Formaten,
-    die libsndfile nicht kennt), wird per PyAV nur die Audiospur dekodiert.
+    Tries soundfile first (fast path for WAV/FLAC/OGG etc.). If that fails
+    (e.g. video containers like MKV/MP4, or compressed formats libsndfile
+    doesn't know), falls back to decoding just the audio track via PyAV.
     """
     try:
         return load_audio_without_ffmpeg(audio_path)
@@ -113,27 +112,31 @@ def load_audio_universal(audio_path: str) -> np.ndarray:
         return _load_audio_via_container(audio_path)
 
 
-DEFAULT_API_BASE_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
 REMOTE_MODEL_PREFIX = "server:"
 
 
 def is_remote_model(model_size: str) -> bool:
-    """Prueft, ob es sich um ein serverseitig gehostetes Modell handelt."""
+    """Checks whether this refers to a server-hosted (provider) model."""
     return model_size.startswith(REMOTE_MODEL_PREFIX)
+
+
+def remote_model_id(provider_id: str) -> str:
+    """Builds the model_size string for a configured provider, e.g. 'server:my-provider'."""
+    return f"{REMOTE_MODEL_PREFIX}{provider_id}"
 
 
 OPENVINO_MODEL_PREFIX = "openvino:"
 
 
 def is_openvino_model(model_size: str) -> bool:
-    """Prueft, ob die Transkription ueber das Intel-OpenVINO-Backend laufen soll
-    (Arc GPU oder NPU) statt ueber CTranslate2 (WhisperX' Standard-Backend, das
-    keinerlei Intel-GPU/NPU-Unterstuetzung hat - siehe CLAUDE.md)."""
+    """Checks whether transcription should run via the Intel OpenVINO backend
+    (Arc GPU or NPU) instead of CTranslate2 (WhisperX' default backend, which
+    has no Intel GPU/NPU support at all - see CLAUDE.md)."""
     return model_size.startswith(OPENVINO_MODEL_PREFIX)
 
 
 def openvino_model_id(ov_device: str, whisper_size: str) -> str:
-    """Baut den model_size-String fuer transcribe(), z.B. 'openvino:GPU:medium'."""
+    """Builds the model_size string for transcribe(), e.g. 'openvino:GPU:medium'."""
     return f"{OPENVINO_MODEL_PREFIX}{ov_device}:{whisper_size}"
 
 
@@ -148,8 +151,8 @@ _OPENVINO_LANG_TOKEN_RE = re.compile(r"<\|([a-z]{2})\|>")
 
 
 def _detect_language_from_token_ids(processor, generated_ids) -> str | None:
-    """Extrahiert den von Whisper erkannten Sprach-Token (z.B. '<|de|>') aus den
-    ersten generierten Tokens, wenn generate() ohne forcierte Sprache lief."""
+    """Extracts the language token Whisper predicted (e.g. '<|de|>') from the
+    first generated tokens, when generate() ran without a forced language."""
     tokens = processor.tokenizer.convert_ids_to_tokens(generated_ids[0].tolist()[:3])
     for tok in tokens:
         m = _OPENVINO_LANG_TOKEN_RE.match(tok)
@@ -168,25 +171,26 @@ def transcribe_openvino(
     whisper_size: str,
     on_progress=None,
 ) -> dict:
-    """Transkribiert ueber Intel's OpenVINO-Backend (Arc GPU oder NPU) statt CTranslate2.
+    """Transcribes via Intel's OpenVINO backend (Arc GPU or NPU) instead of CTranslate2.
 
-    CTranslate2 (der Standard-WhisperX-Inferenz-Backend, siehe transcribe()) hat
-    keinerlei Intel-GPU/NPU-Support - dieser Pfad laedt stattdessen ein per
-    `optimum-intel` nach OpenVINO IR exportiertes Whisper-Modell (Export-Schritt
-    siehe download_models.py::export_openvino_model()) und transkribiert es auf
-    dem gewuenschten OpenVINO-Device ("GPU" = Arc, "NPU" = Intel AI Boost, "CPU").
+    CTranslate2 (WhisperX' default inference backend, see transcribe()) has no
+    Intel GPU/NPU support at all - this path instead loads a Whisper model
+    exported to OpenVINO IR via `optimum-intel` (export step: see
+    download_models.py::export_openvino_model()) and runs it on the requested
+    OpenVINO device ("GPU" = Arc, "NPU" = Intel AI Boost, "CPU").
 
-    Chunking ist manuell in 30s-Fenstern implementiert statt ueber HuggingFace's
-    eigene ASR-Pipeline (`transformers.pipeline("automatic-speech-recognition",
-    chunk_length_s=...)`), weil deren interne Chunking-Iteratoren zwingend
-    `torchcodec` importieren (ffmpeg-basiert) - das ist in diesem Projekt bewusst
-    nicht installiert, siehe load_audio_universal()/load_audio_without_ffmpeg()
-    an anderer Stelle in dieser Datei fuer denselben ffmpeg-Vermeidungs-Grund.
+    Chunking is implemented manually in 30s windows instead of using
+    HuggingFace's own ASR pipeline (`transformers.pipeline(
+    "automatic-speech-recognition", chunk_length_s=...)`), because its
+    internal chunking iterators unconditionally import `torchcodec`
+    (ffmpeg-based) - deliberately not installed in this project, see
+    load_audio_universal()/load_audio_without_ffmpeg() elsewhere in this file
+    for the same ffmpeg-avoidance reason.
 
-    Liefert dieselbe {"segments": [...], "language": ...}-Form wie der
-    CTranslate2-Pfad zurueck, damit der nachfolgende Alignment-Schritt (der die
-    hier fehlenden Wort-Zeitstempel ergaenzt) und Diarization unveraendert
-    weiterlaufen koennen.
+    Returns the same {"segments": [...], "language": ...} shape the
+    CTranslate2 path returns, so the subsequent alignment step (which adds
+    the word-level timestamps this path doesn't produce on its own) and
+    diarization can run unmodified afterward.
     """
     from transformers import AutoProcessor
     from optimum.intel.openvino import OVModelForSpeechSeq2Seq
@@ -194,14 +198,14 @@ def transcribe_openvino(
     bundled = _get_bundled_models_dir()
     if not bundled:
         raise FileNotFoundError(
-            "Kein bundled_models-Ordner gefunden - 'python download_models.py' "
-            "ausfuehren, um das OpenVINO-Modell zu exportieren."
+            "No bundled_models folder found - run 'python download_models.py' "
+            "to export the OpenVINO model."
         )
     model_dir = os.path.join(bundled, "openvino", f"whisper-{whisper_size}")
     if not os.path.isdir(model_dir):
         raise FileNotFoundError(
-            f"OpenVINO-Modell nicht gefunden: {model_dir}. "
-            "Erst 'python download_models.py' ausfuehren."
+            f"OpenVINO model not found: {model_dir}. "
+            "Run 'python download_models.py' first."
         )
     cache_dir = os.path.join(bundled, "openvino", "_ov_cache")
 
@@ -225,10 +229,11 @@ def transcribe_openvino(
             gen_kwargs["language"] = detected_language
         generated_ids = model.generate(inputs["input_features"], **gen_kwargs)
         if detected_language is None:
-            # Whisper erkennt die Sprache im ersten (unforcierten) Aufruf selbst -
-            # ab hier fuer alle weiteren Chunks konsistent forcieren, analog zum
-            # CTranslate2-Pfad, der ebenfalls nur die ersten 30s zur Erkennung nutzt.
-            detected_language = _detect_language_from_token_ids(processor, generated_ids) or "de"
+            # Whisper detects the language itself on the first (unforced)
+            # call - force it consistently for every subsequent chunk from
+            # here on, mirroring the CTranslate2 path which also only uses
+            # the first 30s for detection.
+            detected_language = _detect_language_from_token_ids(processor, generated_ids) or "en"
         text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
         if text:
             segments.append({
@@ -240,11 +245,11 @@ def transcribe_openvino(
             on_progress((i + 1) / n_chunks * 100)
 
     del model
-    return {"segments": segments, "language": detected_language or "de"}
+    return {"segments": segments, "language": detected_language or "en"}
 
 
 class _PayloadTooLarge(Exception):
-    """Interner Marker: Server hat den Upload mit 413 abgelehnt."""
+    """Internal marker: the server rejected the upload with 413."""
 
 
 REMOTE_CHUNK_SECONDS = 180.0
@@ -254,24 +259,21 @@ REMOTE_MIN_CHUNK_SECONDS = 5.0
 def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
                        api_key: str, base_url: str, timeout: float = 1800.0
                        ) -> tuple[list[dict], str | None]:
-    """Schickt einen einzelnen Audio-Chunk an den Server.
+    """Sends a single audio chunk to the server.
 
-    Gibt (segmente, roher_sprachname_aus_der_antwort) zurueck.
+    Returns (segments, raw_language_from_response).
 
-    `timeout` ist bewusst ein Parameter statt eines festen Werts: die normale
-    Datei-Transkription darf fuer lange Aufnahmen ruhig sehr lange warten
-    (Default 1800s), aber die Live-Zusammenfassung (siehe
-    qt_app/controllers.py::LiveMeetingController) transkribiert wiederholt
-    kurze, rollierende Ausschnitte waehrend eines laufenden Meetings - dort
-    soll ein haengender/extrem langsamer Server nach spaetestens einer Minute
-    als Fehler sichtbar werden statt bis zu 30 Minuten lang kommentarlos beim
-    Status "Transkribiere..." zu verharren.
+    `timeout` is deliberately a parameter rather than a fixed value: normal
+    file transcription can happily wait a long time for long recordings
+    (default 1800s), but other callers transcribing short, rolling snippets
+    repeatedly may want a much shorter timeout so a stuck/very slow server
+    surfaces as a visible error quickly instead of hanging silently.
     """
     import io
     import requests
 
-    # FLAC statt WAV: verlustfrei, aber deutlich kleinere Uploads (~50-60%),
-    # damit auch lange Aufnahmen nicht an Server-Upload-Limits scheitern.
+    # FLAC instead of WAV: lossless but noticeably smaller uploads (~50-60%),
+    # so even long recordings don't run into server upload-size limits.
     buf = io.BytesIO()
     sf.write(buf, chunk, SAMPLE_RATE, format="FLAC")
     buf.seek(0)
@@ -305,15 +307,15 @@ def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
 def _transcribe_chunk_with_backoff(chunk: np.ndarray, language: str | None, model_name: str,
                                     api_key: str, base_url: str, timeout: float = 1800.0
                                     ) -> tuple[list[dict], str | None]:
-    """Sendet einen Chunk; wird er mit 413 abgelehnt, wird er rekursiv halbiert."""
+    """Sends a chunk; if rejected with 413, recursively halves it and retries."""
     try:
         return _post_audio_chunk(chunk, language, model_name, api_key, base_url, timeout=timeout)
     except _PayloadTooLarge:
         duration = len(chunk) / SAMPLE_RATE
         if duration <= REMOTE_MIN_CHUNK_SECONDS:
             raise ValueError(
-                "Server lehnt Uploads mit 413 (Request Entity Too Large) ab, "
-                "selbst fuer sehr kurze Audio-Chunks. Server-Konfiguration pruefen."
+                "Server rejects uploads with 413 (Request Entity Too Large), "
+                "even for very short audio chunks. Check the server configuration."
             )
         mid = len(chunk) // 2
         left, lang_left = _transcribe_chunk_with_backoff(
@@ -332,30 +334,28 @@ def transcribe_remote(
     language: str | None,
     model_name: str,
     api_key: str,
-    base_url: str = DEFAULT_API_BASE_URL,
+    base_url: str,
     chunk_seconds: float = REMOTE_CHUNK_SECONDS,
     on_progress=None,
     timeout: float = 1800.0,
 ) -> dict:
-    """Schickt Audio in Chunks an einen OpenAI-kompatiblen Transkriptions-Endpoint (z.B. KIT ToolBox).
+    """Sends audio in chunks to any OpenAI-compatible transcription endpoint.
 
-    Lange Aufnahmen werden in Stuecke von `chunk_seconds` zerlegt (und bei einem
-    413-Fehler des Servers automatisch weiter halbiert), da Server-Endpoints
-    typischerweise ein Upload-Groessenlimit haben.
+    Long recordings are split into `chunk_seconds` pieces (and further halved
+    automatically on a server 413 error), since server endpoints typically
+    have an upload size limit.
 
-    Ist `language` None/leer, wird keine Sprache mitgeschickt (Server erkennt sie
-    selbst). Die vom ersten Chunk erkannte Sprache wird anschliessend fuer alle
-    weiteren Chunks fest verwendet, damit die Spracherkennung nicht pro Chunk
-    hin- und herspringt (kurze/stille Chunks erkennen sonst leicht die falsche
-    Sprache).
+    If `language` is None/empty, no language is sent (the server detects it
+    itself). The language detected from the first chunk is then used for all
+    subsequent chunks, so detection doesn't flip-flop chunk to chunk (short/
+    quiet chunks can otherwise easily detect the wrong language).
 
-    Gibt ein Dict im WhisperX-Format zurueck ({"segments": [...], "language": ...}),
-    das anschliessend fuer Alignment und Diarization weiterverwendet werden kann.
+    Returns a dict in WhisperX format ({"segments": [...], "language": ...})
+    that can be fed into alignment and diarization afterward.
     """
     if not api_key:
         raise ValueError(
-            "Kein API-Key fuer das Server-Modell gesetzt "
-            "(KIT_TOOLBOX_API_KEY in .env oder in den Einstellungen eintragen)."
+            "No API key set for this provider - configure it in Settings."
         )
 
     total_samples = len(audio)
@@ -381,7 +381,7 @@ def transcribe_remote(
         if detected_language_code is None:
             detected_language_code = _normalize_language_code(raw_language, fallback=language)
             if not request_language and detected_language_code:
-                # Sprache fuer die restlichen Chunks fixieren (siehe Docstring)
+                # Lock in the language for the remaining chunks, see docstring.
                 request_language = detected_language_code
 
         chunk_idx += 1
@@ -389,85 +389,7 @@ def transcribe_remote(
             on_progress(min(chunk_idx / n_chunks, 1.0))
         offset += chunk_samples
 
-    return {"segments": all_segments, "language": detected_language_code or language or "de"}
-
-
-DEFAULT_SUMMARY_MODEL = "kit.mistral-small-4-119b-a8b"
-
-# ISO-Sprachcode -> Name fuer die Sprachanweisung im Zusammenfassungs-Prompt
-# (deckt dieselben Sprachen ab wie qt_app/constants.py::LANGUAGES).
-_LANGUAGE_DISPLAY_NAMES = {
-    "de": "Deutsch", "en": "Englisch", "fr": "Französisch",
-    "es": "Spanisch", "it": "Italienisch",
-}
-
-
-def summarize_meeting(
-    transcript_delta: str,
-    api_key: str,
-    base_url: str = DEFAULT_API_BASE_URL,
-    model: str = DEFAULT_SUMMARY_MODEL,
-    previous_summary: str | None = None,
-    language: str | None = None,
-) -> str:
-    """Fasst eine laufende Meeting-Mitschrift zusammen (Live-Zusammenfassung,
-    siehe qt_app/controllers.py::LiveMeetingController).
-
-    Bekommt bewusst nur das NEUE Transkript-Stueck seit der letzten
-    Zusammenfassung (nicht das gesamte bisherige Transkript) plus die
-    vorherige Zusammenfassung als Kontext, und bittet das Modell, die
-    Zusammenfassung zu AKTUALISIEREN statt komplett neu zu erzeugen - haelt
-    die Tokenkosten bei langen Meetings ungefaehr konstant statt mit der
-    Gesamtlaenge des Transkripts zu wachsen.
-
-    `language` sollte der von der Live-Transkription erkannte ISO-Sprachcode
-    des Meetings sein (siehe LiveMeetingController - dort nach dem ersten
-    transkribierten Ausschnitt "eingefroren"), damit die Zusammenfassung in
-    der Sprache des Meetings antwortet statt in irgendeiner Default-Sprache.
-    """
-    import requests
-
-    if not api_key:
-        raise ValueError(
-            "Kein API-Key fuer KIT ToolBox gesetzt "
-            "(KIT_TOOLBOX_API_KEY in .env oder in den Einstellungen eintragen)."
-        )
-
-    language_name = _LANGUAGE_DISPLAY_NAMES.get((language or "").lower())
-    lang_instruction = (
-        f" Antworte auf {language_name}, der Sprache des Meetings."
-        if language_name else
-        " Antworte in derselben Sprache wie das Transkript."
-    )
-    system_prompt = (
-        "Du bist ein Assistent, der eine laufende Meeting-Mitschrift in Echtzeit "
-        "zusammenfasst. Du bekommst die bisherige Zusammenfassung und den neuen "
-        "Transkript-Abschnitt seit der letzten Zusammenfassung. Aktualisiere die "
-        "Zusammenfassung entsprechend: ergaenze neue Punkte, korrigiere "
-        "ueberholte, wiederhole aber nicht unnoetig bereits Bekanntes. Antworte "
-        "ausschliesslich mit zwei Abschnitten (Ueberschriften 'Bisher besprochen' "
-        "und 'Nächste Schritte'), jeweils als knappe Stichpunktliste." + lang_instruction
-    )
-
-    user_parts = []
-    if previous_summary:
-        user_parts.append(f"Bisherige Zusammenfassung:\n{previous_summary}")
-    user_parts.append(f"Neuer Transkript-Abschnitt:\n{transcript_delta}")
-
-    url = base_url.rstrip("/") + "/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "\n\n".join(user_parts)},
-        ],
-        "temperature": 0.3,
-    }
-    resp = requests.post(url, headers=headers, json=payload, timeout=120)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"].strip()
+    return {"segments": all_segments, "language": detected_language_code or language or "en"}
 
 
 APPLE_MODEL_PREFIX = "apple:"
@@ -475,14 +397,14 @@ APPLE_SPEECHANALYZER_MODEL = "apple:speechanalyzer"
 
 
 def is_apple_model(model_size: str) -> bool:
-    """Prueft, ob die Apple SpeechAnalyzer-Engine (nur macOS) genutzt werden soll."""
+    """Checks whether the Apple SpeechAnalyzer engine (macOS only) should be used."""
     return model_size.startswith(APPLE_MODEL_PREFIX)
 
 
-# ISO-639-1 -> volle BCP-47-Locale, wie sie SpeechTranscriber erwartet. Anders
-# als WhisperX/das Server-Modell kennt SpeechAnalyzer (Stand macOS 26) keine
-# automatische Spracherkennung - die Sprache muss vorher feststehen, "de" ist
-# der Default, wenn keine/automatische Sprache gewaehlt wurde.
+# ISO-639-1 -> full BCP-47 locale, as expected by SpeechTranscriber. Unlike
+# WhisperX/provider models, SpeechAnalyzer (as of macOS 26) has no automatic
+# language detection - the language must be known upfront; "en" is the
+# fallback if no language (or "auto") was chosen.
 _APPLE_LOCALE_BY_LANGUAGE = {
     "de": "de-DE", "en": "en-US", "fr": "fr-FR", "es": "es-ES",
     "it": "it-IT", "pt": "pt-PT", "ja": "ja-JP", "ko": "ko-KR", "zh": "zh-CN",
@@ -490,42 +412,41 @@ _APPLE_LOCALE_BY_LANGUAGE = {
 
 
 def _apple_locale_identifier(language: str | None) -> str:
-    return _APPLE_LOCALE_BY_LANGUAGE.get((language or "de").lower(), "de-DE")
+    return _APPLE_LOCALE_BY_LANGUAGE.get((language or "en").lower(), "en-US")
 
 
 def _apple_speechanalyzer_binary_path() -> str:
-    """Pfad zum kompilierten SpeechAnalyzer-Helfer (siehe macos/README.md)."""
+    """Path to the compiled SpeechAnalyzer helper (see macos/README.md)."""
     return os.path.join(_get_base_dir(), "macos", "SpeechAnalyzerTranscribe")
 
 
-DEFAULT_SERVER_MODEL = f"{REMOTE_MODEL_PREFIX}kit.whisper-large-v3"
-
-
 def default_model_size() -> str:
-    """Plattform-uebergreifender Default fuer model_size, wenn der Aufrufer keinen
-    expliziten Wunsch hat: KIT ToolBox (Server) - schnell nutzbar ohne lokalen
-    Modell-Download, unabhaengig von der jeweiligen Hardware. transcribe()
-    faellt automatisch auf default_local_model_size() zurueck, falls der
-    Server-Aufruf fehlschlaegt (Netzwerk, kein API-Key, Server down, ...), siehe
-    dort. Das aendert die vorherige "100% lokal by default"-Zusicherung bewusst -
-    lokal bleibt weiterhin explizit waehlbar und ist der automatische Fallback,
-    ist aber nicht mehr der Default selbst.
+    """Platform-wide default for model_size when the caller has no explicit
+    preference: the user's configured default provider (see providers.py),
+    if one is set up - otherwise falls back to the best local model for this
+    platform/hardware (default_local_model_size()). transcribe() also falls
+    back to a local model automatically if a chosen provider call fails
+    (network, server down, ...), see there.
     """
-    return DEFAULT_SERVER_MODEL
+    from providers import get_default_provider
+    provider = get_default_provider()
+    if provider:
+        return remote_model_id(provider["id"])
+    return default_local_model_size()
 
 
 def default_local_model_size() -> str:
-    """Empfohlenes *lokales* Modell - genutzt als Fallback, wenn das Server-Modell
-    (der eigentliche Default, siehe default_model_size()) fehlschlaegt, und
-    ueberall dort, wo explizit ein lokales statt des Server-Modells gewuenscht
-    ist. Plattform-/Hardware-abhaengig:
-    - macOS: immer Apples SpeechAnalyzer (Neural Engine) - die einzige lokale
-      Transkriptions-Engine dort, kein Whisper-Modell-Download/-Inferenz mehr,
-      siehe CLAUDE.md ("Apple Silicon (MPS) acceleration is partial by design").
-    - Windows/Linux: die von hardware_detect.recommend_model() ermittelte
-      Empfehlung - eine dedizierte NVIDIA-GPU (CUDA) empfiehlt large-v3/medium/
-      base je nach VRAM, eine Intel Arc GPU (kein CUDA vorhanden) empfiehlt das
-      OpenVINO-Modell, sonst faellt es auf eine RAM-basierte CPU-Groesse zurueck.
+    """Recommended *local* model - used as a fallback whenever a remote
+    provider call fails or isn't configured, and anywhere a local model is
+    explicitly wanted. Platform-/hardware-dependent:
+    - macOS: always Apple's SpeechAnalyzer (Neural Engine) - the only local
+      transcription engine there, no Whisper model download/inference at
+      all, see CLAUDE.md ("Apple Silicon (MPS) acceleration is partial by
+      design").
+    - Windows/Linux: whatever hardware_detect.recommend_model() picks - a
+      dedicated NVIDIA GPU (CUDA) recommends large-v3/medium/base depending
+      on VRAM, an Intel Arc GPU (no CUDA present) recommends the OpenVINO
+      model, otherwise it falls back to a RAM-sized CPU model.
     """
     if sys.platform == "darwin":
         return APPLE_SPEECHANALYZER_MODEL
@@ -536,29 +457,29 @@ def default_local_model_size() -> str:
 
 def transcribe_apple(
     audio_path: str,
-    language: str | None = "de",
+    language: str | None = "en",
     on_progress=None,
 ) -> dict:
-    """Transkribiert via Apples SpeechAnalyzer/SpeechTranscriber (macOS 26+, Neural Engine).
+    """Transcribes via Apple's SpeechAnalyzer/SpeechTranscriber (macOS 26+, Neural Engine).
 
-    Ruft den kompilierten Swift-Helfer macos/SpeechAnalyzerTranscribe als
-    einmaligen Subprozess auf (kein Dauer-Stream wie bei der Systemaudio-
-    Aufnahme, daher auch kein Watcher-Thread noetig - der Prozess endet von
-    selbst) und liest dessen NDJSON-Ausgabe zeilenweise fuer Fortschritt.
+    Runs the compiled Swift helper macos/SpeechAnalyzerTranscribe as a
+    one-shot subprocess (no continuous stream like the system-audio
+    recording path, so no watcher thread is needed either - the process
+    exits on its own) and reads its NDJSON output line by line for progress.
 
-    SpeechTranscriber liefert pro Wort bereits einen Zeitstempel
-    (attributeOptions: [.audioTimeRange] im Swift-Helfer) - an echter Hardware
-    mit deutschem Testaudio verifiziert als wortgenau. Das Rueckgabe-Dict ist
-    deshalb bereits im "ausgerichteten" Format, das WhisperX' wav2vec2-
-    Alignment sonst produziert ({"segments": [...{"words": [...]}...],
-    "word_segments": [...]}) - der Alignment-Schritt entfaellt fuer diesen Pfad
-    komplett (siehe Verzweigung in transcribe()).
+    SpeechTranscriber already provides a per-word timestamp
+    (attributeOptions: [.audioTimeRange] in the Swift helper) - verified
+    word-accurate on real hardware against test audio. The returned dict is
+    therefore already in the "aligned" format that WhisperX's wav2vec2
+    alignment step would otherwise produce ({"segments": [...{"words":
+    [...]}...], "word_segments": [...]}) - the alignment step is skipped
+    entirely for this path (see the branch in transcribe()).
     """
     binary = _apple_speechanalyzer_binary_path()
     if not os.path.isfile(binary):
         raise RuntimeError(
-            f"SpeechAnalyzer-Helfer nicht gefunden ({binary}). "
-            "Erst 'cd macos && ./build.sh' ausfuehren."
+            f"SpeechAnalyzer helper not found ({binary}). "
+            "Run 'cd macos && ./build.sh' first."
         )
 
     locale_id = _apple_locale_identifier(language)
@@ -597,19 +518,19 @@ def transcribe_apple(
     proc.wait()
     if proc.returncode != 0:
         stderr = proc.stderr.read().strip() if proc.stderr else ""
-        raise RuntimeError(f"SpeechAnalyzer-Transkription fehlgeschlagen: {stderr}")
+        raise RuntimeError(f"SpeechAnalyzer transcription failed: {stderr}")
 
     word_segments = [w for seg in segments for w in seg["words"]]
     return {
         "segments": segments,
         "word_segments": word_segments,
-        "language": (language or "de").lower(),
+        "language": (language or "en").lower(),
     }
 
 
 def transcribe(
     audio_path: str,
-    language: str | None = "de",
+    language: str | None = "en",
     model_size: str = "large-v2",
     diarize: bool = True,
     hf_token: str | None = None,
@@ -619,42 +540,47 @@ def transcribe(
     device: str | None = None,
     on_progress=None,
     api_key: str | None = None,
-    api_base_url: str = DEFAULT_API_BASE_URL,
+    api_base_url: str | None = None,
 ) -> dict:
-    """Fuehrt die vollstaendige WhisperX-Pipeline aus.
+    """Runs the full WhisperX pipeline.
 
-    1. Transkription (batched inference)
-    2. Forced Alignment (word-level timestamps)
-    3. Speaker Diarization (optional)
+    1. Transcription (batched inference)
+    2. Forced alignment (word-level timestamps)
+    3. Speaker diarization (optional)
 
     Args:
-        audio_path: Pfad zur Audio-Datei (WAV, MP3, etc.)
-        language: Sprache des Audios (z.B. "de", "en"). None = automatische Erkennung
-            (nur bei lokalen/Server-Modellen - Apples SpeechAnalyzer kennt keine
-            automatische Spracherkennung und faellt in dem Fall auf "de" zurueck)
-        model_size: Whisper-Modellgroesse ("large-v2", "large-v3", "medium", "base"),
-            ein Server-Modell (Praefix "server:", siehe is_remote_model()) oder
-            "apple:speechanalyzer" fuer Apples SpeechAnalyzer (nur macOS 26+,
-            siehe is_apple_model()/transcribe_apple())
-        diarize: Speaker Diarization aktivieren
-        hf_token: HuggingFace Token fuer pyannote (nur beim ersten Download noetig)
-        min_speakers: Minimale Anzahl Sprecher (optional)
-        max_speakers: Maximale Anzahl Sprecher (optional)
-        batch_size: Batch-Groesse fuer Inference (kleiner = weniger VRAM)
-        device: "cuda", "mps" oder "cpu" (auto-detect wenn None). Wirkt nur auf
-            Alignment/Diarization (plain PyTorch) - die Whisper-Transkription
-            selbst laeuft ueber CTranslate2, das kein MPS unterstuetzt und
-            deshalb bei "mps" automatisch auf "cpu" zurueckfaellt.
+        audio_path: Path to the audio file (WAV, MP3, etc.)
+        language: Language of the audio (e.g. "en", "de"). None = automatic
+            detection (local/provider models only - Apple's SpeechAnalyzer has
+            no automatic language detection and falls back to "en" in that case)
+        model_size: Whisper model size ("large-v2", "large-v3", "medium",
+            "base"), a provider model (prefix "server:", see is_remote_model()),
+            an OpenVINO model (prefix "openvino:", see is_openvino_model()), or
+            "apple:speechanalyzer" for Apple's SpeechAnalyzer (macOS 26+ only,
+            see is_apple_model()/transcribe_apple())
+        diarize: Enable speaker diarization
+        hf_token: HuggingFace token for pyannote (only needed for the first download)
+        min_speakers: Minimum number of speakers (optional)
+        max_speakers: Maximum number of speakers (optional)
+        batch_size: Inference batch size (smaller = less VRAM)
+        device: "cuda", "xpu", "mps" or "cpu" (auto-detected if None). Only
+            affects alignment/diarization (plain PyTorch) - Whisper
+            transcription itself runs via CTranslate2, which has no MPS/XPU
+            support and therefore always falls back to "cpu" for that step.
+        api_key: Override the configured provider's API key (optional, for
+            ad-hoc use without a saved provider)
+        api_base_url: Override the configured provider's base URL (optional,
+            same purpose as api_key)
 
     Returns:
-        Dict mit "segments", "language" und ggf. Speaker-Labels
+        Dict with "segments", "language", and speaker labels if applicable
     """
     if device is None:
-        # Prioritaet dGPU > iGPU > CPU: CUDA (dedizierte NVIDIA-GPU) zuerst,
-        # dann Intel XPU (Arc-GPU - nur verfuegbar, wenn torch mit einem
-        # XPU-faehigen Build installiert ist, siehe pyproject.toml's "xpu"-Extra;
-        # die Standard-CUDA-Installation hat torch.xpu.is_available() == False
-        # und faellt hier transparent durch), dann Apple MPS.
+        # Priority dGPU > iGPU > CPU: CUDA (dedicated NVIDIA GPU) first, then
+        # Intel XPU (Arc GPU - only available if torch was installed with an
+        # XPU-capable build, see gpu_setup.py; the standard CUDA install has
+        # torch.xpu.is_available() == False and falls through here
+        # transparently), then Apple MPS.
         if torch.cuda.is_available():
             device = "cuda"
         elif getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
@@ -664,10 +590,10 @@ def transcribe(
         else:
             device = "cpu"
 
-    # CTranslate2 (WhisperX' Inference-Backend) kennt nur "cuda"/"cpu" - weder
-    # MPS noch XPU. Alignment (wav2vec2) und Diarization (pyannote) sind plain
-    # PyTorch und koennen MPS/XPU dagegen nutzen, daher zwei getrennte
-    # Device-Variablen.
+    # CTranslate2 (WhisperX' inference backend) only knows "cuda"/"cpu" -
+    # neither MPS nor XPU. Alignment (wav2vec2) and diarization (pyannote)
+    # are plain PyTorch and can use MPS/XPU instead, hence two separate
+    # device variables.
     whisper_device = device if device == "cuda" else "cpu"
     torch_device = device
 
@@ -677,68 +603,68 @@ def transcribe(
     openvino = is_openvino_model(model_size)
 
     if apple:
-        print(f"Device: Transkription=Apple Neural Engine (SpeechAnalyzer), Diarization={torch_device}")
+        print(f"Device: transcription=Apple Neural Engine (SpeechAnalyzer), diarization={torch_device}")
     elif openvino:
         ov_device, _ = _parse_openvino_model(model_size)
-        print(f"Device: Transkription=Intel OpenVINO ({ov_device}), Alignment/Diarization={torch_device}")
+        print(f"Device: transcription=Intel OpenVINO ({ov_device}), alignment/diarization={torch_device}")
     elif device == "mps":
-        print(f"Device: Whisper={whisper_device} ({compute_type}), Alignment/Diarization={torch_device} (Apple MPS)")
+        print(f"Device: Whisper={whisper_device} ({compute_type}), alignment/diarization={torch_device} (Apple MPS)")
     elif device == "xpu":
-        print(f"Device: Whisper={whisper_device} ({compute_type}), Alignment/Diarization={torch_device} (Intel Arc GPU)")
+        print(f"Device: Whisper={whisper_device} ({compute_type}), alignment/diarization={torch_device} (Intel Arc GPU)")
     else:
         print(f"Device: {device} ({compute_type})")
-    print(f"Modell: {model_size}")
-    print(f"Sprache: {language or 'automatisch erkennen'}")
+    print(f"Model: {model_size}")
+    print(f"Language: {language or 'auto-detect'}")
     print(f"Audio: {audio_path}")
     print()
 
-    # Fortschritts-Bereiche: Transkription 0-40%, Alignment 40-65%, Diarization 65-100%
+    # Progress ranges: transcription 0-40%, alignment 40-65%, diarization 65-100%
     def _prog(pct, msg):
         if on_progress:
             on_progress(pct, msg)
 
     def _transcribe_progress(pct_within):
-        """pct_within: 0-100 vom whisperx callback → mapped auf 0.15-0.40"""
+        """pct_within: 0-100 from the whisperx callback -> mapped to 0.15-0.40"""
         mapped = 0.15 + (pct_within / 100) * 0.25
-        _prog(mapped, f"Transkription... {pct_within:.0f}%")
+        _prog(mapped, f"Transcribing... {pct_within:.0f}%")
 
     def _align_progress(pct_within):
-        """pct_within: 0-100 vom whisperx callback → mapped auf 0.50-0.63"""
+        """pct_within: 0-100 from the whisperx callback -> mapped to 0.50-0.63"""
         mapped = 0.50 + (pct_within / 100) * 0.13
-        _prog(mapped, f"Alignment... {pct_within:.0f}%")
+        _prog(mapped, f"Aligning... {pct_within:.0f}%")
 
-    # --- 1. Transkription ---
+    # --- 1. Transcription ---
     t0 = time.time()
 
-    # Bundled model path verwenden falls vorhanden
+    # Use the bundled model path if present
     bundled = _get_bundled_models_dir()
 
     if apple:
-        print("1/3  Transkription via Apple SpeechAnalyzer (Neural Engine)...")
-        _prog(0.0, "SpeechAnalyzer transkribiert...")
+        print("1/3  Transcribing via Apple SpeechAnalyzer (Neural Engine)...")
+        _prog(0.0, "SpeechAnalyzer transcribing...")
 
         def _apple_progress(frac):
             mapped = frac * 0.40
-            _prog(mapped, f"Transkription... {frac * 100:.0f}%")
+            _prog(mapped, f"Transcribing... {frac * 100:.0f}%")
 
         result = transcribe_apple(audio_path, language, on_progress=_apple_progress)
-        # Fuer die Diarization unten wird das Audio als Array benoetigt (der
-        # Swift-Helfer laedt/dekodiert die Datei intern selbst nochmal).
+        # The diarization step below needs the audio as an array (the Swift
+        # helper loads/decodes the file again internally).
         audio = load_audio_universal(audio_path)
 
         t1 = time.time()
         n_segs = len(result["segments"])
-        print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} Segmente erkannt")
-        _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
+        print(f"     Transcription complete ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} segments detected")
+        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
     elif openvino:
         ov_device, whisper_size = _parse_openvino_model(model_size)
-        print(f"1/3  Transkription via Intel OpenVINO ({ov_device})...")
-        _prog(0.0, "OpenVINO-Modell laden...")
+        print(f"1/3  Transcribing via Intel OpenVINO ({ov_device})...")
+        _prog(0.0, "Loading OpenVINO model...")
 
         def _openvino_progress(frac):
             mapped = frac / 100 * 0.40
-            _prog(mapped, f"Transkription... {frac:.0f}%")
+            _prog(mapped, f"Transcribing... {frac:.0f}%")
 
         result = transcribe_openvino(
             audio_path, language, ov_device, whisper_size, on_progress=_openvino_progress)
@@ -746,31 +672,44 @@ def transcribe(
 
         t1 = time.time()
         n_segs = len(result["segments"])
-        print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} Segmente erkannt")
-        _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
+        print(f"     Transcription complete ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} segments detected")
+        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
     elif remote:
-        remote_model_name = model_size[len(REMOTE_MODEL_PREFIX):]
-        print(f"1/3  Transkription via Server-Modell ({remote_model_name})...")
-        _prog(0.0, "Audio laden...")
+        from providers import get_provider
+
+        provider_id = model_size[len(REMOTE_MODEL_PREFIX):]
+        provider = get_provider(provider_id)
+        if provider is None and not (api_key and api_base_url):
+            raise ValueError(
+                f"Unknown provider '{provider_id}' - configure it in Settings, "
+                "or pass api_key/api_base_url explicitly."
+            )
+        remote_model_name = provider["model"] if provider else (model_size or "whisper-1")
+        resolved_api_key = api_key or (provider["api_key"] if provider else None)
+        resolved_base_url = api_base_url or (provider["base_url"] if provider else None)
+        provider_label = provider["name"] if provider else provider_id
+
+        print(f"1/3  Transcribing via provider ({provider_label} / {remote_model_name})...")
+        _prog(0.0, "Loading audio...")
         audio = load_audio_universal(audio_path)
 
         def _remote_progress(frac):
             mapped = 0.10 + frac * 0.30
-            _prog(mapped, f"Sende Audio an Server... {frac * 100:.0f}%")
+            _prog(mapped, f"Sending audio to server... {frac * 100:.0f}%")
 
-        _prog(0.10, f"Sende Audio an Server ({remote_model_name})...")
+        _prog(0.10, f"Sending audio to server ({provider_label})...")
         try:
             result = transcribe_remote(
                 audio, language, remote_model_name,
-                api_key=api_key, base_url=api_base_url,
+                api_key=resolved_api_key, base_url=resolved_base_url,
                 on_progress=_remote_progress,
             )
         except Exception as e:
             fallback_model = default_local_model_size()
-            print(f"     [WARNUNG] Server-Modell fehlgeschlagen ({e}) "
-                  f"- Fallback auf lokales Modell ({fallback_model})")
-            _prog(0.0, f"Server-Modell fehlgeschlagen - Fallback auf {fallback_model}...")
+            print(f"     [WARNING] Provider request failed ({e}) "
+                  f"- falling back to local model ({fallback_model})")
+            _prog(0.0, f"Provider request failed - falling back to {fallback_model}...")
             return transcribe(
                 audio_path, language=language, model_size=fallback_model, diarize=diarize,
                 hf_token=hf_token, min_speakers=min_speakers, max_speakers=max_speakers,
@@ -780,12 +719,12 @@ def transcribe(
 
         t1 = time.time()
         n_segs = len(result["segments"])
-        print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} Segmente erkannt")
-        _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
+        print(f"     Transcription complete ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} segments detected")
+        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
     else:
-        print("1/3  Transkription laeuft...")
-        _prog(0.0, "Whisper-Modell laden...")
+        print("1/3  Transcribing...")
+        _prog(0.0, "Loading Whisper model...")
 
         whisper_arch = model_size
         whisper_local_only = False
@@ -794,9 +733,10 @@ def transcribe(
             if os.path.isdir(whisper_path):
                 # faster_whisper's WhisperModel takes a directory as-is (no HF
                 # lookup at all) if given a path directly - passing it via
-                # download_root instead would be treated as a cache_dir expecting
-                # the models--org--name/snapshots/<rev>/... HF cache layout, which
-                # download_models.py's flat output_dir=... download doesn't produce.
+                # download_root instead would be treated as a cache_dir
+                # expecting the models--org--name/snapshots/<rev>/... HF cache
+                # layout, which download_models.py's flat output_dir=...
+                # download doesn't produce.
                 whisper_arch = whisper_path
                 whisper_local_only = True
 
@@ -805,36 +745,36 @@ def transcribe(
             download_root=None, local_files_only=whisper_local_only,
         )
 
-        _prog(0.10, "Audio laden...")
+        _prog(0.10, "Loading audio...")
         audio = load_audio_universal(audio_path)
 
-        _prog(0.15, "Transkription laeuft...")
+        _prog(0.15, "Transcribing...")
         result = model.transcribe(audio, batch_size=batch_size,
                                   progress_callback=_transcribe_progress)
 
         t1 = time.time()
         n_segs = len(result['segments'])
-        print(f"     Transkription abgeschlossen ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} Segmente erkannt")
-        _prog(0.40, f"Transkription fertig - {n_segs} Segmente ({t1 - t0:.0f}s)")
+        print(f"     Transcription complete ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} segments detected")
+        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
 
-        # Modell entladen
+        # Unload the model
         del model
         gc.collect()
         if whisper_device == "cuda":
             torch.cuda.empty_cache()
 
     # --- 2. Alignment ---
-    # SpeechAnalyzer liefert bereits wortgenaue Zeitstempel (siehe
-    # transcribe_apple()) - der wav2vec2-Alignment-Schritt ist fuer dieses
-    # Ergebnis ueberfluessig und wuerde auf macOS zudem ein weiteres
-    # PyTorch-Modell laden, das gar nicht gebraucht wird.
+    # SpeechAnalyzer already provides word-accurate timestamps (see
+    # transcribe_apple()) - the wav2vec2 alignment step is redundant for that
+    # result and would additionally load another PyTorch model on macOS that
+    # isn't needed at all.
     if apple:
-        print("2/3  Alignment uebersprungen (SpeechAnalyzer liefert bereits Wort-Zeitstempel)")
-        _prog(0.65, "Alignment nicht noetig (Apple SpeechAnalyzer)")
+        print("2/3  Alignment skipped (SpeechAnalyzer already provides word timestamps)")
+        _prog(0.65, "Alignment not needed (Apple SpeechAnalyzer)")
     else:
-        print("2/3  Alignment laeuft...")
-        _prog(0.45, "Alignment-Modell laden...")
+        print("2/3  Aligning...")
+        _prog(0.45, "Loading alignment model...")
         t2 = time.time()
 
         # Bundled alignment model path
@@ -851,7 +791,7 @@ def transcribe(
             model_dir=align_model_dir, model_cache_only=align_cache_only,
         )
 
-        _prog(0.50, "Wort-Alignment laeuft...")
+        _prog(0.50, "Aligning words...")
         result = whisperx.align(
             result["segments"], model_a, metadata, audio, torch_device,
             return_char_alignments=False,
@@ -859,10 +799,10 @@ def transcribe(
         )
 
         t3 = time.time()
-        print(f"     Alignment abgeschlossen ({t3 - t2:.1f}s)")
-        _prog(0.65, f"Alignment fertig ({t3 - t2:.0f}s)")
+        print(f"     Alignment complete ({t3 - t2:.1f}s)")
+        _prog(0.65, f"Alignment done ({t3 - t2:.0f}s)")
 
-        # Modell entladen
+        # Unload the model
         del model_a
         gc.collect()
         if torch_device == "cuda":
@@ -872,15 +812,15 @@ def transcribe(
         elif torch_device == "mps":
             torch.mps.empty_cache()
 
-    # --- 3. Speaker Diarization ---
+    # --- 3. Speaker diarization ---
     if diarize:
         if not hf_token:
-            print("3/3  Diarization uebersprungen (kein HF_TOKEN gesetzt)")
-            print("     Setze HF_TOKEN in .env fuer Speaker-Erkennung")
-            _prog(1.0, "Fertig (Diarization uebersprungen - kein Token)")
+            print("3/3  Diarization skipped (no HF_TOKEN set)")
+            print("     Set HF_TOKEN in .env for speaker recognition")
+            _prog(1.0, "Done (diarization skipped - no token)")
         else:
-            print("3/3  Speaker Diarization laeuft...")
-            _prog(0.70, "Diarization-Modell laden...")
+            print("3/3  Running speaker diarization...")
+            _prog(0.70, "Loading diarization model...")
             t4 = time.time()
 
             # Bundled diarization model path
@@ -894,7 +834,7 @@ def transcribe(
                 token=hf_token, device=torch_device, cache_dir=diarize_cache
             )
 
-            _prog(0.80, "Speaker Diarization laeuft...")
+            _prog(0.80, "Running speaker diarization...")
             diarize_segments, speaker_embeddings = diarize_model(
                 audio,
                 min_speakers=min_speakers,
@@ -902,15 +842,15 @@ def transcribe(
                 return_embeddings=True,
             )
 
-            _prog(0.92, "Sprecher zuordnen...")
+            _prog(0.92, "Assigning speakers...")
             result = whisperx.assign_word_speakers(
                 diarize_segments, result, speaker_embeddings=speaker_embeddings)
 
-            # Bekannte Sprecher (Voice-Prints) automatisch erkennen und
-            # Segmente/Woerter direkt mit dem erkannten Namen beschriften.
-            # speaker_id_map merkt sich die Zuordnung roher Diarization-ID ->
-            # aktuell angezeigtes Label (Name oder unveraendert), damit die GUI
-            # spaeter das passende Embedding zum "Sprecher merken" findet.
+            # Automatically recognize known speakers (voice prints) and label
+            # their segments/words directly with the recognized name.
+            # speaker_id_map remembers raw diarization ID -> currently
+            # displayed label, so the GUI can find the right embedding when
+            # the user confirms/corrects a name via the "remember" checkbox.
             speaker_id_map = {spk: spk for spk in (speaker_embeddings or {})}
             if speaker_embeddings:
                 try:
@@ -929,15 +869,15 @@ def transcribe(
             result["speaker_id_map"] = speaker_id_map
 
             t5 = time.time()
-            print(f"     Diarization abgeschlossen ({t5 - t4:.1f}s)")
+            print(f"     Diarization complete ({t5 - t4:.1f}s)")
 
-            # Sprecher zaehlen
+            # Count speakers
             speakers = set()
             for seg in result.get("segments", []):
                 if "speaker" in seg:
                     speakers.add(seg["speaker"])
-            print(f"     {len(speakers)} Sprecher erkannt: {', '.join(sorted(speakers))}")
-            _prog(0.98, f"Diarization fertig - {len(speakers)} Sprecher ({t5 - t4:.0f}s)")
+            print(f"     {len(speakers)} speakers detected: {', '.join(sorted(speakers))}")
+            _prog(0.98, f"Diarization done - {len(speakers)} speakers ({t5 - t4:.0f}s)")
 
             del diarize_model
             gc.collect()
@@ -948,15 +888,15 @@ def transcribe(
             elif torch_device == "mps":
                 torch.mps.empty_cache()
     else:
-        print("3/3  Diarization deaktiviert")
+        print("3/3  Diarization disabled")
 
     total = time.time() - t0
-    _prog(1.0, f"Fertig! (Gesamt: {total:.0f}s)")
-    print(f"\nGesamt: {total:.1f}s")
+    _prog(1.0, f"Done! (total: {total:.0f}s)")
+    print(f"\nTotal: {total:.1f}s")
 
-    # Fuer transcribe_multi(): Dauer der Datei, um nachfolgende Dateien im
-    # kombinierten Transkript zeitlich korrekt zu verschieben, ohne die Audio-
-    # Datei ein zweites Mal dekodieren zu muessen.
+    # For transcribe_multi(): the file's duration, to correctly shift
+    # subsequent files in the combined transcript without decoding the audio
+    # file a second time.
     result["duration"] = len(audio) / SAMPLE_RATE
 
     return result
@@ -964,7 +904,7 @@ def transcribe(
 
 def transcribe_multi(
     audio_paths: list[str],
-    language: str | None = "de",
+    language: str | None = "en",
     model_size: str = "large-v2",
     diarize: bool = True,
     hf_token: str | None = None,
@@ -974,29 +914,27 @@ def transcribe_multi(
     device: str | None = None,
     on_progress=None,
     api_key: str | None = None,
-    api_base_url: str = DEFAULT_API_BASE_URL,
+    api_base_url: str | None = None,
 ) -> dict:
-    """Transkribiert mehrere Audio-/Video-Dateien nacheinander (per `transcribe()`,
-    unveraendert) und fuegt die Ergebnisse zu einem einzigen zusammenhaengenden
-    Transkript zusammen - fuer die Mehrfachdatei-Auswahl im Transkriptions-Tab
-    (qt_app/pages/transcribe_page.py).
+    """Transcribes multiple audio/video files in sequence (via `transcribe()`,
+    unchanged) and merges the results into one continuous transcript - for the
+    multi-file selection in the Transcription tab (qt_app/pages/transcribe_page.py).
 
-    Zeitstempel jeder Datei werden um die kumulierte Dauer der vorherigen
-    Dateien verschoben, damit das kombinierte Transkript eine durchgehende
-    Zeitachse hat (Datei 2 beginnt zeitlich da, wo Datei 1 endet, usw.).
+    Each file's timestamps are shifted by the cumulative duration of the
+    preceding files, so the combined transcript has one continuous timeline
+    (file 2 starts where file 1 ended, and so on).
 
-    Speaker-Labels werden NICHT blind dateiuebergreifend vereinheitlicht:
-    Diarization laeuft pro Datei unabhaengig, SPEAKER_00 in Datei 1 ist nicht
-    notwendigerweise dieselbe Person wie SPEAKER_00 in Datei 2. Deshalb
-    bekommen noch nicht per Voice-Print erkannte Sprecher (siehe
-    speaker_profiles.py) einen Datei-Praefix ("Datei 2: SPEAKER_00"), damit
-    sie in der Umbenennen-UI klar auseinandergehalten werden koennen - bereits
-    erkannte/benannte Sprecher (deren Label bereits ein echter Name statt des
-    rohen SPEAKER_NN-Labels ist) bleiben unveraendert und werden dadurch ueber
-    Dateien hinweg ganz natuerlich zusammengefuehrt.
+    Speaker labels are NOT blindly unified across files: diarization runs
+    per-file independently, so SPEAKER_00 in file 1 isn't necessarily the same
+    person as SPEAKER_00 in file 2. Speakers not yet recognized via voice
+    print (see speaker_profiles.py) therefore get a file prefix ("File 2:
+    SPEAKER_00") so they can be told apart clearly in the rename UI - already
+    recognized/named speakers (whose label is already a real name rather than
+    the raw SPEAKER_NN label) are left unchanged and merge naturally across
+    files.
     """
     if not audio_paths:
-        raise ValueError("Keine Dateien zum Transkribieren angegeben.")
+        raise ValueError("No files given to transcribe.")
 
     n_files = len(audio_paths)
     combined_segments = []
@@ -1007,17 +945,16 @@ def transcribe_multi(
     cumulative_offset = 0.0
 
     for idx, path in enumerate(audio_paths):
-        file_label = f"Datei {idx + 1}/{n_files} ({os.path.basename(path)})"
+        file_label = f"File {idx + 1}/{n_files} ({os.path.basename(path)})"
 
         def _file_progress(pct, msg, idx=idx, file_label=file_label):
             if on_progress:
                 overall = (idx + pct) / n_files
                 on_progress(overall, f"{file_label}: {msg}")
 
-        # Nach der ersten Datei die dort erkannte Sprache fuer die restlichen
-        # festhalten (analog zum "einmal erkennen, dann festhalten"-Muster in
-        # transcribe_remote()), damit die Spracherkennung nicht pro Datei
-        # hin- und herspringt.
+        # After the first file, lock in the language it detected for the rest
+        # (mirroring the "detect once, then lock in" pattern in
+        # transcribe_remote()), so detection doesn't flip-flop per file.
         file_language = language if language else detected_language
 
         result = transcribe(
@@ -1030,16 +967,16 @@ def transcribe_multi(
         if detected_language is None:
             detected_language = result.get("language")
 
-        # Noch nicht erkannte Sprecher (Label == rohe Diarization-ID) dieser
-        # Datei umbenennen, um Kollisionen mit anderen Dateien zu vermeiden;
-        # bereits per Voice-Print erkannte Namen unveraendert lassen, damit
-        # dieselbe Person ueber Dateien hinweg zusammengefuehrt wird.
+        # Rename speakers not yet recognized (label == raw diarization ID) in
+        # this file, to avoid collisions with other files; leave already
+        # voice-print-recognized names unchanged so the same person is merged
+        # across files.
         rename_map = {}
         file_speaker_id_map = result.get("speaker_id_map") or {}
         file_embeddings = result.get("speaker_embeddings") or {}
         for raw_id, current_label in file_speaker_id_map.items():
             if n_files > 1 and raw_id == current_label:
-                new_label = f"Datei {idx + 1}: {current_label}"
+                new_label = f"File {idx + 1}: {current_label}"
                 new_key = f"file{idx}:{raw_id}"
             else:
                 new_label = current_label
@@ -1075,7 +1012,7 @@ def transcribe_multi(
     combined = {
         "segments": combined_segments,
         "word_segments": combined_word_segments,
-        "language": detected_language or "de",
+        "language": detected_language or "en",
         "duration": cumulative_offset,
     }
     if diarize:
@@ -1085,7 +1022,7 @@ def transcribe_multi(
 
 
 def format_transcript(result: dict, include_speakers: bool = True) -> str:
-    """Formatiert das Transkript als lesbaren Text mit Zeitstempeln."""
+    """Formats the transcript as readable text with timestamps."""
     lines = []
     for seg in result.get("segments", []):
         start = _format_time(seg.get("start", 0))
@@ -1103,12 +1040,12 @@ def format_transcript(result: dict, include_speakers: bool = True) -> str:
 
 def save_transcript(result: dict, output_path: str,
                     formats: list[str] | None = None):
-    """Speichert das Transkript in verschiedenen Formaten.
+    """Saves the transcript in various formats.
 
     Args:
-        result: WhisperX-Ergebnis-Dict
-        output_path: Basis-Pfad ohne Endung (z.B. "recordings/meeting")
-        formats: Liste von Formaten ("txt", "srt", "json"). Default: ["txt"]
+        result: WhisperX result dict
+        output_path: Base path without extension (e.g. "recordings/meeting")
+        formats: List of formats ("txt", "srt", "json"). Default: ["txt"]
     """
     if formats is None:
         formats = ["txt"]
@@ -1130,16 +1067,16 @@ def save_transcript(result: dict, output_path: str,
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=2, default=str)
         else:
-            print(f"  Unbekanntes Format: {fmt}")
+            print(f"  Unknown format: {fmt}")
             continue
         saved.append(path)
-        print(f"  Gespeichert: {path}")
+        print(f"  Saved: {path}")
 
     return saved
 
 
 def _format_time(seconds: float) -> str:
-    """Formatiert Sekunden als MM:SS."""
+    """Formats seconds as MM:SS."""
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
     if h > 0:
@@ -1148,7 +1085,7 @@ def _format_time(seconds: float) -> str:
 
 
 def _format_time_srt(seconds: float) -> str:
-    """Formatiert Sekunden im SRT-Format HH:MM:SS,mmm."""
+    """Formats seconds in SRT format HH:MM:SS,mmm."""
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
@@ -1157,7 +1094,7 @@ def _format_time_srt(seconds: float) -> str:
 
 
 def _to_srt(result: dict) -> str:
-    """Konvertiert WhisperX-Ergebnis in SRT-Format."""
+    """Converts a WhisperX result to SRT format."""
     lines = []
     for i, seg in enumerate(result.get("segments", []), 1):
         start = _format_time_srt(seg.get("start", 0))

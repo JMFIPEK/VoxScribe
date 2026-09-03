@@ -1,16 +1,15 @@
-"""Farben und Stylesheet fuer das dunkle Theme der PySide6-GUI.
+"""Colors and stylesheet for the PySide6 GUI's dark theme.
 
-Stylesheet UND QPalette werden beide gesetzt (siehe apply_palette()): das
-Stylesheet deckt die Box-Modelle (Hintergrund/Rand/Padding) ab, aber
-Fusion-native gezeichnete Elemente wie Fokus-Rahmen ignorieren QSS-Farben
-teilweise und nutzen stattdessen die QPalette - ohne eigene Palette waeren
-sie dunkel-auf-dunkel und praktisch unsichtbar.
+BOTH the stylesheet AND the QPalette are set (see apply_palette()): the
+stylesheet covers the box models (background/border/padding), but
+Fusion-native-drawn elements like focus rings partly ignore QSS colors and
+use the QPalette instead - without a matching palette they'd be dark-on-dark
+and practically invisible.
 
-Checkbox-Haekchen und der Combobox-Pfeil werden zur Laufzeit als PNG
-generiert (siehe _generate_icons()) und per QSS `image: url(...)`
-eingebunden - Qt-Stylesheets koennen Subcontrols wie ::indicator/::down-arrow
-nur ueber Bild-Dateien einfaerben, nicht per reinem CSS-Shape-Trick
-zuverlaessig ueber Qt-Versionen hinweg."""
+Checkbox check marks and the combobox arrow are generated as PNGs at runtime
+(see _generate_icons()) and wired in via QSS `image: url(...)` - Qt
+stylesheets can only color subcontrols like ::indicator/::down-arrow via
+image files, not reliably via a pure CSS shape trick across Qt versions."""
 
 import os
 import tempfile
@@ -41,9 +40,8 @@ SPEAKER_COLOR_PALETTE = [
 
 
 def apply_palette(app):
-    """Setzt eine dunkle QPalette, damit Fusion-native gezeichnete Elemente
-    (Fokus-Rahmen, Popup-Hervorhebung, ...) nicht dunkel-auf-dunkel und damit
-    unsichtbar werden."""
+    """Sets a dark QPalette, so Fusion-native-drawn elements (focus rings,
+    popup highlight, ...) don't end up dark-on-dark and invisible."""
     from PySide6.QtGui import QColor, QPalette
 
     palette = QPalette()
@@ -81,10 +79,9 @@ _ICON_CACHE = None
 
 
 def get_icons() -> dict:
-    """Generiert (einmalig, gecacht) alle Laufzeit-Icons und gibt ein Dict
-    mit rohen Dateipfaden zurueck - fuer QIcon(...) in Python-Code UND (ueber
-    build_stylesheet(), das denselben Cache nutzt) fuer `image: url(...)` im
-    Stylesheet."""
+    """Generates (once, cached) all runtime icons and returns a dict of raw
+    file paths - for QIcon(...) in Python code AND (via build_stylesheet(),
+    which uses the same cache) for `image: url(...)` in the stylesheet."""
     global _ICON_CACHE
     if _ICON_CACHE is None:
         _ICON_CACHE = _generate_icons()
@@ -92,11 +89,10 @@ def get_icons() -> dict:
 
 
 def _generate_icons():
-    """Zeichnet alle Laufzeit-Icons (Checkbox-Haekchen, Combobox-Pfeil,
-    Aufnahme-/Stop-/Sprechblasen-Symbol) - 2x Aufloesung fuer scharfe Kanten
-    bei Skalierung - und speichert sie im Temp-Verzeichnis, damit sowohl
-    QIcon(...) als auch die Stylesheet-`url(...)`-Referenzen einen echten
-    Dateipfad haben."""
+    """Draws all runtime icons (checkbox check mark, combobox arrow,
+    record/stop/speech-bubble symbol) - 2x resolution for crisp edges when
+    scaled - and saves them to the temp directory, so both QIcon(...) and the
+    stylesheet's `url(...)` references have a real file path."""
     from PySide6.QtCore import Qt, QPointF, QRectF
     from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 
@@ -146,7 +142,7 @@ def _generate_icons():
     p.end()
     pix.save(arrow, "PNG")
 
-    # --- Aufnahme: rote Punkt-/Stop-Symbole (Tab-Icon + Aufnahme-Button) ---
+    # --- Recording: red dot/stop symbols (tab icon + record button) ---
     record = os.path.join(d, "record.png")
     pix = QPixmap(size, size)
     pix.fill(Qt.transparent)
@@ -169,7 +165,7 @@ def _generate_icons():
     p.end()
     pix.save(stop, "PNG")
 
-    # --- Transkription: Sprechblase ---
+    # --- Transcription: speech bubble ---
     speech_bubble = os.path.join(d, "speech_bubble.png")
     pix = QPixmap(size, size)
     pix.fill(Qt.transparent)
@@ -193,32 +189,10 @@ def _generate_icons():
     p.end()
     pix.save(speech_bubble, "PNG")
 
-    # --- Live-Zusammenfassung: Sparkle/Stern (Premium-/KI-Feature) ---
-    live_summary = os.path.join(d, "live_summary.png")
-    pix = QPixmap(size, size)
-    pix.fill(Qt.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor(ACCENT))
-    cx, cy = size / 2, size / 2
-    outer, inner = size * 0.46, size * 0.13
-    sparkle_path = QPainterPath()
-    sparkle_path.moveTo(cx, cy - outer)
-    sparkle_path.quadTo(cx + inner, cy - inner, cx + outer, cy)
-    sparkle_path.quadTo(cx + inner, cy + inner, cx, cy + outer)
-    sparkle_path.quadTo(cx - inner, cy + inner, cx - outer, cy)
-    sparkle_path.quadTo(cx - inner, cy - inner, cx, cy - outer)
-    sparkle_path.closeSubpath()
-    p.drawPath(sparkle_path)
-    p.end()
-    pix.save(live_summary, "PNG")
-
     return {
         "checkbox_unchecked": unchecked,
         "checkbox_checked": checked,
         "checkbox_disabled": disabled,
-        "live_summary": live_summary,
         "combo_arrow": arrow,
         "record": record,
         "stop": stop,
@@ -227,9 +201,9 @@ def _generate_icons():
 
 
 def build_stylesheet() -> str:
-    """Baut das vollstaendige Stylesheet (nutzt den Icon-Cache aus
-    get_icons()). Muss erst NACH dem Erzeugen der QApplication aufgerufen
-    werden (QPixmap braucht eine laufende Qt-Anwendung)."""
+    """Builds the full stylesheet (uses the icon cache from get_icons()).
+    Must only be called AFTER the QApplication is created (QPixmap needs a
+    running Qt application)."""
     icons = {k: _as_url(v) for k, v in get_icons().items()}
     return f"""
 QWidget {{

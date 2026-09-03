@@ -1,8 +1,8 @@
-"""Persistente Sprecher-Profile (Voice-Prints) fuer automatische Wiedererkennung.
+"""Persistent speaker profiles (voice prints) for automatic recognition.
 
-Nutzt die Speaker-Embeddings aus der pyannote-Diarization-Pipeline, um Sprecher
-ueber mehrere Aufnahmen hinweg per Stimmabgleich (Cosine-Similarity) wieder-
-zuerkennen, statt sie bei jeder Transkription neu manuell benennen zu muessen.
+Uses the speaker embeddings from the pyannote diarization pipeline to
+recognize speakers across multiple recordings by voice match (cosine
+similarity), instead of having to manually rename them on every transcription.
 """
 
 import json
@@ -13,14 +13,14 @@ import numpy as np
 PROFILES_DIR = os.path.join(os.path.expanduser("~"), ".voxscribe")
 PROFILES_PATH = os.path.join(PROFILES_DIR, "speaker_profiles.json")
 
-# Minimale Cosine-Similarity, ab der ein erkannter Sprecher automatisch einem
-# bekannten Profil zugeordnet wird. Empirischer Richtwert fuer pyannote-
-# Embeddings; ggf. anpassen, falls zu oft falsch/gar nicht zugeordnet wird.
+# Minimum cosine similarity above which a detected speaker is automatically
+# matched to a known profile. Empirical value for pyannote embeddings; adjust
+# if matches happen too often incorrectly or not at all.
 DEFAULT_MATCH_THRESHOLD = 0.75
 
 
 def load_profiles() -> dict:
-    """Laedt gespeicherte Sprecher-Profile: {name: {"embedding": [...], "samples": n}}."""
+    """Loads saved speaker profiles: {name: {"embedding": [...], "samples": n}}."""
     if not os.path.isfile(PROFILES_PATH):
         return {}
     try:
@@ -47,18 +47,18 @@ def _cosine_similarity(a, b) -> float:
 
 def match_speakers(embeddings: dict, profiles: dict | None = None,
                     threshold: float = DEFAULT_MATCH_THRESHOLD) -> dict:
-    """Ordnet erkannten Sprecher-Embeddings bekannte Namen zu.
+    """Matches detected speaker embeddings to known names.
 
     Args:
-        embeddings: {"SPEAKER_00": [...], ...} aus der Diarization
-        profiles: bekannte Profile (werden selbst geladen, falls None)
-        threshold: minimale Cosine-Similarity fuer eine automatische Zuordnung
+        embeddings: {"SPEAKER_00": [...], ...} from diarization
+        profiles: known profiles (loaded automatically if None)
+        threshold: minimum cosine similarity for an automatic match
 
     Returns:
-        {"SPEAKER_00": "Jonas", ...} nur fuer eindeutig zugeordnete Sprecher.
-        Jeder Name wird hoechstens einem Sprecher zugewiesen (bester Treffer
-        gewinnt bei Konflikten), damit nicht zwei unterschiedliche Sprecher
-        versehentlich denselben Namen bekommen.
+        {"SPEAKER_00": "Jonas", ...} only for unambiguously matched speakers.
+        Each name is assigned to at most one speaker (best match wins on
+        conflicts), so two different speakers never accidentally get the
+        same name.
     """
     if profiles is None:
         profiles = load_profiles()
@@ -71,9 +71,9 @@ def match_speakers(embeddings: dict, profiles: dict | None = None,
             try:
                 sim = _cosine_similarity(emb, profile["embedding"])
             except ValueError:
-                # Beschaedigtes/inkompatibles Profil (z.B. falsche Embedding-
-                # Dimension) - ueberspringen statt den ganzen Abgleich fuer
-                # alle anderen Sprecher/Profile abzubrechen.
+                # Corrupted/incompatible profile (e.g. wrong embedding
+                # dimension) - skip it instead of aborting the whole match
+                # for every other speaker/profile.
                 continue
             if sim >= threshold:
                 candidates.append((sim, spk, name))
@@ -90,7 +90,7 @@ def match_speakers(embeddings: dict, profiles: dict | None = None,
 
 
 def enroll_speaker(name: str, embedding, profiles: dict | None = None) -> dict:
-    """Speichert/aktualisiert das Profil eines Sprechers als laufenden Durchschnitt."""
+    """Saves/updates a speaker's profile as a running average."""
     if profiles is None:
         profiles = load_profiles()
     name = name.strip()

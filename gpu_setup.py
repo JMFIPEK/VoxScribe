@@ -1,30 +1,29 @@
-"""Sorgt automatisch dafuer, dass die installierte torch-Variante (CUDA/XPU)
-zur tatsaechlich vorhandenen GPU passt - Windows-only.
+"""Automatically ensures the installed torch build (CUDA/XPU) matches the GPU
+actually present - Windows-only.
 
-Hintergrund: ein torch-Build unterstuetzt immer nur EIN GPU-Backend (CUDA ODER
-Intel-XPU, nie beide - siehe pyproject.toml). `pyproject.toml` pinnt den
-CUDA-Build als Projekt-Default; auf einem Rechner mit Intel Arc GPU (und ohne
-NVIDIA-GPU) muss torch stattdessen manuell auf den XPU-Build umgestellt werden,
-damit Alignment/Diarization (plain PyTorch) die Arc GPU nutzen koennen statt
-auf die CPU zu fallen. Ausserdem setzt jedes `uv run`/`uv sync` (ohne
-`--no-sync`) diese manuelle Umstellung automatisch wieder auf CUDA zurueck,
-da `pyproject.toml` weiterhin CUDA deklariert.
+Background: a torch build only ever supports ONE GPU backend (CUDA OR Intel
+XPU, never both - see pyproject.toml). `pyproject.toml` pins the CUDA build
+as the project default; on a machine with an Intel Arc GPU (and no NVIDIA
+GPU), torch instead has to be manually switched to the XPU build so that
+alignment/diarization (plain PyTorch) can use the Arc GPU instead of falling
+back to the CPU. On top of that, every `uv run`/`uv sync` (without
+`--no-sync`) automatically reverts that manual switch back to CUDA, since
+`pyproject.toml` still declares CUDA.
 
-Dieses Modul macht die noetige Korrektur selbst automatisch statt sie als
-manuellen Schritt zu dokumentieren: bei jedem App-Start (CLI und GUI, siehe
-main.py/gui_qt.py) wird schnell geprueft, ob die installierte torch-Variante
-zur erkannten GPU passt (Prioritaet dGPU > iGPU, siehe hardware_detect.py) -
-und falls nicht, automatisch per `uv pip install --reinstall` korrigiert,
-BEVOR irgendwo `import torch` passiert (torch laedt seine nativen Bibliotheken
-nur beim ersten Import in diesem Prozess - ein Wechsel auf der Festplatte
-davor wirkt sich noch auf denselben Prozess aus, ein Wechsel danach nicht mehr,
-siehe main()/gui_qt.py's Aufrufreihenfolge).
+This module makes the necessary correction automatic instead of documenting
+it as a manual step: on every app start (CLI and GUI, see main.py/gui_qt.py)
+it quickly checks whether the installed torch build matches the detected GPU
+(priority dGPU > iGPU, see hardware_detect.py) - and if not, fixes it
+automatically via `uv pip install --reinstall`, BEFORE anything imports torch
+anywhere (torch only loads its native libraries on the first import in this
+process - a change on disk before that point still affects this same
+process, a change after it no longer does, see the call order in
+main()/gui_qt.py).
 
-Der eigentliche Check (WMI-Abfrage + `importlib.metadata`) importiert bewusst
-kein torch/whisperx (die haben einen 1-3 Minuten dauernden Kaltstart-Import,
-siehe CLAUDE.md) und ist daher auch bei jedem Start unauffaellig schnell -
-nur wenn tatsaechlich ein Wechsel noetig ist, dauert es laenger (Download,
-einmalig).
+The actual check (WMI query + `importlib.metadata`) deliberately doesn't
+import torch/whisperx (which have a 1-3 minute cold-start import, see
+CLAUDE.md) and is therefore unobtrusively fast on every start too - only when
+a switch is actually needed does it take longer (download, one-time).
 """
 
 import importlib.metadata
@@ -39,8 +38,8 @@ _TORCH_PACKAGES = ["torch", "torchaudio", "torchvision"]
 
 
 def _detect_gpu_names() -> list[str]:
-    """Liefert die Namen aller erkannten GPUs via WMI - kein torch/openvino
-    noetig, daher schnell genug fuer einen Check bei jedem Programmstart."""
+    """Returns the names of all detected GPUs via WMI - no torch/openvino
+    needed, so fast enough to check on every program start."""
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
@@ -53,9 +52,8 @@ def _detect_gpu_names() -> list[str]:
 
 
 def _current_torch_variant() -> str | None:
-    """'cu128', 'xpu', 'cpu' oder None (torch nicht installiert) - liest nur
-    die Paket-Metadaten (PEP 440 Local-Version-Suffix), importiert torch
-    selbst nicht."""
+    """'cu128', 'xpu', 'cpu', or None (torch not installed) - only reads the
+    package metadata (PEP 440 local version suffix), doesn't import torch itself."""
     try:
         version = importlib.metadata.version("torch")
     except importlib.metadata.PackageNotFoundError:
@@ -66,10 +64,10 @@ def _current_torch_variant() -> str | None:
 
 
 def _find_uv() -> str | None:
-    """Bevorzugt den von astral.sh's offiziellem Installer genutzten Standardpfad
-    (siehe README) vor einem generischen PATH-Treffer - auf Entwicklungsrechnern
-    kann `shutil.which("uv")` sonst ein von einem ganz anderen Tool mitgebrachtes
-    `uv.exe` zuerst finden (in der Praxis beobachtet)."""
+    """Prefers the standard path used by astral.sh's official installer (see
+    README) over a generic PATH hit - on development machines,
+    `shutil.which("uv")` can otherwise find a `uv.exe` bundled with some
+    completely different tool first (observed in practice)."""
     standard = os.path.expanduser(r"~\.local\bin\uv.exe")
     if os.path.isfile(standard):
         return standard
@@ -77,51 +75,50 @@ def _find_uv() -> str | None:
 
 
 def ensure_correct_torch_backend(on_status=print) -> None:
-    """Prueft GPU vs. installierte torch-Variante und korrigiert bei Bedarf
-    automatisch. `on_status(msg)` wird fuer Fortschrittsmeldungen aufgerufen
-    (Default: print - CLI; die GUI kann hier z.B. den Splash-Screen-Text
-    aktualisieren)."""
+    """Checks GPU vs. installed torch build and fixes it automatically if
+    needed. `on_status(msg)` is called for progress messages (default: print
+    - CLI; the GUI can use this to e.g. update the splash screen text)."""
     if sys.platform != "win32":
-        return  # macOS (MPS) / Linux betrifft dieses CUDA/XPU-Problem nicht
+        return  # macOS (MPS) / Linux aren't affected by this CUDA/XPU issue
 
     if getattr(sys, "frozen", False):
-        # In der PyInstaller-.exe gibt es kein `.venv`, in das `uv pip install`
-        # sinnvoll reinstallieren koennte - die dort gebuendelte torch-Variante
-        # ist zur Build-Zeit fixiert (siehe build_exe.py). Diese Auto-Korrektur
-        # gilt nur fuer die Source-/uv-Installation.
+        # There's no `.venv` inside the PyInstaller .exe for `uv pip install`
+        # to meaningfully reinstall into - the torch build bundled there is
+        # fixed at build time (see build_exe.py). This auto-correction only
+        # applies to the source/uv install.
         return
 
     gpu_names = _detect_gpu_names()
     has_nvidia = any("NVIDIA" in n.upper() for n in gpu_names)
     has_arc = any("ARC" in n.upper() and "INTEL" in n.upper() for n in gpu_names)
 
-    # Prioritaet dGPU > iGPU > keine, siehe hardware_detect.recommend_model()
+    # Priority dGPU > iGPU > none, see hardware_detect.recommend_model()
     if has_nvidia:
         desired = "cu128"
     elif has_arc:
         desired = "xpu"
     else:
-        return  # keine dGPU/Arc-iGPU erkannt - aktuelle Variante nicht anfassen
+        return  # no dGPU/Arc iGPU detected - leave the current build alone
 
     current = _current_torch_variant()
     if current is None or current == desired:
-        return  # torch fehlt komplett (kein Fall hier fuer uns) oder passt schon
+        return  # torch isn't installed at all (not our case here), or already matches
 
     uv = _find_uv()
     if uv is None:
         on_status(
-            f"[GPU-Setup] {gpu_names[0] if gpu_names else 'GPU'} erkannt, aber "
-            f"torch ist auf '{current}' statt '{desired}' - 'uv' nicht gefunden, "
-            "automatische Korrektur uebersprungen. Siehe README ('Intel Arc GPU')."
+            f"[GPU setup] {gpu_names[0] if gpu_names else 'GPU'} detected, but "
+            f"torch is on '{current}' instead of '{desired}' - 'uv' not found, "
+            "automatic correction skipped. See README ('Intel Arc GPU')."
         )
         return
 
     index = PYTORCH_XPU_INDEX if desired == "xpu" else PYTORCH_CUDA_INDEX
-    label = "Intel Arc GPU" if desired == "xpu" else "NVIDIA-GPU"
+    label = "Intel Arc GPU" if desired == "xpu" else "NVIDIA GPU"
     on_status(
-        f"[GPU-Setup] {label} erkannt, torch laeuft aber mit '{current}' statt "
-        f"'{desired}' - richte GPU-Beschleunigung einmalig ein (Download, kann "
-        "einige Minuten dauern)..."
+        f"[GPU setup] {label} detected, but torch is running with '{current}' "
+        f"instead of '{desired}' - setting up GPU acceleration (one-time "
+        "download, can take a few minutes)..."
     )
     try:
         result = subprocess.run(
@@ -130,13 +127,13 @@ def ensure_correct_torch_backend(on_status=print) -> None:
             timeout=1800,
         )
     except Exception as e:
-        on_status(f"[GPU-Setup] Automatische Korrektur fehlgeschlagen: {e}")
+        on_status(f"[GPU setup] Automatic correction failed: {e}")
         return
 
     if result.returncode == 0:
-        on_status(f"[GPU-Setup] torch erfolgreich auf '{desired}' umgestellt.")
+        on_status(f"[GPU setup] torch successfully switched to '{desired}'.")
     else:
         on_status(
-            f"[GPU-Setup] Automatische Korrektur fehlgeschlagen (Exit-Code "
-            f"{result.returncode}) - GPU-Beschleunigung evtl. nicht verfuegbar."
+            f"[GPU setup] Automatic correction failed (exit code "
+            f"{result.returncode}) - GPU acceleration may not be available."
         )

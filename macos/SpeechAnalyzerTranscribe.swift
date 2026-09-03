@@ -1,31 +1,30 @@
 // SpeechAnalyzerTranscribe.swift
 //
-// Einmaliger (batch) Kommandozeilen-Helfer fuer VoxScribe: transkribiert eine
-// bereits aufgenommene Audio-Datei komplett offline via Apples
-// SpeechAnalyzer/SpeechTranscriber (Speech-Framework, macOS 26+, laeuft auf
-// der Neural Engine) und schreibt pro erkanntem Segment eine JSON-Zeile
-// (NDJSON) nach stdout. transcriber.py liest das zeilenweise, um dem Nutzer
-// waehrend der Transkription echten Fortschritt anzuzeigen - anders als
-// SystemAudioCapture.swift (das einen Dauer-Stream roher PCM-Bytes liefert)
-// ist dies aber ein einmaliger Batch-Job: er endet von selbst, sobald die
-// Datei fertig verarbeitet ist, es gibt kein SIGTERM-Handling.
+// One-shot (batch) command-line helper for VoxScribe: transcribes an
+// already-recorded audio file entirely offline via Apple's
+// SpeechAnalyzer/SpeechTranscriber (Speech framework, macOS 26+, runs on the
+// Neural Engine) and writes one JSON line (NDJSON) per recognized segment to
+// stdout. transcriber.py reads this line by line to show the user real
+// progress during transcription - unlike SystemAudioCapture.swift (which
+// delivers a continuous stream of raw PCM bytes), this is a one-shot batch
+// job: it exits on its own once the file has been fully processed, there's
+// no SIGTERM handling.
 //
-// Nutzung: ./SpeechAnalyzerTranscribe <audio-datei> [locale, z.B. de-DE]
-//   Jede Zeile auf stdout ist ein JSON-Objekt:
+// Usage: ./SpeechAnalyzerTranscribe <audio-file> [locale, e.g. en-US]
+//   Each line on stdout is a JSON object:
 //     {"type":"segment","start":0.0,"end":1.2,"text":"...",
 //      "words":[{"word":"...","start":0.0,"end":0.4,"score":0.99}, ...]}
-//   Am Ende folgt eine Abschlusszeile: {"type":"done"}
-//   Fehler (z.B. nicht unterstuetzte Sprache, fehlendes Sprachmodell, nicht
-//   lesbare Audio-Datei) gehen nach stderr, Exit-Code != 0 - Python liest das
-//   bei einem Fehler aus (gleiches Muster wie bei SystemAudioCapture.swift).
+//   A final line follows at the end: {"type":"done"}
+//   Errors (e.g. unsupported language, missing language model, unreadable
+//   audio file) go to stderr with a non-zero exit code - Python reads that
+//   on failure (same pattern as SystemAudioCapture.swift).
 //
-// Word-Level-Timestamps kommen direkt aus der `audioTimeRange`-Attribution
-// der von SpeechTranscriber gelieferten AttributedString-Runs - verifiziert
-// an echter Hardware (macOS 26.5.1, Apple Silicon) mit synthetischem
-// (`say`-generiertem) deutschem Testaudio: die Zeitstempel sind bereits
-// wortgenau, ein nachtraeglicher wav2vec2-Alignment-Schritt (wie er fuer
-// WhisperX noetig ist) ist fuer dieses Ergebnis nicht erforderlich - siehe
-// den entsprechenden Kommentar in transcriber.py::transcribe_apple().
+// Word-level timestamps come directly from the `audioTimeRange` attribute on
+// the AttributedString runs SpeechTranscriber returns - verified on real
+// hardware (macOS 26.5.1, Apple Silicon) with synthetic (`say`-generated)
+// test audio: the timestamps are already word-accurate, so a subsequent
+// wav2vec2 alignment step (as needed for WhisperX) isn't required for this
+// result - see the matching comment in transcriber.py::transcribe_apple().
 
 import Foundation
 import Speech
@@ -65,24 +64,24 @@ func printJSON<T: Encodable>(_ value: T) {
 func run() async {
     let args = CommandLine.arguments
     guard args.count >= 2 else {
-        fail("Nutzung: SpeechAnalyzerTranscribe <audio-datei> [locale, z.B. de-DE]")
+        fail("Usage: SpeechAnalyzerTranscribe <audio-file> [locale, e.g. en-US]")
     }
     let audioPath = args[1]
-    let localeIdentifier = args.count >= 3 ? args[2] : "de-DE"
+    let localeIdentifier = args.count >= 3 ? args[2] : "en-US"
     let requestedLocale = Locale(identifier: localeIdentifier)
 
     guard SpeechTranscriber.isAvailable else {
-        fail("SpeechTranscriber ist auf diesem System nicht verfuegbar (benoetigt macOS 26+ auf Apple Silicon).")
+        fail("SpeechTranscriber isn't available on this system (requires macOS 26+ on Apple Silicon).")
     }
 
     guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
-        fail("Sprache '\(localeIdentifier)' wird von SpeechAnalyzer nicht unterstuetzt.")
+        fail("Language '\(localeIdentifier)' isn't supported by SpeechAnalyzer.")
     }
 
-    // attributeOptions: [.audioTimeRange, .transcriptionConfidence] liefert
-    // pro Wort (AttributedString-Run) Zeitstempel + Konfidenz mit - das ersetzt
-    // den wav2vec2-Alignment-Schritt der WhisperX-Pipeline komplett (siehe
-    // Kommentar oben und transcriber.py::transcribe_apple()).
+    // attributeOptions: [.audioTimeRange, .transcriptionConfidence] provides
+    // per-word (AttributedString run) timestamps + confidence - this
+    // completely replaces the WhisperX pipeline's wav2vec2 alignment step
+    // (see the comment above and transcriber.py::transcribe_apple()).
     let transcriber = SpeechTranscriber(
         locale: locale,
         transcriptionOptions: [],
@@ -95,11 +94,11 @@ func run() async {
         do {
             if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                 FileHandle.standardError.write(
-                    "Lade Sprachmodell fuer \(locale.identifier) herunter...\n".data(using: .utf8)!)
+                    "Downloading language model for \(locale.identifier)...\n".data(using: .utf8)!)
                 try await request.downloadAndInstall()
             }
         } catch {
-            fail("Fehler beim Herunterladen des Sprachmodells fuer \(locale.identifier): \(error)")
+            fail("Error downloading the language model for \(locale.identifier): \(error)")
         }
     }
 
@@ -107,7 +106,7 @@ func run() async {
     do {
         audioFile = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
     } catch {
-        fail("Konnte Audio-Datei nicht lesen (\(audioPath)): \(error)")
+        fail("Could not read audio file (\(audioPath)): \(error)")
     }
 
     let analyzer: SpeechAnalyzer
@@ -118,7 +117,7 @@ func run() async {
             finishAfterFile: true
         )
     } catch {
-        fail("Fehler beim Initialisieren von SpeechAnalyzer: \(error)")
+        fail("Error initializing SpeechAnalyzer: \(error)")
     }
 
     let resultsTask = Task {
@@ -145,14 +144,14 @@ func run() async {
                 ))
             }
         } catch {
-            fail("Fehler waehrend der Transkription: \(error)")
+            fail("Error during transcription: \(error)")
         }
     }
 
     do {
         try await analyzer.finalizeAndFinishThroughEndOfInput()
     } catch {
-        fail("Fehler beim Abschliessen der Transkription: \(error)")
+        fail("Error finalizing transcription: \(error)")
     }
     await resultsTask.value
 
@@ -168,6 +167,6 @@ if #available(macOS 26.0, *) {
     semaphore.wait()
 } else {
     FileHandle.standardError.write(
-        "SpeechAnalyzer-Transkription erfordert macOS 26 (Tahoe) oder neuer.\n".data(using: .utf8)!)
+        "SpeechAnalyzer transcription requires macOS 26 (Tahoe) or newer.\n".data(using: .utf8)!)
     exit(1)
 }

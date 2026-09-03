@@ -1,21 +1,22 @@
-"""Modelle vorab herunterladen fuer Offline-/Bundled-Betrieb.
+"""Pre-download models for offline/bundled operation.
 
-Dieses Skript laedt alle benoetigten Modelle in den Ordner 'bundled_models/' herunter,
-damit die Anwendung ohne Internetverbindung und ohne HuggingFace Token funktioniert.
+This script downloads all needed models into the 'bundled_models/' folder, so
+the application works without an internet connection and without a
+HuggingFace token.
 
-Verwendung:
+Usage:
     python download_models.py
 
-Voraussetzungen:
-    - HF_TOKEN in .env oder als Umgebungsvariable (fuer pyannote-Diarization)
-    - Internetverbindung beim Ausfuehren dieses Skripts
+Requirements:
+    - HF_TOKEN in .env or as an environment variable (for pyannote diarization)
+    - Internet connection while running this script
 """
 
 import os
 import ssl
 import sys
 
-# SSL/Proxy-Konfiguration (wie in main.py)
+# SSL/proxy configuration (same as main.py)
 os.environ["CURL_CA_BUNDLE"] = ""
 os.environ["REQUESTS_CA_BUNDLE"] = ""
 os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
@@ -38,24 +39,24 @@ MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bundled_m
 
 
 def download_whisper_model(model_size: str = "medium"):
-    """Laedt das Whisper-Modell (faster-whisper Format) herunter."""
+    """Downloads the Whisper model (faster-whisper format)."""
     from faster_whisper.utils import download_model
 
     dest = os.path.join(MODELS_DIR, "whisper", model_size)
     os.makedirs(dest, exist_ok=True)
 
     if os.path.exists(os.path.join(dest, "model.bin")):
-        print(f"  [OK] Whisper {model_size} bereits vorhanden")
+        print(f"  [OK] Whisper {model_size} already present")
         return dest
 
-    print(f"  Lade Whisper {model_size} herunter...")
+    print(f"  Downloading Whisper {model_size}...")
     path = download_model(model_size, output_dir=dest)
     print(f"  [OK] Whisper {model_size} -> {path}")
     return dest
 
 
 def download_align_models():
-    """Laedt die Alignment-Modelle (torchaudio) fuer DE und EN herunter."""
+    """Downloads the alignment models (torchaudio) for DE and EN."""
     import torchaudio
 
     dest = os.path.join(MODELS_DIR, "align")
@@ -67,7 +68,7 @@ def download_align_models():
     }
 
     for lang, model_name in models.items():
-        print(f"  Lade Alignment-Modell {model_name} ({lang})...")
+        print(f"  Downloading alignment model {model_name} ({lang})...")
         bundle = torchaudio.pipelines.__dict__[model_name]
         # Download the model weights to our directory
         bundle.get_model(dl_kwargs={"model_dir": dest})
@@ -77,21 +78,21 @@ def download_align_models():
 
 
 def download_diarization_model():
-    """Laedt das pyannote Diarization-Modell herunter."""
+    """Downloads the pyannote diarization model."""
     from huggingface_hub import snapshot_download
 
     hf_token = os.getenv("HF_TOKEN")
     if not hf_token:
-        print("  [WARNUNG] Kein HF_TOKEN gefunden - Diarization-Modell wird uebersprungen!")
-        print("  Setze HF_TOKEN in .env um das Modell herunterzuladen.")
+        print("  [WARNING] No HF_TOKEN found - skipping diarization model!")
+        print("  Set HF_TOKEN in .env to download this model.")
         return None
 
     dest = os.path.join(MODELS_DIR, "diarize")
     os.makedirs(dest, exist_ok=True)
 
-    # Haupt-Pipeline
+    # Main pipeline
     model_id = "pyannote/speaker-diarization-community-1"
-    print(f"  Lade {model_id}...")
+    print(f"  Downloading {model_id}...")
     snapshot_download(
         model_id,
         token=hf_token,
@@ -99,9 +100,9 @@ def download_diarization_model():
     )
     print(f"  [OK] {model_id}")
 
-    # Segmentierungs-Modell (Dependency der Pipeline)
+    # Segmentation model (pipeline dependency)
     seg_model_id = "pyannote/segmentation-3.0"
-    print(f"  Lade {seg_model_id}...")
+    print(f"  Downloading {seg_model_id}...")
     snapshot_download(
         seg_model_id,
         token=hf_token,
@@ -109,9 +110,9 @@ def download_diarization_model():
     )
     print(f"  [OK] {seg_model_id}")
 
-    # Embedding-Modell (Dependency der Pipeline)
+    # Embedding model (pipeline dependency)
     emb_model_id = "pyannote/wespeaker-voxceleb-resnet34-LM"
-    print(f"  Lade {emb_model_id}...")
+    print(f"  Downloading {emb_model_id}...")
     snapshot_download(
         emb_model_id,
         token=hf_token,
@@ -123,25 +124,25 @@ def download_diarization_model():
 
 
 def export_openvino_model(whisper_size: str = "medium"):
-    """Exportiert ein Whisper-Modell nach OpenVINO IR (INT8-quantisiert) fuer die
-    Intel Arc GPU/NPU-Transkription (siehe transcriber.transcribe_openvino()).
+    """Exports a Whisper model to OpenVINO IR (INT8-quantized) for Intel Arc
+    GPU/NPU transcription (see transcriber.transcribe_openvino()).
 
-    Windows/Intel-spezifisch - braucht `optimum-intel[openvino]` (siehe
-    pyproject.toml, nur auf sys_platform == 'win32' installiert) und exportiert
-    aus dem HuggingFace-Transformers-Checkpoint (nicht dem CTranslate2-Format,
-    das download_whisper_model() oben laedt - das ist ein anderes Modellformat
-    fuer einen komplett anderen Inferenz-Backend).
+    Windows/Intel-specific - needs `optimum-intel[openvino]` (see
+    pyproject.toml, only installed on sys_platform == 'win32') and exports
+    from the HuggingFace Transformers checkpoint (not the CTranslate2 format
+    download_whisper_model() above downloads - that's a different model
+    format for a completely different inference backend).
     """
     try:
         from optimum.commands.optimum_cli import main as optimum_cli_main
     except ImportError:
-        print("  [UEBERSPRUNGEN] optimum-intel[openvino] nicht installiert "
-              "(nur auf Windows vorgesehen) - Intel Arc GPU/NPU-Backend nicht verfuegbar.")
+        print("  [SKIPPED] optimum-intel[openvino] not installed "
+              "(Windows-only) - Intel Arc GPU/NPU backend not available.")
         return None
 
     dest = os.path.join(MODELS_DIR, "openvino", f"whisper-{whisper_size}")
     if os.path.exists(os.path.join(dest, "openvino_encoder_model.bin")):
-        print(f"  [OK] OpenVINO Whisper {whisper_size} bereits vorhanden")
+        print(f"  [OK] OpenVINO Whisper {whisper_size} already present")
         return dest
 
     hf_model_id = {
@@ -151,12 +152,13 @@ def export_openvino_model(whisper_size: str = "medium"):
         "base": "openai/whisper-base",
     }.get(whisper_size, f"openai/whisper-{whisper_size}")
 
-    print(f"  Exportiere {hf_model_id} nach OpenVINO IR (INT8)...")
-    # Ueber die optimum-cli-Befehlsklasse statt main_export() direkt, weil die
-    # INT8/INT4-Gewichtskompressions-Konfiguration (OVConfig/quantization_config)
-    # intern recht komplex aus --weight-format zusammengebaut wird (siehe
-    # optimum.commands.export.openvino.OVExportCommand.run) - das hier
-    # nachzubauen waere fehleranfaellig, die CLI-Klasse macht es bereits korrekt.
+    print(f"  Exporting {hf_model_id} to OpenVINO IR (INT8)...")
+    # Via the optimum-cli command class instead of main_export() directly,
+    # because the INT8/INT4 weight-compression config (OVConfig/
+    # quantization_config) is built internally in a fairly complex way from
+    # --weight-format (see optimum.commands.export.openvino.OVExportCommand.
+    # run) - reimplementing that here would be error-prone, the CLI class
+    # already does it correctly.
     original_argv = sys.argv
     try:
         sys.argv = [
@@ -175,31 +177,31 @@ def export_openvino_model(whisper_size: str = "medium"):
 
 def main():
     print("=" * 60)
-    print("  VoxScribe — Modelle herunterladen")
+    print("  VoxScribe — Downloading models")
     print("=" * 60)
-    print(f"\nZielordner: {MODELS_DIR}\n")
+    print(f"\nTarget folder: {MODELS_DIR}\n")
 
     os.makedirs(MODELS_DIR, exist_ok=True)
 
-    print("[1/4] Whisper-Modell (medium)...")
+    print("[1/4] Whisper model (medium)...")
     download_whisper_model("medium")
     print()
 
-    print("[2/4] Alignment-Modelle (DE + EN)...")
+    print("[2/4] Alignment models (DE + EN)...")
     download_align_models()
     print()
 
-    print("[3/4] Diarization-Modell (pyannote)...")
+    print("[3/4] Diarization model (pyannote)...")
     download_diarization_model()
     print()
 
-    print("[4/4] OpenVINO-Modell fuer Intel Arc GPU/NPU (medium)...")
+    print("[4/4] OpenVINO model for Intel Arc GPU/NPU (medium)...")
     export_openvino_model("medium")
     print()
 
     print("=" * 60)
-    print("  Alle Modelle heruntergeladen!")
-    print(f"  Ordner: {MODELS_DIR}")
+    print("  All models downloaded!")
+    print(f"  Folder: {MODELS_DIR}")
     print("=" * 60)
 
 
