@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -28,8 +27,8 @@ from qt_app import theme
 from qt_app.constants import (
     APPLE_SPEECHANALYZER_MODEL,
     FORMATS,
-    LANGUAGES,
     MODEL_DISPLAY_NAMES,
+    OPENVINO_MODEL_PREFIX,
     REMOTE_MODEL_PREFIX,
     format_time_short,
 )
@@ -46,10 +45,11 @@ class TranscribePage(QWidget):
         self._speaker_remember_checks = {}
         self._selected_files = []
         self._model_ids_by_display = {}
+        self._hw_recommended_model = None
         self._build_ui()
         self._wire()
-        self._on_diarize_toggled()
         self._refresh_model_choices()
+        self._update_pipeline_info()
 
     # ------------------------------------------------------------------ ui
     def _build_ui(self):
@@ -75,57 +75,29 @@ class TranscribePage(QWidget):
         sep0.setProperty("role", "separator")
         opts_layout.addWidget(sep0)
 
-        opts_row = QGridLayout()
+        # Language (auto-detect), diarization, and min/max speakers are no
+        # longer exposed here - auto-detect works well enough on its own,
+        # diarization is always on, and speaker count is always auto-guessed.
+        # This whole card only keeps the one setting worth choosing (model/
+        # provider) plus a compact readout of the pipeline that will actually
+        # run, so the transcript below gets as much vertical space as possible.
+        opts_row = QHBoxLayout()
         opts_layout.addLayout(opts_row)
-        opts_row.addWidget(QLabel("Language:"), 0, 0)
-        self.lang_combo = self._combo(list(LANGUAGES.keys()), "Auto-detect")
-        opts_row.addWidget(self.lang_combo, 0, 1)
-        opts_row.setColumnStretch(1, 1)
 
         if sys.platform == "darwin":
             # No model choice on macOS: Apple's SpeechAnalyzer (Neural
             # Engine) is the only transcription engine there, no Whisper
             # download/inference at all (see transcriber.py::
-            # transcribe_apple() and CLAUDE.md). The "Model" dropdown and the
-            # hardware hint (which refers to picking a Whisper model size)
-            # are therefore left out entirely here - diarization is
-            # unaffected.
+            # transcribe_apple() and CLAUDE.md).
             self.model_combo = None
-            self.hw_hint = None
         else:
-            opts_row.addWidget(QLabel("Model:"), 0, 2)
+            opts_row.addWidget(QLabel("Model:"))
             self.model_combo = self._combo([], "")
-            opts_row.addWidget(self.model_combo, 0, 3)
-            opts_row.setColumnStretch(3, 1)
+            opts_row.addWidget(self.model_combo)
 
-            self.hw_hint = QLabel("⚡ Determining hardware recommendation...")
-            self.hw_hint.setProperty("role", "hint")
-            opts_layout.addWidget(self.hw_hint)
-
-        sep = QFrame()
-        sep.setProperty("role", "separator")
-        opts_layout.addWidget(sep)
-
-        diar_row = QHBoxLayout()
-        opts_layout.addLayout(diar_row)
-        self.diarize_check = QCheckBox("Speaker diarization")
-        self.diarize_check.setChecked(True)
-        diar_row.addWidget(self.diarize_check)
-        diar_row.addSpacing(16)
-        self.min_spk_label = QLabel("Min speakers:")
-        diar_row.addWidget(self.min_spk_label)
-        self.min_spk_edit = QLineEdit()
-        self.min_spk_edit.setPlaceholderText("auto")
-        self.min_spk_edit.setFixedWidth(56)
-        diar_row.addWidget(self.min_spk_edit)
-        diar_row.addSpacing(12)
-        self.max_spk_label = QLabel("Max speakers:")
-        diar_row.addWidget(self.max_spk_label)
-        self.max_spk_edit = QLineEdit()
-        self.max_spk_edit.setPlaceholderText("auto")
-        self.max_spk_edit.setFixedWidth(56)
-        diar_row.addWidget(self.max_spk_edit)
-        diar_row.addStretch(1)
+        self.pipeline_info = QLabel("")
+        self.pipeline_info.setProperty("role", "hint")
+        opts_row.addWidget(self.pipeline_info, 1)
 
         # --- Start/progress ---
         self.start_btn = QPushButton("▶  Start transcription")
@@ -207,12 +179,42 @@ class TranscribePage(QWidget):
     def apply_hardware_info(self, info: dict):
         """Slot for HardwareInfoController.infoReady (see docstring there -
         avoids the 1-3 minute whisperx/torch import while building the page)."""
-        if self.hw_hint is None:
-            return
-        if "error" in info:
-            self.hw_hint.setText("")
+        self._hw_recommended_model = None if "error" in info else info.get("recommended_model")
+        self._update_pipeline_info()
+
+    def _current_model_id(self) -> str:
+        if self.model_combo is None:
+            return APPLE_SPEECHANALYZER_MODEL
+        model_display = self.model_combo.currentText()
+        return self._model_ids_by_display.get(model_display, model_display)
+
+    def _update_pipeline_info(self):
+        """Compact, always-visible readout of what will actually run for each
+        of the three pipeline phases (transcription -> alignment ->
+        diarization, see CLAUDE.md), instead of exposing individual model
+        names as separate dropdowns. Language is always auto-detected and
+        diarization/speaker-count are always on/auto now - nothing left to
+        configure there, so this label is purely informational."""
+        model = self._current_model_id()
+
+        if model == APPLE_SPEECHANALYZER_MODEL:
+            # No wav2vec2 alignment step on this path - word-level timestamps
+            # already come from SpeechAnalyzer itself, see CLAUDE.md.
+            text = "Transcription: Apple SpeechAnalyzer (Neural Engine)  ·  Diarization: pyannote (MPS)"
+        elif model.startswith(REMOTE_MODEL_PREFIX):
+            text = "Transcription: remote provider  ·  Alignment: wav2vec2 (local)  ·  Diarization: pyannote (local)"
+        elif model.startswith(OPENVINO_MODEL_PREFIX):
+            text = "Transcription: Intel Arc GPU (OpenVINO)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
         else:
-            self.hw_hint.setText(f"⚡ Recommended for local models: {info['reason']}")
+            text = f"Transcription: {model or '…'} (local)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
+
+        if self.model_combo is not None and self._hw_recommended_model and self._hw_recommended_model != model:
+            recommended_display = MODEL_DISPLAY_NAMES.get(
+                self._hw_recommended_model, self._hw_recommended_model)
+            text += f"   ⚡ recommended: {recommended_display}"
+
+        self.pipeline_info.setText(text)
+        self.pipeline_info.setToolTip(text)
 
     def _combo(self, values, default):
         from PySide6.QtWidgets import QComboBox
@@ -255,11 +257,13 @@ class TranscribePage(QWidget):
         elif display_names:
             self.model_combo.setCurrentIndex(0)
         self.model_combo.blockSignals(False)
+        self._update_pipeline_info()
 
     def _wire(self):
         self.browse_btn.clicked.connect(self._browse_file)
         self.start_btn.clicked.connect(self.start_transcription)
-        self.diarize_check.toggled.connect(self._on_diarize_toggled)
+        if self.model_combo is not None:
+            self.model_combo.currentTextChanged.connect(self._update_pipeline_info)
         self.apply_names_btn.clicked.connect(self._apply_speaker_names)
         self.save_btn.clicked.connect(self._save_transcript)
         self.copy_btn.clicked.connect(self._copy_transcript)
@@ -304,14 +308,6 @@ class TranscribePage(QWidget):
         self.status_label.hide()
         self.file_label.setStyleSheet("" if valid else f"color: {theme.TEXT_MUTED};")
 
-    def _on_diarize_toggled(self):
-        enabled = self.diarize_check.isChecked()
-        self.min_spk_edit.setEnabled(enabled)
-        self.max_spk_edit.setEnabled(enabled)
-        color = theme.TEXT if enabled else theme.TEXT_MUTED
-        self.min_spk_label.setStyleSheet(f"color: {color};")
-        self.max_spk_label.setStyleSheet(f"color: {color};")
-
     # --------------------------------------------------------- transcribe
     def start_transcription(self):
         files = self._selected_files
@@ -339,28 +335,23 @@ class TranscribePage(QWidget):
         self.save_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
 
-        lang_code = LANGUAGES.get(self.lang_combo.currentText(), None)
-        if self.model_combo is not None:
-            model_display = self.model_combo.currentText()
-            model = self._model_ids_by_display.get(model_display, model_display)
-        else:
-            model = APPLE_SPEECHANALYZER_MODEL
+        model = self._current_model_id()
         settings = self.window_.settings
         hf_token = settings.get("hf_token") or None
         compute = settings.get("compute", "auto")
         device = compute if compute in ("cuda", "xpu", "mps", "cpu") else None
-
-        min_spk = self._parse_int(self.min_spk_edit.text())
-        max_spk = self._parse_int(self.max_spk_edit.text())
         batch_size = self._parse_int(str(settings.get("batch_size", 16))) or 16
 
+        # Language auto-detect, diarization, and speaker count auto-guessing
+        # are no longer user-configurable here - see _update_pipeline_info()'s
+        # docstring for why.
         common_kwargs = dict(
-            language=lang_code,
+            language=None,
             model_size=model,
-            diarize=self.diarize_check.isChecked(),
+            diarize=True,
             hf_token=hf_token,
-            min_speakers=min_spk,
-            max_speakers=max_spk,
+            min_speakers=None,
+            max_speakers=None,
             batch_size=batch_size,
             device=device,
         )

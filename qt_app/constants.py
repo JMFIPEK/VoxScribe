@@ -31,6 +31,10 @@ APPLE_SPEECHANALYZER_MODEL = "apple:speechanalyzer"
 # transcriber.REMOTE_MODEL_PREFIX (same import-cost reason as above).
 REMOTE_MODEL_PREFIX = "server:"
 
+# Prefix for Intel Arc GPU/NPU models via OpenVINO, e.g. "openvino:GPU:medium".
+# Must match transcriber.OPENVINO_MODEL_PREFIX (same import-cost reason as above).
+OPENVINO_MODEL_PREFIX = "openvino:"
+
 
 def format_time_short(seconds: float) -> str:
     """Formats seconds as MM:SS (or HH:MM:SS for >= 1h)."""
