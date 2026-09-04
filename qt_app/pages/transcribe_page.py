@@ -95,9 +95,18 @@ class TranscribePage(QWidget):
             self.model_combo = self._combo([], "")
             opts_row.addWidget(self.model_combo)
 
+        # Hardware recommendation stays right behind the dropdown (short,
+        # only shown when it actually differs from the current pick);
+        # the full transcription/alignment/diarization chain gets its own row
+        # below since it's usually too long to share a line without truncating.
+        self.recommended_hint = QLabel("")
+        self.recommended_hint.setProperty("role", "hint")
+        opts_row.addWidget(self.recommended_hint)
+        opts_row.addStretch(1)
+
         self.pipeline_info = QLabel("")
         self.pipeline_info.setProperty("role", "hint")
-        opts_row.addWidget(self.pipeline_info, 1)
+        opts_layout.addWidget(self.pipeline_info)
 
         # --- Start/progress ---
         self.start_btn = QPushButton("▶  Start transcription")
@@ -208,13 +217,15 @@ class TranscribePage(QWidget):
         else:
             text = f"Transcription: {model or '…'} (local)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
 
+        self.pipeline_info.setText(text)
+        self.pipeline_info.setToolTip(text)
+
+        recommended_text = ""
         if self.model_combo is not None and self._hw_recommended_model and self._hw_recommended_model != model:
             recommended_display = MODEL_DISPLAY_NAMES.get(
                 self._hw_recommended_model, self._hw_recommended_model)
-            text += f"   ⚡ recommended: {recommended_display}"
-
-        self.pipeline_info.setText(text)
-        self.pipeline_info.setToolTip(text)
+            recommended_text = f"⚡ recommended: {recommended_display}"
+        self.recommended_hint.setText(recommended_text)
 
     def _combo(self, values, default):
         from PySide6.QtWidgets import QComboBox
