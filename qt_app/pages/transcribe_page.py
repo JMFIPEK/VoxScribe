@@ -88,7 +88,10 @@ class TranscribePage(QWidget):
             # No model choice on macOS: Apple's SpeechAnalyzer (Neural
             # Engine) is the only transcription engine there, no Whisper
             # download/inference at all (see transcriber.py::
-            # transcribe_apple() and CLAUDE.md).
+            # transcribe_apple() and CLAUDE.md). Language also isn't
+            # user-facing here: transcribe_apple() runs its own German-vs-
+            # English probe (transcriber.py::detect_apple_language()) instead
+            # of needing a manual picker.
             self.model_combo = None
         else:
             opts_row.addWidget(QLabel("Model:"))
@@ -355,7 +358,9 @@ class TranscribePage(QWidget):
 
         # Language auto-detect, diarization, and speaker count auto-guessing
         # are no longer user-configurable here - see _update_pipeline_info()'s
-        # docstring for why.
+        # docstring for why (macOS: transcriber.detect_apple_language() makes
+        # None a real auto-detect there too, not just a silent English
+        # fallback).
         common_kwargs = dict(
             language=None,
             model_size=model,

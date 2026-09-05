@@ -74,6 +74,13 @@ def main():
     app.setStyle("Fusion")
 
     logo_path = os.path.join(os.path.dirname(__file__), "Logo.png")
+    if os.path.exists(logo_path):
+        # Must be set on the QApplication, not just the window: on macOS the
+        # Dock icon is the app-level icon (Qt forwards this to Cocoa's
+        # NSApp.applicationIconImage) - window.setWindowIcon() below only
+        # affects the title bar/alt-tab icon and left the Dock showing the
+        # generic blank-document icon.
+        app.setWindowIcon(QIcon(logo_path))
     splash = QSplashScreen(_build_splash_pixmap(logo_path))
     splash.showMessage(
         "Loading modules...", Qt.AlignBottom | Qt.AlignHCenter, Qt.white)
