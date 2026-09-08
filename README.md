@@ -61,6 +61,12 @@ After the first model download (~3 GB), everything runs fully offline (except wh
 uv run python gui_qt.py
 ```
 
+**Desktop shortcut (Windows):** double-click `VoxScribe.bat` in the repo folder, or
+run `Create-Desktop-Shortcut.ps1` once (right-click → *Run with PowerShell*) to drop a
+`VoxScribe` icon on your Desktop. The shortcut points back at the repo, so it keeps
+working across updates — re-run the script only if you move the folder. Run `setup.bat`
+once first on a fresh machine.
+
 Three tabs: **Record** (source/device, live level, start/stop), **Transcription** (file picker, language/model/diarization, progress, speaker rename, export), **Settings** (providers, HuggingFace token, recording folder, performance). See [Providers](docs/providers.md) for setting up a transcription endpoint.
 
 ### CLI
