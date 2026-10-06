@@ -42,7 +42,12 @@ uv pip install torch torchaudio torchvision --index-url https://download.pytorch
 (CUDA **or** XPU, never both) - after this command, `torch` no longer runs
 with CUDA. A plain `uv sync`/`uv run` (without `--no-sync`) reverts this back
 to CUDA, since `pyproject.toml` still declares CUDA as the default; the
-automatic check above exists specifically to self-heal that.
+automatic check above exists specifically to self-heal that. To keep that from
+happening on every start, `VoxScribe.bat` launches with `uv run --no-sync` and
+only runs `uv sync` when `uv.lock` changed since the last sync (the copy kept at
+`.venv\.voxscribe-synced-uv.lock`). When starting by hand on an Arc machine, use
+`uv run --no-sync python gui_qt.py`, and run `uv sync` yourself after a
+dependency change.
 
 If an NVIDIA GPU is present, it automatically takes priority (CUDA > Intel
 Arc GPU > Apple MPS > CPU) - this applies to both Whisper transcription and

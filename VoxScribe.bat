@@ -19,8 +19,33 @@ REM Locate uv: the official installer's path first, then anything on PATH
 set "UV=%USERPROFILE%\.local\bin\uv.exe"
 if not exist "%UV%" set "UV=uv"
 
-"%UV%" run python gui_qt.py
+REM Only sync the venv when it's missing or uv.lock changed since the last
+REM successful sync - not on every start. A plain `uv run` re-syncs every
+REM time, which on an Intel Arc machine reverts torch to the CUDA build pinned
+REM in pyproject.toml and makes voxscribe/gpu_setup.py re-download the XPU
+REM build on every launch. The stamp is a copy of the uv.lock last synced.
+set "STAMP=.venv\.voxscribe-synced-uv.lock"
+set "NEED_SYNC=0"
+if not exist ".venv\Scripts\python.exe" set "NEED_SYNC=1"
+if not exist "%STAMP%" set "NEED_SYNC=1"
+if "%NEED_SYNC%"=="0" (
+    fc /b "uv.lock" "%STAMP%" >nul 2>nul || set "NEED_SYNC=1"
+)
+
+if "%NEED_SYNC%"=="1" (
+    echo Dependencies changed - updating the environment...
+    "%UV%" sync
+    if errorlevel 1 (
+        set "RC=1"
+        goto :done
+    )
+    copy /y "uv.lock" "%STAMP%" >nul
+)
+
+"%UV%" run --no-sync python gui_qt.py
 set "RC=%ERRORLEVEL%"
+
+:done
 
 if not "%RC%"=="0" (
     echo.
