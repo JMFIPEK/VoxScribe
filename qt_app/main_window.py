@@ -98,5 +98,5 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         if self.recorder_controller.is_recording:
-            self.recorder_controller.stop()
+            self.recorder_controller.stop(wait=True)
         super().closeEvent(event)

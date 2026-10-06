@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QStyle,
     QWidget,
@@ -113,6 +114,13 @@ class RecordPage(QWidget):
         self.record_btn.setCursor(Qt.PointingHandCursor)
         root.addWidget(self.record_btn)
 
+        # Indeterminate busy bar while the WAV is being saved after stop -
+        # that step scales with the recording length and can take a while.
+        self.saving_bar = QProgressBar()
+        self.saving_bar.setRange(0, 0)
+        self.saving_bar.hide()
+        root.addWidget(self.saving_bar)
+
         self.status_label = QLabel("Ready")
         self.status_label.setProperty("role", "muted")
         self.status_label.setAlignment(Qt.AlignCenter)
@@ -148,6 +156,7 @@ class RecordPage(QWidget):
         rc = self.window_.recorder_controller
         rc.recordingStarted.connect(self._on_recording_started)
         rc.levelUpdated.connect(self._on_level_updated)
+        rc.recordingStopping.connect(self._on_recording_stopping)
         rc.recordingFinished.connect(self._on_recording_finished)
 
     # ----------------------------------------------------------- devices
@@ -217,7 +226,7 @@ class RecordPage(QWidget):
     def _on_recording_started(self):
         self.record_btn.setText("  Stop recording")
         self.record_btn.setIcon(QIcon(theme.get_icons()["stop"]))
-        self.status_label.setText("Recording...")
+        self._set_status("Recording...")
         self.source_combo.setEnabled(False)
         self.device_combo.setEnabled(False)
         self.refresh_btn.setEnabled(False)
@@ -228,8 +237,21 @@ class RecordPage(QWidget):
     def _on_level_updated(self, channel, rms):
         self._current_rms[channel] = rms
 
+    def _on_recording_stopping(self):
+        self._timer.stop()
+        for meter in self._meters.values():
+            meter.reset()
+        self.record_btn.setEnabled(False)
+        self.record_btn.setText("  Saving recording...")
+        self.saving_bar.show()
+        self._set_status(
+            "Saving recording... this can take a moment for long recordings."
+        )
+
     def _on_recording_finished(self, path, duration, error):
         self._timer.stop()
+        self.saving_bar.hide()
+        self.record_btn.setEnabled(True)
         self.record_btn.setText("  Start recording")
         self.record_btn.setIcon(QIcon(theme.get_icons()["record"]))
         self.source_combo.setEnabled(True)
@@ -240,15 +262,22 @@ class RecordPage(QWidget):
             meter.reset()
 
         if error:
-            self.status_label.setText(f"Error: {error}")
+            self._set_status(f"Error: {error}", theme.DANGER)
             return
 
         if path:
-            self.status_label.setText(f"Saved: {path} ({duration:.1f}s)")
+            mins, secs = divmod(int(round(duration or 0)), 60)
+            hours, mins = divmod(mins, 60)
+            length = f"{hours}:{mins:02d}:{secs:02d}" if hours else f"{mins:02d}:{secs:02d}"
+            self._set_status(f"✓ Done — saved: {path} ({length})", theme.SUCCESS)
             self.window_.send_to_transcription(path)
             if self.auto_transcribe_check.isChecked():
                 self.window_.navigate_to("transcribe")
                 self.window_.pages["transcribe"].start_transcription()
+
+    def _set_status(self, text, color=None):
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {color};" if color else "")
 
     def _tick(self):
         if self._start_time is not None:

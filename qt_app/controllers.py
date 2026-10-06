@@ -22,6 +22,7 @@ class RecorderController(QObject):
 
     levelUpdated = Signal(str, float)
     recordingStarted = Signal()
+    recordingStopping = Signal()  # stop requested, WAV is being mixed/saved
     recordingFinished = Signal(object, object, object)  # path, duration, error
 
     def __init__(self, parent=None):
@@ -45,8 +46,17 @@ class RecorderController(QObject):
         )
         self.recordingStarted.emit()
 
-    def stop(self):
-        self._recorder.stop()
+    def stop(self, wait: bool = False):
+        """Requests the recording to stop. After stop, the recorder thread still
+        resamples/mixes and writes the WAV, which takes longer the longer the
+        recording was - recordingFinished fires once that's done. By default
+        AudioRecorder.stop()'s join runs in a helper thread so the GUI stays
+        responsive; `wait=True` blocks instead (used on window close)."""
+        if wait:
+            self._recorder.stop()
+            return
+        self.recordingStopping.emit()
+        threading.Thread(target=self._recorder.stop, daemon=True).start()
 
 
 class TranscribeController(QObject):
