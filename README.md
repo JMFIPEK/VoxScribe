@@ -58,8 +58,13 @@ After the first model download (~3 GB), everything runs fully offline (except wh
 ### GUI
 
 ```bash
-uv run python gui_qt.py
+uv run --no-sync python gui_qt.py
 ```
+
+Use `--no-sync` (or `VoxScribe.bat`, which does this for you): a plain `uv run`
+re-syncs the venv first, which on an Intel Arc machine reverts torch to the
+CUDA build and makes the next start re-install the XPU build. Run `uv sync`
+yourself only after pulling dependency changes.
 
 **Desktop shortcut (Windows):** double-click `VoxScribe.bat` in the repo folder, or
 run `Create-Desktop-Shortcut.ps1` once (right-click → *Run with PowerShell*) to drop a
@@ -72,10 +77,10 @@ Three tabs: **Record** (source/device, live level, start/stop), **Transcription*
 ### CLI
 
 ```bash
-uv run python main.py devices                      # list audio devices
-uv run python main.py record --source mic           # record from microphone
-uv run python main.py transcribe -i audio.wav        # transcribe a file
-uv run python main.py run --source system            # record + transcribe
+uv run --no-sync python main.py devices                      # list audio devices
+uv run --no-sync python main.py record --source mic           # record from microphone
+uv run --no-sync python main.py transcribe -i audio.wav        # transcribe a file
+uv run --no-sync python main.py run --source system            # record + transcribe
 ```
 
 Full option reference: [docs/cli-reference.md](docs/cli-reference.md).

@@ -14,6 +14,14 @@ In the GUI, go to **Settings → Providers → Add...** and fill in:
 - **API key** - sent as a Bearer token
 - **Model** - the model name to request (e.g. `whisper-large-v3`)
 
+The **Preset** dropdown at the top pre-fills name, base URL and model for
+known endpoints (currently [OpenRouter](https://openrouter.ai), with
+`openai/whisper-large-v3`) - you only add your API key. Prefer Whisper models
+on OpenRouter: VoxScribe requests `response_format=verbose_json` for segment
+timestamps, which OpenRouter only returns for Whisper on OpenAI-compatible
+upstreams. Other models still work, but each ~180 s upload chunk then comes
+back as a single segment, which makes alignment and diarization less precise.
+
 Mark one provider as the default with **Set as default**. The default
 provider is what `transcriber.default_model_size()` returns when nothing else
 is explicitly chosen - see the [main README](../README.md) for the exact

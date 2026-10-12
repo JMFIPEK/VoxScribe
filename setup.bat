@@ -74,7 +74,7 @@ echo.
 echo Next steps:
 echo   1. Create a .env file and add HF_TOKEN
 echo   2. Download models: uv run python download_models.py
-echo   3. Start the GUI: uv run python gui_qt.py
+echo   3. Start the GUI: double-click VoxScribe.bat  (or: uv run --no-sync python gui_qt.py)
 echo.
 echo Or activate the virtual environment and run commands directly:
 echo   call .venv\Scripts\activate

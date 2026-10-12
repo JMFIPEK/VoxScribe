@@ -48,6 +48,18 @@ class ProviderDialog(QDialog):
 
         form = QFormLayout(self)
 
+        # Presets only pre-fill the fields below, so they're only offered
+        # when adding - editing an existing provider keeps its values.
+        if provider is None:
+            from voxscribe.providers import PROVIDER_PRESETS
+            self._presets = PROVIDER_PRESETS
+            self.preset_combo = QComboBox()
+            self.preset_combo.addItem("Custom")
+            for preset in PROVIDER_PRESETS:
+                self.preset_combo.addItem(preset["name"])
+            self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+            form.addRow("Preset:", self.preset_combo)
+
         self.name_entry = QLineEdit(provider["name"] if provider else "")
         self.name_entry.setPlaceholderText("e.g. My Whisper Server")
         form.addRow("Name:", self.name_entry)
@@ -90,6 +102,15 @@ class ProviderDialog(QDialog):
 
         self.test_btn.clicked.connect(self._on_test)
         self._test_finished.connect(self._on_test_finished)
+
+    def _on_preset_changed(self, index: int):
+        if index <= 0:
+            return  # "Custom" - leave whatever the user typed
+        preset = self._presets[index - 1]
+        self.name_entry.setText(preset["name"])
+        self.base_url_entry.setText(preset["base_url"])
+        self.model_entry.setText(preset["model"])
+        self.api_key_entry.setFocus()
 
     def _on_test(self):
         base_url = self.base_url_entry.text().strip()

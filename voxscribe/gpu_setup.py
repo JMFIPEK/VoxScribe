@@ -130,10 +130,16 @@ def ensure_correct_torch_backend(on_status=print) -> None:
         f"instead of '{desired}' - setting up GPU acceleration (one-time "
         "download, can take a few minutes)..."
     )
+    # Reinstall only the torch packages themselves, not every dependency: a
+    # blanket --reinstall also re-resolved filelock/fsspec/setuptools/numpy/...
+    # from the PyTorch index into versions that differ from uv.lock, so any
+    # later `uv sync`/`uv run` had even more to revert.
+    reinstall_args = [arg for pkg in _TORCH_PACKAGES
+                      for arg in ("--reinstall-package", pkg)]
     try:
         result = subprocess.run(
             [uv, "pip", "install", *_TORCH_PACKAGES,
-             "--index-url", index, "--reinstall"],
+             "--index-url", index, *reinstall_args],
             timeout=1800,
         )
     except Exception as e:

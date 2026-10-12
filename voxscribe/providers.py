@@ -28,6 +28,19 @@ _LEGACY_DEFAULT_BASE_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
 _LEGACY_DEFAULT_MODEL = "kit.whisper-large-v3"
 _LEGACY_NAME = "KIT ToolBox"
 
+# Known endpoints offered as presets in the "Add Provider" dialog - they only
+# pre-fill name/base URL/model, the user still enters their own API key.
+# OpenRouter: whisper-large-v3 because transcribe_remote() needs segment
+# timestamps from response_format=verbose_json, which OpenRouter only returns
+# for Whisper models on OpenAI-compatible upstreams (OpenAI/Groq/Together).
+PROVIDER_PRESETS = [
+    {
+        "name": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "openai/whisper-large-v3",
+    },
+]
+
 
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
