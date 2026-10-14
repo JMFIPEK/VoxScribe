@@ -24,6 +24,7 @@ dependencies = [
     # Windows-only: this project's other platforms (macOS/Linux) don't target
     # Intel Arc hardware - macOS uses Apple's SpeechAnalyzer instead.
     "optimum-intel[openvino]>=2.1; sys_platform == 'win32'",
+    "onnx-asr[hub]>=0.12",
 ]
 
 [project.scripts]

@@ -67,6 +67,8 @@ def get_hidden_imports():
         "optimum.intel",
         "optimum.intel.openvino",
         "openvino",
+        # Parakeet backend (transcriber.transcribe_parakeet()) - also imported lazily.
+        "onnx_asr",
     ]
 
 
@@ -145,6 +147,9 @@ def build():
         # guarded import) so this doesn't break the build on non-Windows.
         "--collect-all=openvino",
         "--collect-all=optimum",
+        # onnx_asr ships its feature-extraction/resampling preprocessors as
+        # .onnx data files inside the package.
+        "--collect-all=onnx_asr",
         os.path.join(BASE_DIR, "gui_qt.py"),
     ]
 

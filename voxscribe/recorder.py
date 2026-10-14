@@ -15,11 +15,15 @@ experimental macOS).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import wave
 import threading
+import time
 import numpy as np
+
+from voxscribe.tracks import save_tracks
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -79,10 +83,17 @@ def _is_generic_input_alias(name: str) -> bool:
     return any(alias in normalized for alias in _GENERIC_INPUT_ALIASES)
 
 
+_MME_NAME_LIMIT = 31  # MME cuts device names to 31 characters
+
+
 def _looks_like_truncated_alias(candidate: str, existing: str) -> bool:
-    if len(candidate) >= 36:
+    if len(candidate) >= 36 or not existing.startswith(candidate):
         return False
-    return existing.startswith(candidate) and len(existing) > len(candidate) + 6
+    # Exactly at MME's limit, any longer name with the same prefix is the
+    # same device (e.g. "Kopfhörermikrofon (2- Jabra Lin" vs. "... Link 390)").
+    if len(candidate) == _MME_NAME_LIMIT:
+        return len(existing) > len(candidate)
+    return len(existing) > len(candidate) + 6
 
 
 def _dedupe_audio_devices(devices: list[dict]) -> list[dict]:
@@ -111,6 +122,42 @@ def _dedupe_audio_devices(devices: list[dict]) -> list[dict]:
         result.append(device)
 
     return sorted(result, key=lambda d: (not d.get("is_default"), d["name"].casefold()))
+
+
+def _physical_device_key(name: str) -> str:
+    """'Mikrofon (Razer BlackShark V2 Pro 2.4)' and
+    'Lautsprecher (Razer BlackShark V2 Pro 2.4) [Loopback]' -> 'razer blackshark v2 pro 2.4'.
+
+    Windows names a headset's input and output endpoints "<role> (<device>)";
+    the part in parentheses identifies the physical device (minus the
+    "2- " instance prefix Windows adds for repeated devices)."""
+    name = name.replace("[Loopback]", "").strip()
+    start, end = name.rfind("("), name.rfind(")")
+    inner = name[start + 1:end] if 0 <= start < end else name
+    inner = re.sub(r"^\d+-\s*", "", inner.strip())
+    return _normalize_device_name(inner)
+
+
+def suggest_mic_for_loopback(microphones: list[dict], loopback_name: str | None) -> dict | None:
+    """For "microphone + system" recording: the microphone belonging to the
+    same physical device as the system-audio output (e.g. a headset's own
+    mic), or None if there's no such match.
+
+    Windows' default *recording* device is independent of its default
+    *playback* device - with two headsets connected it's easy to listen on
+    one while the other one's (unworn) mic is the default input, which then
+    records only silence for your own voice."""
+    if not loopback_name:
+        return None
+    key = _physical_device_key(loopback_name)
+    if not key:
+        return None
+    for mic in microphones:
+        mic_key = _physical_device_key(mic["name"])
+        # MME truncates names to 31 chars, hence prefix matching.
+        if mic_key and (mic_key == key or (len(mic_key) >= 8 and key.startswith(mic_key))):
+            return mic
+    return None
 
 
 def _chunk_size_for_rate(sample_rate: int) -> int:
@@ -207,9 +254,18 @@ def get_devices():
     p = pyaudio.PyAudio()
     microphones = []
     loopback = []
-    default_input_index = None
+    # PortAudio's own default input is the MME alias, which deduplication
+    # below drops in favor of the WASAPI entry of the same device - so mark
+    # the WASAPI default input as default too, or the flag gets lost.
+    default_input_indices = set()
     try:
-        default_input_index = int(p.get_default_input_device_info()["index"])
+        default_input_indices.add(int(p.get_default_input_device_info()["index"]))
+    except OSError:
+        pass
+    try:
+        wasapi = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+        if wasapi.get("defaultInputDevice", -1) >= 0:
+            default_input_indices.add(int(wasapi["defaultInputDevice"]))
     except OSError:
         pass
 
@@ -222,7 +278,7 @@ def get_devices():
                 "host_api": _host_api_name(p, info),
                 "channels": info["maxInputChannels"],
                 "sample_rate": int(info["defaultSampleRate"]),
-                "is_default": i == default_input_index,
+                "is_default": i in default_input_indices,
             })
 
     try:
@@ -670,6 +726,7 @@ class AudioRecorder:
         self._sample_rate = OUT_RATE
         self._frames = [mixed.tobytes()]
         _save_wav(self._output_path, self._frames, 1, OUT_RATE)
+        _save_tracks_quietly(self._output_path, mic_audio, sys_audio)
 
         duration = len(mixed) / OUT_RATE
         if self._on_done:
@@ -780,7 +837,8 @@ class AudioRecorder:
                 input=True, input_device_index=sys_idx,
                 frames_per_buffer=sys_chunk)
 
-            def read_loop(stream, frames, chunk_size, level_channel):
+            def read_loop(stream, frames, chunk_size, level_channel,
+                          rate=0, channels=1, fill_gaps=False):
                 # WASAPI loopback streams deliver no packets while nothing is
                 # playing on the system - a blocking read() can therefore
                 # hang indefinitely. If you stop and close the stream from
@@ -789,6 +847,18 @@ class AudioRecorder:
                 # output). So poll via get_read_available() and only call
                 # read() once enough data is actually available - this keeps
                 # the loop responsive to stop_event at all times.
+                #
+                # The same "no packets during silence" behavior also means
+                # the loopback track would simply skip every silent stretch,
+                # running ahead of the (continuously delivered) microphone
+                # track and desyncing the mix. With fill_gaps, the missing
+                # time is padded with digital silence based on wall-clock
+                # time, keeping a guard so samples merely still in the
+                # driver's buffer aren't double-counted.
+                started = time.monotonic()
+                received = 0  # samples per channel, real + padded
+                guard = int(0.25 * rate)
+                silence_chunk = bytes(chunk_size * channels * SAMPLE_WIDTH)
                 while not self._stop_event.is_set():
                     try:
                         available = stream.get_read_available()
@@ -798,6 +868,11 @@ class AudioRecorder:
                         break
 
                     if available < chunk_size:
+                        if fill_gaps:
+                            expected = int((time.monotonic() - started) * rate)
+                            while expected - received - guard >= chunk_size:
+                                frames.append(silence_chunk)
+                                received += chunk_size
                         self._stop_event.wait(0.02)
                         continue
 
@@ -809,6 +884,7 @@ class AudioRecorder:
                         break
 
                     frames.append(data)
+                    received += chunk_size
                     if self._on_level:
                         self._on_level(level_channel, compute_rms(data))
 
@@ -816,7 +892,8 @@ class AudioRecorder:
                 target=read_loop, args=(mic_stream, mic_frames, mic_chunk, "mic"),
                 daemon=True)
             sys_thread = threading.Thread(
-                target=read_loop, args=(sys_stream, sys_frames, sys_chunk, "system"),
+                target=read_loop,
+                args=(sys_stream, sys_frames, sys_chunk, "system", sys_rate, sys_ch, True),
                 daemon=True)
             mic_thread.start()
             sys_thread.start()
@@ -874,10 +951,22 @@ class AudioRecorder:
         self._sample_rate = OUT_RATE
         self._frames = [mixed.tobytes()]
         _save_wav(self._output_path, self._frames, 1, OUT_RATE)
+        _save_tracks_quietly(self._output_path, mic_audio, sys_audio)
 
         duration = len(mixed) / OUT_RATE
         if self._on_done:
             self._on_done(self._output_path, duration, None)
+
+
+def _save_tracks_quietly(output_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray):
+    """Saves the separate mic/system tracks next to the mix (see
+    voxscribe/tracks.py). Never fails the recording itself - the mix is
+    already saved and fully usable without the sidecar."""
+    try:
+        path = save_tracks(output_path, mic_audio, sys_audio)
+        print(f"Saved: {path} (separate microphone/system tracks)")
+    except Exception as e:
+        print(f"[WARNING] Could not save separate tracks: {e}")
 
 
 def list_devices():

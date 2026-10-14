@@ -120,11 +120,11 @@ class HardwareInfoController(QObject):
     def _run(self):
         try:
             from voxscribe.hardware_detect import recommend_model, get_hardware_summary
-            from voxscribe.transcriber import _get_bundled_models_dir
+            from voxscribe.paths import get_bundled_models_dir
 
             hw_summary = get_hardware_summary()
             recommended_model, _device, reason = recommend_model()
-            bundled = _get_bundled_models_dir()
+            bundled = get_bundled_models_dir()
             diarize_bundled = bool(bundled and os.path.isdir(os.path.join(bundled, "diarize")))
             info = {
                 "hw_summary": hw_summary,
@@ -135,6 +135,16 @@ class HardwareInfoController(QObject):
         except Exception as e:  # noqa: BLE001 - pages show an error text then
             info = {"error": str(e)}
         self.infoReady.emit(info)
+
+        # Then, still in this idle background thread, import the heavy
+        # transcription stack ahead of time - otherwise the first
+        # transcription pays it (tens of seconds on a cold start), see
+        # transcriber.prewarm_diarization(). Purely an optimization.
+        try:
+            from voxscribe import transcriber
+            transcriber.prewarm_diarization()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def make_recording_output_path(out_dir: str) -> str:

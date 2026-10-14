@@ -13,6 +13,7 @@ MODEL_DISPLAY_NAMES = {
     "medium": "medium",
     "base": "base",
     "openvino:GPU:medium": "medium (Intel Arc GPU)",
+    "parakeet:tdt-0.6b-v3": "Parakeet v3 (fast, CPU)",
 }
 MODEL_IDS_BY_DISPLAY = {v: k for k, v in MODEL_DISPLAY_NAMES.items()}
 MODELS = list(MODEL_DISPLAY_NAMES.values())
@@ -34,6 +35,10 @@ REMOTE_MODEL_PREFIX = "server:"
 # Prefix for Intel Arc GPU/NPU models via OpenVINO, e.g. "openvino:GPU:medium".
 # Must match transcriber.OPENVINO_MODEL_PREFIX (same import-cost reason as above).
 OPENVINO_MODEL_PREFIX = "openvino:"
+
+# Prefix for NVIDIA Parakeet models via onnx-asr, e.g. "parakeet:tdt-0.6b-v3".
+# Must match transcriber.PARAKEET_MODEL_PREFIX (same import-cost reason as above).
+PARAKEET_MODEL_PREFIX = "parakeet:"
 
 
 def format_time_short(seconds: float) -> str:

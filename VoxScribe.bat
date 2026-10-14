@@ -32,9 +32,17 @@ if "%NEED_SYNC%"=="0" (
     fc /b "uv.lock" "%STAMP%" >nul 2>nul || set "NEED_SYNC=1"
 )
 
+REM If voxscribe/gpu_setup.py has already switched torch to the Intel Arc
+REM (XPU) build, keep it: a plain sync would swap it back to the CUDA build
+REM from uv.lock, and gpu_setup would then swap it to XPU again right after -
+REM two multi-GB reinstalls for nothing. --inexact keeps the XPU-only extras
+REM (triton-xpu, ...) that aren't in uv.lock.
+set "SYNC_ARGS="
+dir /b /ad ".venv\Lib\site-packages\torch-*+xpu.dist-info" >nul 2>nul && set "SYNC_ARGS=--inexact --no-install-package torch --no-install-package torchaudio --no-install-package torchvision"
+
 if "%NEED_SYNC%"=="1" (
     echo Dependencies changed - updating the environment...
-    "%UV%" sync
+    "%UV%" sync %SYNC_ARGS%
     if errorlevel 1 (
         set "RC=1"
         goto :done

@@ -177,6 +177,28 @@ def export_openvino_model(whisper_size: str = "medium"):
     return dest
 
 
+def download_parakeet_model(variant: str = "tdt-0.6b-v3"):
+    """Downloads NVIDIA Parakeet (INT8 ONNX) plus the Silero VAD it needs for
+    long audio (see transcriber.transcribe_parakeet()). onnx-asr downloads
+    into a given directory when it doesn't exist yet and loads offline from
+    it once it does - exactly the layout transcriber._parakeet_local_dirs()
+    expects."""
+    import onnx_asr
+
+    base = os.path.join(MODELS_DIR, "parakeet")
+    model_dir = os.path.join(base, variant)
+    vad_dir = os.path.join(base, "silero-vad")
+    if os.path.isdir(model_dir) and os.path.isdir(vad_dir):
+        print(f"  [OK] Parakeet {variant} already present")
+        return model_dir
+
+    print(f"  Downloading Parakeet {variant} (INT8, ~650 MB) + Silero VAD...")
+    onnx_asr.load_model(f"nemo-parakeet-{variant}", model_dir, quantization="int8")
+    onnx_asr.load_vad("silero", vad_dir)
+    print(f"  [OK] Parakeet {variant} -> {model_dir}")
+    return model_dir
+
+
 def main():
     print("=" * 60)
     print("  VoxScribe — Downloading models")
@@ -185,20 +207,24 @@ def main():
 
     os.makedirs(MODELS_DIR, exist_ok=True)
 
-    print("[1/4] Whisper model (medium)...")
+    print("[1/5] Whisper model (medium)...")
     download_whisper_model("medium")
     print()
 
-    print("[2/4] Alignment models (DE + EN)...")
+    print("[2/5] Alignment models (DE + EN)...")
     download_align_models()
     print()
 
-    print("[3/4] Diarization model (pyannote)...")
+    print("[3/5] Diarization model (pyannote)...")
     download_diarization_model()
     print()
 
-    print("[4/4] OpenVINO model for Intel Arc GPU/NPU (medium)...")
+    print("[4/5] OpenVINO model for Intel Arc GPU/NPU (medium)...")
     export_openvino_model("medium")
+    print()
+
+    print("[5/5] Parakeet v3 (fast CPU transcription)...")
+    download_parakeet_model()
     print()
 
     print("=" * 60)

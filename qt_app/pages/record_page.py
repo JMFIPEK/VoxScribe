@@ -24,6 +24,12 @@ from qt_app.widgets.level_meter import LevelMeter
 
 CHANNEL_LABELS = {"mic": "Microphone", "system": "System"}
 
+# int16 RMS (see recorder.compute_rms()). Measured: an unworn/unused headset
+# mic delivers 0-0.5, a live laptop mic array in a quiet room ~3-5, speech
+# hundreds to thousands.
+_MIC_SILENCE_RMS = 2.0
+_MIC_SILENCE_WARN_SECONDS = 8
+
 
 class RecordPage(QWidget):
     def __init__(self, window):
@@ -82,6 +88,14 @@ class RecordPage(QWidget):
         self.refresh_btn.setToolTip("Refresh devices")
         self.refresh_btn.setFixedWidth(36)
         device_row.addWidget(self.refresh_btn)
+        # "Microphone + system": the system side always records the Windows
+        # default playback device - shown here so a mic/output mismatch
+        # (e.g. two headsets connected) is visible before recording.
+        self.system_device_hint = QLabel("")
+        self.system_device_hint.setProperty("role", "hint")
+        self.system_device_hint.setWordWrap(True)
+        self.system_device_hint.hide()
+        device_layout.addWidget(self.system_device_hint)
 
         # --- Level + timer ---
         meter_card, meter_layout = card("LEVEL")
@@ -196,7 +210,29 @@ class RecordPage(QWidget):
             else:
                 self.device_combo.addItem("No device found")
 
+        self.system_device_hint.hide()
+        if value == "Microphone + system" and sys.platform == "win32":
+            loopback_name = self._default_loopback_name()
+            if loopback_name:
+                from voxscribe.recorder import suggest_mic_for_loopback
+                match = suggest_mic_for_loopback(self._all_devices.get("microphones", []), loopback_name)
+                if match is not None:
+                    for label, index in self._device_map.items():
+                        if index == match["index"]:
+                            self.device_combo.setCurrentText(label)
+                            break
+                self.system_device_hint.setText(
+                    f"System audio is recorded from: {loopback_name.replace(' [Loopback]', '')}")
+                self.system_device_hint.show()
+
         self._apply_channel_visibility()
+
+    def _default_loopback_name(self):
+        default_index = self._all_devices.get("default_loopback")
+        for d in self._all_devices.get("loopback", []):
+            if d["index"] == default_index:
+                return d["name"]
+        return None
 
     def _apply_channel_visibility(self):
         value = self.source_combo.currentText()
@@ -232,10 +268,33 @@ class RecordPage(QWidget):
         self.refresh_btn.setEnabled(False)
         self._start_time = time.monotonic()
         self._current_rms = {"mic": 0.0, "system": 0.0}
+        self._mic_peak = 0.0
+        self._mic_warning_shown = False
+        self._recording_mic_name = self.device_combo.currentText()
+        self._recording_has_mic = self.source_combo.currentText() in ("Microphone", "Microphone + system")
         self._timer.start()
 
     def _on_level_updated(self, channel, rms):
         self._current_rms[channel] = rms
+        if channel == "mic":
+            self._mic_peak = max(self._mic_peak, rms)
+
+    def _check_mic_signal(self, elapsed):
+        """Warns if the selected microphone has delivered (near-)digital
+        silence so far - typically the wrong device (an unworn second
+        headset) or a hardware-muted mic. A live but quiet mic in a silent
+        room still shows a noise floor well above this threshold."""
+        if not self._recording_has_mic:
+            return
+        silent = self._mic_peak < _MIC_SILENCE_RMS
+        if silent and elapsed >= _MIC_SILENCE_WARN_SECONDS and not self._mic_warning_shown:
+            self._mic_warning_shown = True
+            self._set_status(
+                f"⚠ No signal from microphone \"{self._recording_mic_name}\" so far - "
+                "wrong device selected, or muted?", theme.DANGER)
+        elif not silent and self._mic_warning_shown:
+            self._mic_warning_shown = False
+            self._set_status("Recording...")
 
     def _on_recording_stopping(self):
         self._timer.stop()
@@ -284,6 +343,7 @@ class RecordPage(QWidget):
             elapsed = time.monotonic() - self._start_time
             mins, secs = divmod(int(elapsed), 60)
             self.timer_label.setText(f"{mins:02d}:{secs:02d}")
+            self._check_mic_signal(elapsed)
         for channel, meter in self._meters.items():
             level = min(self._current_rms.get(channel, 0.0) / 15000, 1.0)
             meter.set_level(level)

@@ -131,9 +131,10 @@ def main():
     if os.path.exists(logo_path):
         window.setWindowIcon(QIcon(logo_path))
 
-    splash.finish(window)
-
+    # show() before finish(): finish() waits for the window to be exposed,
+    # and with the window not shown yet it ran into its ~1s timeout instead.
     window.show()
+    splash.finish(window)
     sys.exit(app.exec())
 
 

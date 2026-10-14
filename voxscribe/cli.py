@@ -167,7 +167,8 @@ def main():
     sub_transcribe.add_argument(
         "--model", "-m", default=None,
         help=("Whisper model (large-v2, large-v3, medium, base), OpenVINO model "
-              "(openvino:GPU:medium, Intel Arc GPU), a configured provider "
+              "(openvino:GPU:medium, Intel Arc GPU), Parakeet "
+              "(parakeet:tdt-0.6b-v3, fast on CPU), a configured provider "
               "(server:<provider-id>, see voxscribe/providers.py/Settings), or "
               "apple:speechanalyzer. Default: your configured default provider, "
               "if any - falls back automatically to the recommended local "

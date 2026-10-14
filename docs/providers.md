@@ -19,8 +19,13 @@ known endpoints (currently [OpenRouter](https://openrouter.ai), with
 `openai/whisper-large-v3`) - you only add your API key. Prefer Whisper models
 on OpenRouter: VoxScribe requests `response_format=verbose_json` for segment
 timestamps, which OpenRouter only returns for Whisper on OpenAI-compatible
-upstreams. Other models still work, but each ~180 s upload chunk then comes
-back as a single segment, which makes alignment and diarization less precise.
+upstreams. Other models still work: VoxScribe detects text-only responses on
+the first request and then sends 30 s chunks instead of ~180 s ones (cut at
+the quietest moment near each boundary), so local alignment only has to place
+words within a short window. If the server also reports no language (the KIT
+Toolbox returns only `{"text": ...}` regardless of `response_format`), it's
+guessed from the returned text, so alignment uses the right language model.
+Timestamps are still slightly less precise than with real server segments.
 
 Mark one provider as the default with **Set as default**. The default
 provider is what `transcriber.default_model_size()` returns when nothing else

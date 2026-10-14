@@ -13,8 +13,14 @@ import numpy as np
 import soundfile as sf
 import torch
 import whisperx
-from whisperx.diarize import DiarizationPipeline
 from whisperx.utils import LANGUAGES as _WHISPER_LANGUAGE_NAMES
+
+from voxscribe.paths import get_base_dir, get_bundled_models_dir
+
+# whisperx.diarize (pyannote.audio + lightning) is imported lazily inside
+# transcribe()'s diarization step and via prewarm_diarization(): it's ~80%
+# of this module's import time (~11s warm, far more on a cold start), and
+# the GUI imports this module long before any diarization happens.
 
 # Must be set before the first MPS op: pyannote/wav2vec2 use a few ops that
 # aren't (yet) implemented for Apple's MPS backend - without the fallback
@@ -40,23 +46,44 @@ def _normalize_language_code(raw: str | None, fallback: str | None = None) -> st
     return _LANGUAGE_NAME_TO_CODE.get(raw, fallback)
 
 
-def _get_base_dir() -> str:
-    """Returns the application's base directory (PyInstaller-compatible)."""
-    if getattr(sys, "frozen", False):
-        # PyInstaller --onedir: the exe lives in dist/VoxScribe/
-        return os.path.dirname(sys.executable)
-    # Non-frozen: this file lives in voxscribe/, the project root (where
-    # bundled_models/ and macos/ actually live) is one level up.
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Very common function words per language - enough to tell the GUI's
+# languages (see qt_app/constants.py LANGUAGES) apart reliably from a few
+# sentences of transcribed text. Used where the transcription backend
+# returns no language of its own (text-only providers, Parakeet), since the
+# alignment step needs the correct language-specific wav2vec2 model.
+_STOPWORDS = {
+    "de": {"der", "die", "das", "und", "ist", "nicht", "ich", "wir", "es", "ein", "eine",
+           "zu", "mit", "auf", "für", "auch", "dass", "sie", "den", "dem", "von", "haben",
+           "aber", "noch", "jetzt", "also", "oder", "wenn", "schon", "mal", "kann", "sind"},
+    "en": {"the", "and", "is", "not", "we", "it", "a", "to", "of", "that", "you", "this",
+           "for", "with", "on", "have", "are", "be", "but", "so", "what", "if", "can",
+           "there", "they", "do", "was", "would", "just", "or", "will", "at"},
+    "fr": {"le", "la", "les", "et", "est", "pas", "je", "nous", "un", "une", "des", "que",
+           "pour", "avec", "sur", "dans", "ce", "qui", "mais", "vous", "il", "elle", "du"},
+    "es": {"el", "la", "los", "las", "y", "es", "no", "yo", "un", "una", "que", "de",
+           "para", "con", "en", "por", "pero", "lo", "se", "del", "como", "está", "muy"},
+    "it": {"il", "la", "le", "e", "è", "non", "io", "noi", "un", "una", "che", "di",
+           "per", "con", "su", "ma", "sono", "gli", "della", "anche", "questo", "molto"},
+}
+_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 
-def _get_bundled_models_dir() -> str | None:
-    """Returns the path to the bundled_models folder, if present."""
-    base = _get_base_dir()
-    models_dir = os.path.join(base, "bundled_models")
-    if os.path.isdir(models_dir):
-        return models_dir
-    return None
+def _guess_language_from_text(text: str) -> str | None:
+    """Best-guess ISO-639-1 code from transcribed text, or None if there's
+    too little evidence (short/empty text, or no clear winner)."""
+    words = _WORD_RE.findall((text or "").lower())
+    if len(words) < 8:
+        return None
+    scores = {lang: sum(1 for w in words if w in sw) for lang, sw in _STOPWORDS.items()}
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    (best, best_score), (_, second_score) = ranked[0], ranked[1]
+    if best_score < 3 or best_score < 1.5 * second_score:
+        return None
+    return best
+
+
+_get_base_dir = get_base_dir
+_get_bundled_models_dir = get_bundled_models_dir
 
 
 def load_audio_without_ffmpeg(audio_path: str) -> np.ndarray:
@@ -251,20 +278,115 @@ def transcribe_openvino(
     return {"segments": segments, "language": detected_language or "en"}
 
 
+PARAKEET_MODEL_PREFIX = "parakeet:"
+PARAKEET_MODEL = "parakeet:tdt-0.6b-v3"
+_PARAKEET_ONNX_ASR_NAMES = {"tdt-0.6b-v3": "nemo-parakeet-tdt-0.6b-v3"}
+
+
+def is_parakeet_model(model_size: str) -> bool:
+    """Checks whether transcription should run via NVIDIA Parakeet (onnx-asr)."""
+    return model_size.startswith(PARAKEET_MODEL_PREFIX)
+
+
+def _parakeet_local_dirs(variant: str) -> tuple[str | None, str | None]:
+    """Bundled model/VAD dirs (see download_models.py), or (None, None) to use
+    the HuggingFace cache instead."""
+    bundled = _get_bundled_models_dir()
+    if not bundled:
+        return None, None
+    model_dir = os.path.join(bundled, "parakeet", variant)
+    vad_dir = os.path.join(bundled, "parakeet", "silero-vad")
+    return (model_dir if os.path.isdir(model_dir) else None,
+            vad_dir if os.path.isdir(vad_dir) else None)
+
+
+def transcribe_parakeet(audio: np.ndarray, language: str | None, model_size: str,
+                        on_progress=None) -> dict:
+    """Transcribes via NVIDIA Parakeet TDT 0.6B v3 (25 European languages,
+    including German/English) through `onnx-asr` on ONNX Runtime (CPU).
+
+    Roughly 8-10x realtime on a laptop CPU (measured on a Core Ultra 7 258V),
+    i.e. several times faster than Whisper int8 on the same CPU, at
+    comparable accuracy. Parakeet only accepts ~20-30s of audio at once, so
+    long recordings are cut into speech segments by Silero VAD first (also
+    via onnx-asr); those segments become the WhisperX-style segments that the
+    regular alignment/diarization steps then process unchanged.
+
+    Parakeet detects the language internally but doesn't report it, so it's
+    guessed from the text (_guess_language_from_text()) unless given.
+    """
+    import onnx_asr
+
+    variant = model_size[len(PARAKEET_MODEL_PREFIX):]
+    name = _PARAKEET_ONNX_ASR_NAMES.get(variant)
+    if name is None:
+        raise ValueError(f"Unknown Parakeet model: {model_size}")
+    model_dir, vad_dir = _parakeet_local_dirs(variant)
+
+    model = onnx_asr.load_model(name, model_dir, quantization="int8")
+    vad = onnx_asr.load_vad("silero", vad_dir)
+    # min_silence_duration_ms: merge speech separated by short pauses into
+    # longer segments - Parakeet is noticeably more accurate with a full
+    # sentence of context than with the VAD's default ~100ms fragments.
+    asr = model.with_vad(vad, batch_size=4, max_speech_duration_s=25,
+                         min_silence_duration_ms=800)
+
+    duration = len(audio) / SAMPLE_RATE
+    segments = []
+    for seg in asr.recognize(audio, sample_rate=SAMPLE_RATE):
+        text = (seg.text or "").strip()
+        if text:
+            segments.append({"start": float(seg.start), "end": float(seg.end), "text": text})
+        if on_progress and duration > 0:
+            on_progress(min(seg.end / duration, 1.0))
+
+    detected = language or _guess_language_from_text(" ".join(s["text"] for s in segments))
+    del model, vad, asr
+    return {"segments": segments, "language": detected or "en"}
+
+
 class _PayloadTooLarge(Exception):
     """Internal marker: the server rejected the upload with 413."""
 
 
 REMOTE_CHUNK_SECONDS = 180.0
 REMOTE_MIN_CHUNK_SECONDS = 5.0
+# Chunk length for providers that ignore response_format=verbose_json and
+# only return plain text (observed with the KIT Toolbox, 2026-10): every
+# chunk then becomes one single segment, and all timestamps/speaker turns
+# depend on wav2vec2 alignment inside it - which degrades badly over
+# minutes-long segments. Short chunks keep that error bounded. Also used as
+# the size of the very first request, which doubles as the capability probe
+# (see transcribe_remote()).
+REMOTE_TEXT_ONLY_CHUNK_SECONDS = 30.0
+# Chunk boundaries are moved back to the quietest moment within this window
+# before the nominal cut, so no word gets cut in half.
+_REMOTE_SPLIT_SEARCH_SECONDS = 4.0
+
+
+def _find_quiet_split(audio: np.ndarray, start: int, nominal_end: int) -> int:
+    """Returns a cut position <= nominal_end at the quietest 100ms frame within
+    the last _REMOTE_SPLIT_SEARCH_SECONDS before nominal_end."""
+    if nominal_end >= len(audio):
+        return len(audio)
+    hop = SAMPLE_RATE // 10
+    search_start = max(start + hop, nominal_end - int(_REMOTE_SPLIT_SEARCH_SECONDS * SAMPLE_RATE))
+    n = (nominal_end - search_start) // hop
+    if n <= 0:
+        return nominal_end
+    window = audio[search_start:search_start + n * hop].reshape(n, hop)
+    quietest = int(np.argmin(np.mean(window ** 2, axis=1)))
+    return search_start + quietest * hop + hop // 2
 
 
 def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
                        api_key: str, base_url: str, timeout: float = 1800.0
-                       ) -> tuple[list[dict], str | None]:
+                       ) -> tuple[list[dict], str | None, bool]:
     """Sends a single audio chunk to the server.
 
-    Returns (segments, raw_language_from_response).
+    Returns (segments, raw_language_from_response, server_returned_segments).
+    The last flag is False for text-only responses, where the chunk's whole
+    text was turned into one single segment here.
 
     `timeout` is deliberately a parameter rather than a fixed value: normal
     file transcription can happily wait a long time for long recordings
@@ -295,21 +417,22 @@ def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
     payload = resp.json()
 
     segments = []
-    for seg in payload.get("segments", []):
+    for seg in payload.get("segments") or []:
         segments.append({
             "start": seg.get("start", 0.0),
             "end": seg.get("end", 0.0),
             "text": seg.get("text", ""),
         })
-    if not segments and payload.get("text"):
+    has_segments = bool(segments)
+    if not segments and (payload.get("text") or "").strip():
         duration = len(chunk) / SAMPLE_RATE
         segments = [{"start": 0.0, "end": duration, "text": payload["text"]}]
-    return segments, payload.get("language")
+    return segments, payload.get("language"), has_segments
 
 
 def _transcribe_chunk_with_backoff(chunk: np.ndarray, language: str | None, model_name: str,
                                     api_key: str, base_url: str, timeout: float = 1800.0
-                                    ) -> tuple[list[dict], str | None]:
+                                    ) -> tuple[list[dict], str | None, bool]:
     """Sends a chunk; if rejected with 413, recursively halves it and retries."""
     try:
         return _post_audio_chunk(chunk, language, model_name, api_key, base_url, timeout=timeout)
@@ -320,16 +443,16 @@ def _transcribe_chunk_with_backoff(chunk: np.ndarray, language: str | None, mode
                 "Server rejects uploads with 413 (Request Entity Too Large), "
                 "even for very short audio chunks. Check the server configuration."
             )
-        mid = len(chunk) // 2
-        left, lang_left = _transcribe_chunk_with_backoff(
+        mid = _find_quiet_split(chunk, 0, len(chunk) // 2)
+        left, lang_left, segs_left = _transcribe_chunk_with_backoff(
             chunk[:mid], language, model_name, api_key, base_url, timeout=timeout)
-        right, lang_right = _transcribe_chunk_with_backoff(
+        right, lang_right, segs_right = _transcribe_chunk_with_backoff(
             chunk[mid:], language, model_name, api_key, base_url, timeout=timeout)
         offset = mid / SAMPLE_RATE
         for seg in right:
             seg["start"] += offset
             seg["end"] += offset
-        return left + right, (lang_left or lang_right)
+        return left + right, (lang_left or lang_right), (segs_left or segs_right)
 
 
 def transcribe_remote(
@@ -346,12 +469,21 @@ def transcribe_remote(
 
     Long recordings are split into `chunk_seconds` pieces (and further halved
     automatically on a server 413 error), since server endpoints typically
-    have an upload size limit.
+    have an upload size limit. Cuts are placed at the quietest moment just
+    before each nominal boundary (_find_quiet_split()).
+
+    The first request is only REMOTE_TEXT_ONLY_CHUNK_SECONDS long and doubles
+    as a capability probe: if the server returns real segments, the rest is
+    sent in `chunk_seconds` pieces; if it only returns plain text, all
+    remaining chunks stay short too (see REMOTE_TEXT_ONLY_CHUNK_SECONDS).
 
     If `language` is None/empty, no language is sent (the server detects it
     itself). The language detected from the first chunk is then used for all
     subsequent chunks, so detection doesn't flip-flop chunk to chunk (short/
-    quiet chunks can otherwise easily detect the wrong language).
+    quiet chunks can otherwise easily detect the wrong language). Servers
+    that don't report a language get it guessed from the returned text
+    (_guess_language_from_text()) - otherwise alignment would silently run
+    the English model on e.g. German text.
 
     Returns a dict in WhisperX format ({"segments": [...], "language": ...})
     that can be fed into alignment and diarization afterward.
@@ -362,35 +494,49 @@ def transcribe_remote(
         )
 
     total_samples = len(audio)
-    chunk_samples = max(1, int(chunk_seconds * SAMPLE_RATE))
-    n_chunks = max(1, -(-total_samples // chunk_samples))  # ceil division
+    probe_samples = int(min(chunk_seconds, REMOTE_TEXT_ONLY_CHUNK_SECONDS) * SAMPLE_RATE)
+    chunk_samples = probe_samples
 
     all_segments = []
     detected_language_code = None
+    pending_text = ""  # text-only servers: accumulated until the language is clear
     offset = 0
-    chunk_idx = 0
+    first = True
     request_language = language
     while offset < total_samples:
-        chunk = audio[offset: offset + chunk_samples]
+        end = _find_quiet_split(audio, offset, offset + chunk_samples)
+        chunk = audio[offset:end]
         chunk_start_time = offset / SAMPLE_RATE
 
-        chunk_segments, raw_language = _transcribe_chunk_with_backoff(
+        chunk_segments, raw_language, has_segments = _transcribe_chunk_with_backoff(
             chunk, request_language, model_name, api_key, base_url, timeout=timeout)
         for seg in chunk_segments:
             seg["start"] += chunk_start_time
             seg["end"] += chunk_start_time
             all_segments.append(seg)
 
+        if first:
+            first = False
+            if has_segments:
+                chunk_samples = max(1, int(chunk_seconds * SAMPLE_RATE))
+            else:
+                print(f"     Provider returned text only (no segments/timestamps) - "
+                      f"using {REMOTE_TEXT_ONLY_CHUNK_SECONDS:.0f}s chunks")
+
         if detected_language_code is None:
             detected_language_code = _normalize_language_code(raw_language, fallback=language)
+            if detected_language_code is None:
+                pending_text += " " + " ".join(s["text"] for s in chunk_segments)
+                detected_language_code = _guess_language_from_text(pending_text)
+                if detected_language_code:
+                    print(f"     Provider reported no language - detected '{detected_language_code}' from text")
             if not request_language and detected_language_code:
                 # Lock in the language for the remaining chunks, see docstring.
                 request_language = detected_language_code
 
-        chunk_idx += 1
         if on_progress:
-            on_progress(min(chunk_idx / n_chunks, 1.0))
-        offset += chunk_samples
+            on_progress(min(end / max(total_samples, 1), 1.0))
+        offset = end
 
     return {"segments": all_segments, "language": detected_language_code or language or "en"}
 
@@ -631,6 +777,14 @@ def transcribe_apple(
     }
 
 
+def prewarm_diarization() -> None:
+    """Imports the diarization stack (pyannote.audio) ahead of time - for
+    the GUI to call in an idle background thread after startup, so the first
+    transcription doesn't pay the import at its diarization step. Import
+    only, no model is loaded (no VRAM/RAM for weights)."""
+    import whisperx.diarize  # noqa: F401
+
+
 def transcribe(
     audio_path: str,
     language: str | None = "en",
@@ -660,7 +814,9 @@ def transcribe(
             (see detect_apple_language())
         model_size: Whisper model size ("large-v2", "large-v3", "medium",
             "base"), a provider model (prefix "server:", see is_remote_model()),
-            an OpenVINO model (prefix "openvino:", see is_openvino_model()), or
+            an OpenVINO model (prefix "openvino:", see is_openvino_model()),
+            "parakeet:tdt-0.6b-v3" (NVIDIA Parakeet via onnx-asr, see
+            transcribe_parakeet()), or
             "apple:speechanalyzer" for Apple's SpeechAnalyzer (macOS 26+ only,
             see is_apple_model()/transcribe_apple())
         diarize: Enable speaker diarization
@@ -706,8 +862,11 @@ def transcribe(
     remote = is_remote_model(model_size)
     apple = is_apple_model(model_size)
     openvino = is_openvino_model(model_size)
+    parakeet = is_parakeet_model(model_size)
 
-    if apple:
+    if parakeet:
+        print(f"Device: transcription=Parakeet (ONNX Runtime, CPU), alignment/diarization={torch_device}")
+    elif apple:
         print(f"Device: transcription=Apple Neural Engine (SpeechAnalyzer), diarization={torch_device}")
     elif openvino:
         ov_device, _ = _parse_openvino_model(model_size)
@@ -779,6 +938,23 @@ def transcribe(
         n_segs = len(result["segments"])
         print(f"     Transcription complete ({t1 - t0:.1f}s)")
         print(f"     {n_segs} segments detected")
+        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
+    elif parakeet:
+        print("1/3  Transcribing via Parakeet (ONNX Runtime)...")
+        _prog(0.0, "Loading audio...")
+        audio = load_audio_universal(audio_path)
+        _prog(0.05, "Loading Parakeet model...")
+
+        def _parakeet_progress(frac):
+            mapped = 0.05 + frac * 0.35
+            _prog(mapped, f"Transcribing... {frac * 100:.0f}%")
+
+        result = transcribe_parakeet(audio, language, model_size, on_progress=_parakeet_progress)
+
+        t1 = time.time()
+        n_segs = len(result["segments"])
+        print(f"     Transcription complete ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} segments detected, language: {result['language']}")
         _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
     elif remote:
         from voxscribe.providers import get_provider
@@ -935,6 +1111,8 @@ def transcribe(
                 if os.path.isdir(diarize_path):
                     diarize_cache = diarize_path
 
+            from whisperx.diarize import DiarizationPipeline
+
             diarize_model = DiarizationPipeline(
                 token=hf_token, device=torch_device, cache_dir=diarize_cache
             )
@@ -960,12 +1138,31 @@ def transcribe(
             result = whisperx.assign_word_speakers(
                 diarize_segments, result, speaker_embeddings=speaker_embeddings)
 
+            # "Microphone + system" recordings: use the separate tracks (see
+            # tracks.py) to split speakers that pyannote merged across the
+            # local/remote boundary. Runs on raw labels, before voice-print
+            # matching - split-off speakers have no embedding of their own
+            # and so are simply left unrecognized.
+            split_speakers = {}
+            try:
+                from voxscribe.tracks import load_tracks, split_speakers_by_track
+                tracks = load_tracks(audio_path)
+                if tracks is not None:
+                    split_speakers = split_speakers_by_track(result, *tracks)
+                    if split_speakers:
+                        print("     Split by microphone/system track: " + ", ".join(
+                            f"{old} -> {old} + {new}" for new, old in split_speakers.items()))
+            except Exception as e:
+                print(f"     [WARNING] Track-based speaker split failed: {e}")
+
             # Automatically recognize known speakers (voice prints) and label
             # their segments/words directly with the recognized name.
             # speaker_id_map remembers raw diarization ID -> currently
             # displayed label, so the GUI can find the right embedding when
             # the user confirms/corrects a name via the "remember" checkbox.
             speaker_id_map = {spk: spk for spk in (speaker_embeddings or {})}
+            for new_spk in split_speakers:
+                speaker_id_map[new_spk] = new_spk
             if speaker_embeddings:
                 try:
                     from voxscribe.speaker_profiles import match_speakers

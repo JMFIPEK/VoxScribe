@@ -29,6 +29,7 @@ from qt_app.constants import (
     FORMATS,
     MODEL_DISPLAY_NAMES,
     OPENVINO_MODEL_PREFIX,
+    PARAKEET_MODEL_PREFIX,
     REMOTE_MODEL_PREFIX,
     format_time_short,
 )
@@ -217,6 +218,8 @@ class TranscribePage(QWidget):
             text = "Transcription: remote provider  ·  Alignment: wav2vec2 (local)  ·  Diarization: pyannote (local)"
         elif model.startswith(OPENVINO_MODEL_PREFIX):
             text = "Transcription: Intel Arc GPU (OpenVINO)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
+        elif model.startswith(PARAKEET_MODEL_PREFIX):
+            text = "Transcription: Parakeet v3 (CPU)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
         else:
             text = f"Transcription: {model or '…'} (local)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
 
