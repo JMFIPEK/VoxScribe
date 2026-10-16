@@ -164,6 +164,19 @@ def _chunk_size_for_rate(sample_rate: int) -> int:
     return max(256, int(round(CHUNK * sample_rate / OUT_RATE)))
 
 
+def _mic_channels(info: dict) -> int:
+    """Channel count to open a microphone with: its native count (max 2).
+
+    Never open a multi-channel WASAPI mic as mono. In shared mode PortAudio
+    then has to convert from the engine's mix format itself, and for some
+    devices (seen with a Jabra Link 390 Bluetooth headset, 48kHz/2ch) that
+    path delivers mostly digital silence with garbled fragments of speech,
+    while a native 2-channel stream of the same device is clean. Callers
+    downmix to mono themselves (_frames_to_mono_float()).
+    """
+    return max(1, min(2, int(info.get("maxInputChannels", 1) or 1)))
+
+
 def _frames_to_mono_float(frames: list[bytes], channels: int) -> np.ndarray:
     if not frames:
         return np.array([], dtype=np.float64)
@@ -747,7 +760,7 @@ class AudioRecorder:
                 else:
                     info = p.get_default_input_device_info()
                 device_idx = info["index"]
-                self._channels = 1
+                self._channels = _mic_channels(info)
                 self._sample_rate = int(info["defaultSampleRate"])
 
             stream = p.open(
@@ -807,7 +820,7 @@ class AudioRecorder:
                 mic_info = p.get_default_input_device_info()
             mic_idx = mic_info["index"]
             mic_rate = int(mic_info["defaultSampleRate"])
-            mic_ch = 1
+            mic_ch = _mic_channels(mic_info)
             mic_chunk = _chunk_size_for_rate(mic_rate)
 
             # Set up system audio (loopback)
@@ -1019,14 +1032,14 @@ def _level_bar(data: bytes, channels: int) -> str:
 
 
 def record_microphone(output_path: str, device_index: int | None = None,
-                      sample_rate: int | None = None, channels: int = 1):
+                      sample_rate: int | None = None, channels: int | None = None):
     """Records audio from the microphone and saves it as a WAV file.
 
     Stops on Enter.
     """
     if IS_WINDOWS:
         return _record_microphone_pyaudio(output_path, device_index, sample_rate, channels)
-    return _record_microphone_sounddevice(output_path, device_index, sample_rate, channels)
+    return _record_microphone_sounddevice(output_path, device_index, sample_rate, channels or 1)
 
 
 def _record_microphone_sounddevice(output_path: str, device_index: int | None = None,
@@ -1076,7 +1089,7 @@ def _record_microphone_sounddevice(output_path: str, device_index: int | None = 
 
 
 def _record_microphone_pyaudio(output_path: str, device_index: int | None = None,
-                               sample_rate: int | None = None, channels: int = 1):
+                               sample_rate: int | None = None, channels: int | None = None):
     p = pyaudio.PyAudio()
 
     if device_index is not None:
@@ -1089,6 +1102,8 @@ def _record_microphone_pyaudio(output_path: str, device_index: int | None = None
 
     if sample_rate is None:
         sample_rate = int(info["defaultSampleRate"])
+    if channels is None:
+        channels = _mic_channels(info)
     print(f"  Channels: {channels}, Sample rate: {sample_rate} Hz")
 
     stream = p.open(
