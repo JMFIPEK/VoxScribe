@@ -430,12 +430,41 @@ def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
     return segments, payload.get("language"), has_segments
 
 
+# Transient server errors (timeouts, dropped connections, 5xx, 429) are
+# retried with these waits (seconds) before a chunk is given up on. Without
+# this, a single hiccup in a 100-chunk meeting threw the whole recording
+# onto the local fallback model.
+_REMOTE_RETRY_WAITS = (5.0, 15.0, 45.0)
+
+
+def _post_chunk_with_retry(chunk: np.ndarray, language: str | None, model_name: str,
+                           api_key: str, base_url: str, timeout: float = 1800.0
+                           ) -> tuple[list[dict], str | None, bool]:
+    import requests
+
+    for attempt, wait in enumerate((*_REMOTE_RETRY_WAITS, None)):
+        try:
+            return _post_audio_chunk(chunk, language, model_name, api_key, base_url, timeout=timeout)
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            if wait is None or not (status == 429 or status >= 500):
+                raise
+            reason = f"HTTP {status}"
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if wait is None:
+                raise
+            reason = type(e).__name__
+        print(f"     [WARNING] Chunk request failed ({reason}), retry {attempt + 1}/"
+              f"{len(_REMOTE_RETRY_WAITS)} in {wait:.0f}s")
+        time.sleep(wait)
+
+
 def _transcribe_chunk_with_backoff(chunk: np.ndarray, language: str | None, model_name: str,
                                     api_key: str, base_url: str, timeout: float = 1800.0
                                     ) -> tuple[list[dict], str | None, bool]:
     """Sends a chunk; if rejected with 413, recursively halves it and retries."""
     try:
-        return _post_audio_chunk(chunk, language, model_name, api_key, base_url, timeout=timeout)
+        return _post_chunk_with_retry(chunk, language, model_name, api_key, base_url, timeout=timeout)
     except _PayloadTooLarge:
         duration = len(chunk) / SAMPLE_RATE
         if duration <= REMOTE_MIN_CHUNK_SECONDS:
@@ -477,16 +506,23 @@ def transcribe_remote(
     sent in `chunk_seconds` pieces; if it only returns plain text, all
     remaining chunks stay short too (see REMOTE_TEXT_ONLY_CHUNK_SECONDS).
 
-    If `language` is None/empty, no language is sent (the server detects it
-    itself). The language detected from the first chunk is then used for all
-    subsequent chunks, so detection doesn't flip-flop chunk to chunk (short/
-    quiet chunks can otherwise easily detect the wrong language). Servers
-    that don't report a language get it guessed from the returned text
-    (_guess_language_from_text()) - otherwise alignment would silently run
-    the English model on e.g. German text.
+    If `language` is None/empty, no language is sent and the server detects
+    it per chunk, so meetings that switch languages work. (Forcing the first
+    chunk's language on the rest made Whisper *translate* every later German
+    passage of an English-first meeting into English.) Chunks then also stay
+    REMOTE_TEXT_ONLY_CHUNK_SECONDS long, because Whisper picks one language
+    per uploaded file. Every segment is tagged with its chunk's language
+    ("language" key): the server's report, else a guess from the returned
+    text (_guess_language_from_text()), else the previous chunk's language -
+    short/quiet chunks don't carry enough text to decide on their own. The
+    alignment step uses these tags to pick the right wav2vec2 model per
+    segment (see _align_by_language()).
+
+    If `language` is given, it's sent with every chunk, as before.
 
     Returns a dict in WhisperX format ({"segments": [...], "language": ...})
-    that can be fed into alignment and diarization afterward.
+    that can be fed into alignment and diarization afterward. "language" is
+    the language covering most of the speech.
     """
     if not api_key:
         raise ValueError(
@@ -498,18 +534,17 @@ def transcribe_remote(
     chunk_samples = probe_samples
 
     all_segments = []
-    detected_language_code = None
-    pending_text = ""  # text-only servers: accumulated until the language is clear
+    untagged = []  # segments of chunks whose language isn't known yet
+    current_language = language or None
     offset = 0
     first = True
-    request_language = language
     while offset < total_samples:
         end = _find_quiet_split(audio, offset, offset + chunk_samples)
         chunk = audio[offset:end]
         chunk_start_time = offset / SAMPLE_RATE
 
         chunk_segments, raw_language, has_segments = _transcribe_chunk_with_backoff(
-            chunk, request_language, model_name, api_key, base_url, timeout=timeout)
+            chunk, language or None, model_name, api_key, base_url, timeout=timeout)
         for seg in chunk_segments:
             seg["start"] += chunk_start_time
             seg["end"] += chunk_start_time
@@ -517,28 +552,112 @@ def transcribe_remote(
 
         if first:
             first = False
-            if has_segments:
+            if has_segments and language:
                 chunk_samples = max(1, int(chunk_seconds * SAMPLE_RATE))
-            else:
+            elif not has_segments:
                 print(f"     Provider returned text only (no segments/timestamps) - "
                       f"using {REMOTE_TEXT_ONLY_CHUNK_SECONDS:.0f}s chunks")
 
-        if detected_language_code is None:
-            detected_language_code = _normalize_language_code(raw_language, fallback=language)
-            if detected_language_code is None:
-                pending_text += " " + " ".join(s["text"] for s in chunk_segments)
-                detected_language_code = _guess_language_from_text(pending_text)
-                if detected_language_code:
-                    print(f"     Provider reported no language - detected '{detected_language_code}' from text")
-            if not request_language and detected_language_code:
-                # Lock in the language for the remaining chunks, see docstring.
-                request_language = detected_language_code
+        chunk_language = language or _normalize_language_code(raw_language) \
+            or _guess_language_from_text(" ".join(s["text"] for s in chunk_segments))
+        if chunk_language:
+            if chunk_language != current_language and not language:
+                print(f"     {chunk_start_time / 60:5.1f} min: language '{chunk_language}'")
+            current_language = chunk_language
+            # Undecided chunks before the first decided one get its language.
+            for seg in untagged:
+                seg["language"] = chunk_language
+            untagged = []
+        for seg in chunk_segments:
+            if current_language:
+                seg["language"] = current_language
+            else:
+                untagged.append(seg)
 
         if on_progress:
             on_progress(min(end / max(total_samples, 1), 1.0))
         offset = end
 
-    return {"segments": all_segments, "language": detected_language_code or language or "en"}
+    fallback = language or "en"
+    for seg in untagged:
+        seg["language"] = fallback
+    speech_seconds: dict[str, float] = {}
+    for seg in all_segments:
+        speech_seconds[seg["language"]] = speech_seconds.get(seg["language"], 0.0) \
+            + max(0.0, seg["end"] - seg["start"])
+    main_language = max(speech_seconds, key=speech_seconds.get) if speech_seconds else fallback
+    return {"segments": all_segments, "language": main_language}
+
+
+def _free_torch_memory(torch_device: str) -> None:
+    gc.collect()
+    if torch_device == "cuda":
+        torch.cuda.empty_cache()
+    elif torch_device == "xpu":
+        torch.xpu.empty_cache()
+    elif torch_device == "mps":
+        torch.mps.empty_cache()
+
+
+def _align_by_language(result: dict, audio: np.ndarray, torch_device: str,
+                       align_model_dir: str | None, align_cache_only: bool,
+                       progress_callback=None) -> dict:
+    """WhisperX forced alignment, one wav2vec2 model per segment language.
+
+    Segments may carry their own "language" (transcribe_remote() in
+    auto-detect mode, for meetings that switch languages); all others use
+    result["language"]. Each language group is aligned with its own model,
+    then everything is merged back in time order. If no model can be loaded
+    for a minor language, its segments fall back to the main language's model.
+    """
+    main = result["language"]
+    groups: dict[str, list[dict]] = {}
+    for seg in result["segments"]:
+        groups.setdefault(seg.get("language") or main, []).append(seg)
+    # Main language first, so a failing minor language can fall back to it.
+    order = sorted(groups, key=lambda lang: (lang != main, lang))
+    if len(order) > 1:
+        print("     Languages: " + ", ".join(f"{lang} ({len(groups[lang])} segments)" for lang in order))
+
+    total = sum(len(g) for g in groups.values()) or 1
+    done = 0
+    segments, word_segments = [], []
+    for lang in order:
+        group = groups[lang]
+        try:
+            model_a, metadata = whisperx.load_align_model(
+                language_code=lang, device=torch_device,
+                model_dir=align_model_dir, model_cache_only=align_cache_only,
+            )
+        except Exception as e:
+            if lang == main:
+                raise
+            print(f"     [WARNING] No alignment model for '{lang}' ({e}) - using '{main}'")
+            model_a, metadata = whisperx.load_align_model(
+                language_code=main, device=torch_device,
+                model_dir=align_model_dir, model_cache_only=align_cache_only,
+            )
+
+        def _group_progress(pct, _start=done, _n=len(group)):
+            if progress_callback:
+                progress_callback((_start + pct / 100 * _n) / total * 100)
+
+        aligned = whisperx.align(
+            group, model_a, metadata, audio, torch_device,
+            return_char_alignments=False,
+            progress_callback=_group_progress,
+        )
+        for seg in aligned["segments"]:
+            seg["language"] = lang
+        segments.extend(aligned["segments"])
+        word_segments.extend(aligned.get("word_segments", []))
+        done += len(group)
+        del model_a
+        _free_torch_memory(torch_device)
+
+    segments.sort(key=lambda s: s.get("start", 0.0))
+    word_segments.sort(key=lambda w: w.get("start", 0.0))
+    return {"segments": segments, "word_segments": word_segments, "language": main}
 
 
 APPLE_MODEL_PREFIX = "apple:"
@@ -1067,31 +1186,15 @@ def transcribe(
                 align_model_dir = align_path
                 align_cache_only = True
 
-        model_a, metadata = whisperx.load_align_model(
-            language_code=result["language"], device=torch_device,
-            model_dir=align_model_dir, model_cache_only=align_cache_only,
-        )
-
         _prog(0.50, "Aligning words...")
-        result = whisperx.align(
-            result["segments"], model_a, metadata, audio, torch_device,
-            return_char_alignments=False,
+        result = _align_by_language(
+            result, audio, torch_device, align_model_dir, align_cache_only,
             progress_callback=_align_progress,
         )
 
         t3 = time.time()
         print(f"     Alignment complete ({t3 - t2:.1f}s)")
         _prog(0.65, f"Alignment done ({t3 - t2:.0f}s)")
-
-        # Unload the model
-        del model_a
-        gc.collect()
-        if torch_device == "cuda":
-            torch.cuda.empty_cache()
-        elif torch_device == "xpu":
-            torch.xpu.empty_cache()
-        elif torch_device == "mps":
-            torch.mps.empty_cache()
 
     # --- 3. Speaker diarization ---
     if diarize:
