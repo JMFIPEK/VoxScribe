@@ -515,8 +515,10 @@ def transcribe_remote(
     ("language" key): the server's report, else a guess from the returned
     text (_guess_language_from_text()), else the previous chunk's language -
     short/quiet chunks don't carry enough text to decide on their own. The
-    alignment step uses these tags to pick the right wav2vec2 model per
-    segment (see _align_by_language()).
+    two chunks at every language switch are then transcribed again in ~10s
+    pieces (_refine_language_switches()), so the switch lands within ~10s
+    instead of ~30s. The alignment step uses the tags to pick the right
+    wav2vec2 model per segment (see _align_by_language()).
 
     If `language` is given, it's sent with every chunk, as before.
 
@@ -533,60 +535,124 @@ def transcribe_remote(
     probe_samples = int(min(chunk_seconds, REMOTE_TEXT_ONLY_CHUNK_SECONDS) * SAMPLE_RATE)
     chunk_samples = probe_samples
 
-    all_segments = []
-    untagged = []  # segments of chunks whose language isn't known yet
-    current_language = language or None
+    # One record per chunk: sample range, segments (absolute times) and the
+    # language the chunk decided on by itself (None = not enough evidence).
+    chunks: list[dict] = []
     offset = 0
-    first = True
     while offset < total_samples:
         end = _find_quiet_split(audio, offset, offset + chunk_samples)
-        chunk = audio[offset:end]
-        chunk_start_time = offset / SAMPLE_RATE
-
-        chunk_segments, raw_language, has_segments = _transcribe_chunk_with_backoff(
-            chunk, language or None, model_name, api_key, base_url, timeout=timeout)
-        for seg in chunk_segments:
-            seg["start"] += chunk_start_time
-            seg["end"] += chunk_start_time
-            all_segments.append(seg)
-
-        if first:
-            first = False
+        segments, own_language, has_segments = _transcribe_span(
+            audio, offset, end, language, model_name, api_key, base_url, timeout)
+        if not chunks:
             if has_segments and language:
                 chunk_samples = max(1, int(chunk_seconds * SAMPLE_RATE))
             elif not has_segments:
                 print(f"     Provider returned text only (no segments/timestamps) - "
                       f"using {REMOTE_TEXT_ONLY_CHUNK_SECONDS:.0f}s chunks")
-
-        chunk_language = language or _normalize_language_code(raw_language) \
-            or _guess_language_from_text(" ".join(s["text"] for s in chunk_segments))
-        if chunk_language:
-            if chunk_language != current_language and not language:
-                print(f"     {chunk_start_time / 60:5.1f} min: language '{chunk_language}'")
-            current_language = chunk_language
-            # Undecided chunks before the first decided one get its language.
-            for seg in untagged:
-                seg["language"] = chunk_language
-            untagged = []
-        for seg in chunk_segments:
-            if current_language:
-                seg["language"] = current_language
-            else:
-                untagged.append(seg)
-
+        chunks.append({"start": offset, "end": end, "segments": segments,
+                       "language": own_language})
         if on_progress:
             on_progress(min(end / max(total_samples, 1), 1.0))
         offset = end
 
     fallback = language or "en"
-    for seg in untagged:
-        seg["language"] = fallback
+    _fill_chunk_languages(chunks, fallback)
+    if not language:
+        chunks = _refine_language_switches(
+            audio, chunks, model_name, api_key, base_url, timeout)
+        previous = None
+        for chunk in chunks:
+            if chunk["language"] != previous:
+                print(f"     {chunk['start'] / SAMPLE_RATE / 60:5.1f} min: language '{chunk['language']}'")
+                previous = chunk["language"]
+
+    all_segments = []
+    for chunk in chunks:
+        for seg in chunk["segments"]:
+            seg["language"] = chunk["language"]
+            all_segments.append(seg)
     speech_seconds: dict[str, float] = {}
     for seg in all_segments:
-        speech_seconds[seg["language"]] = speech_seconds.get(seg["language"], 0.0) \
-            + max(0.0, seg["end"] - seg["start"])
+        speech_seconds[seg["language"]] = speech_seconds.get(seg["language"], 0.0)             + max(0.0, seg["end"] - seg["start"])
     main_language = max(speech_seconds, key=speech_seconds.get) if speech_seconds else fallback
     return {"segments": all_segments, "language": main_language}
+
+
+def _transcribe_span(audio: np.ndarray, start: int, end: int, language: str | None,
+                     model_name: str, api_key: str, base_url: str, timeout: float
+                     ) -> tuple[list[dict], str | None, bool]:
+    """Transcribes audio[start:end]. Returns (segments with absolute times,
+    the span's own language or None, server_returned_segments)."""
+    segments, raw_language, has_segments = _transcribe_chunk_with_backoff(
+        audio[start:end], language or None, model_name, api_key, base_url, timeout=timeout)
+    offset = start / SAMPLE_RATE
+    for seg in segments:
+        seg["start"] += offset
+        seg["end"] += offset
+    own_language = language or _normalize_language_code(raw_language)         or _guess_language_from_text(" ".join(s["text"] for s in segments))
+    return segments, own_language, has_segments
+
+
+def _fill_chunk_languages(chunks: list[dict], fallback: str) -> None:
+    """Undecided chunks (short/quiet, too little text) take the previous
+    chunk's language; leading ones the first decided language."""
+    first_known = next((c["language"] for c in chunks if c["language"]), fallback)
+    current = first_known
+    for chunk in chunks:
+        current = chunk["language"] or current
+        chunk["language"] = current
+
+
+# Around a language switch, the chunks on both sides are transcribed again in
+# pieces of about this length, so the switch lands within ~10s instead of
+# ~30s. Not used for whole recordings: Whisper's language ID gets unreliable
+# on short audio and loses context, so only the switch windows pay that price.
+REMOTE_REFINE_PIECE_SECONDS = 10.0
+
+
+def _refine_language_switches(audio: np.ndarray, chunks: list[dict], model_name: str,
+                              api_key: str, base_url: str, timeout: float) -> list[dict]:
+    """Re-transcribes the two chunks at every language switch in
+    REMOTE_REFINE_PIECE_SECONDS pieces, each with its own language detection,
+    and replaces them with the pieces. Without this, the end of an English
+    talk that shares a 30s chunk with a mostly German discussion came out
+    translated into German."""
+    refine = set()
+    for i in range(1, len(chunks)):
+        if chunks[i]["language"] != chunks[i - 1]["language"]:
+            refine.update((i - 1, i))
+    if not refine:
+        return chunks
+
+    piece_samples = int(REMOTE_REFINE_PIECE_SECONDS * SAMPLE_RATE)
+    min_samples = int(REMOTE_MIN_CHUNK_SECONDS * SAMPLE_RATE)
+    refined: list[dict] = []
+    i = 0
+    while i < len(chunks):
+        if i not in refine:
+            refined.append(chunks[i])
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(chunks) and j + 1 in refine:
+            j += 1
+        start, end = chunks[i]["start"], chunks[j]["end"]
+        print(f"     Refining language switch {start / SAMPLE_RATE / 60:.1f}-"
+              f"{end / SAMPLE_RATE / 60:.1f} min in {REMOTE_REFINE_PIECE_SECONDS:.0f}s pieces")
+        previous = chunks[i]["language"]
+        pos = start
+        while pos < end:
+            cut = _find_quiet_split(audio[:end], pos, pos + piece_samples)
+            if end - cut < min_samples:
+                cut = end
+            segments, own_language, _ = _transcribe_span(
+                audio, pos, cut, None, model_name, api_key, base_url, timeout)
+            previous = own_language or previous
+            refined.append({"start": pos, "end": cut, "segments": segments,
+                            "language": previous})
+            pos = cut
+        i = j + 1
+    return refined
 
 
 def _free_torch_memory(torch_device: str) -> None:
