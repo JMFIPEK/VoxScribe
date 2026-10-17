@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from voxscribe import transcriber as t
+from voxscribe.transcription import pipeline
 
 SR = t.SAMPLE_RATE
 
@@ -165,7 +166,7 @@ def fake_transcribe(monkeypatch):
         calls.append(kwargs)
         return next(results)
 
-    monkeypatch.setattr(t, "transcribe", fake)
+    monkeypatch.setattr(pipeline, "transcribe", fake)
     return calls
 
 
@@ -213,7 +214,7 @@ def test_transcribe_multi_explicit_language_is_kept(fake_transcribe):
 
 
 def test_transcribe_multi_single_file_keeps_labels(monkeypatch):
-    monkeypatch.setattr(t, "transcribe", lambda **kw: _file_result(10.0))
+    monkeypatch.setattr(pipeline, "transcribe", lambda **kw: _file_result(10.0))
 
     combined = t.transcribe_multi(["one.wav"], language="de")
 
@@ -229,7 +230,7 @@ def test_transcribe_multi_result_key_order_is_stable(fake_transcribe):
 
 
 def test_transcribe_multi_without_diarization_has_no_speaker_maps(monkeypatch):
-    monkeypatch.setattr(t, "transcribe", lambda **kw: _file_result(10.0))
+    monkeypatch.setattr(pipeline, "transcribe", lambda **kw: _file_result(10.0))
 
     combined = t.transcribe_multi(["one.wav"], language="de", diarize=False)
 

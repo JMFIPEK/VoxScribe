@@ -32,6 +32,7 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "voxscribe.transcription.formats",
     "voxscribe.transcription.language",
     "voxscribe.transcription.model_ids",
+    "voxscribe.transcription.pipeline",
     "voxscribe.transcription.registry",
     "voxscribe.transcription.backends",
     "voxscribe.transcription.backends.apple",
@@ -46,9 +47,5 @@ def test_cheap_module_stays_light(module):
     assert _heavy_modules_loaded_by(module) == set()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "The facade still holds all code and imports torch/whisperx at load. "
-    "Becomes lazy once the backends move out (refactor steps 4-9); "
-    "then remove this marker."))
 def test_transcriber_facade_stays_light():
     assert _heavy_modules_loaded_by("voxscribe.transcriber") == set()

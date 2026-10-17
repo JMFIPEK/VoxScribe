@@ -5,6 +5,7 @@ import pytest
 import soundfile as sf
 
 from voxscribe import transcriber as t
+from voxscribe.transcription import pipeline
 from voxscribe.transcription.backend import FallbackRequested
 from voxscribe.transcription.registry import BackendRegistry
 
@@ -41,7 +42,7 @@ def wav(tmp_path):
 @pytest.fixture
 def registry(monkeypatch):
     reg = BackendRegistry()
-    monkeypatch.setattr(t, "default_registry", reg)
+    monkeypatch.setattr(pipeline, "default_registry", reg)
     return reg
 
 
@@ -68,7 +69,7 @@ def test_provider_failure_falls_back_to_the_local_model(registry, wav, monkeypat
     local = FakeBackend(language="en")
     registry.register("fake:", lambda: failing)
     registry.register("local:", lambda: local)
-    monkeypatch.setattr(t, "default_local_model_size", lambda: "local:best")
+    monkeypatch.setattr(pipeline, "default_local_model_size", lambda: "local:best")
 
     result = t.transcribe(wav, language=None, model_size="fake:1", diarize=False, device="cpu")
 
