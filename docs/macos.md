@@ -14,7 +14,7 @@
 
 ## Install
 
-There's no CUDA on a Mac - `pyproject.toml`/`requirements.txt` already mark
+There's no CUDA on a Mac - `pyproject.toml` already marks
 the CUDA torch index as `win32`/`linux`-only, so macOS automatically gets
 plain PyPI `torch` with MPS support:
 

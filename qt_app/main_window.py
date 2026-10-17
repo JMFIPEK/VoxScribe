@@ -42,8 +42,6 @@ class MainWindow(QMainWindow):
             "batch_size": 16,
             "compute": "auto",
         }
-        self.last_audio_path = None
-
         self.recorder_controller = RecorderController(self)
         self.transcribe_controller = TranscribeController()
         self.hardware_info_controller = HardwareInfoController(self)
@@ -93,7 +91,6 @@ class MainWindow(QMainWindow):
     def send_to_transcription(self, audio_path: str):
         """Called by RecordPage after a finished recording, to pre-fill the
         Transcription page with the file directly."""
-        self.last_audio_path = audio_path
         self.pages["transcribe"].set_audio_file(audio_path)
 
     def closeEvent(self, event):  # noqa: N802 - Qt override

@@ -15,7 +15,6 @@ directory, same "small local JSON store" pattern.
 import json
 import os
 import re
-import uuid
 
 PROVIDERS_DIR = os.path.join(os.path.expanduser("~"), ".voxscribe")
 PROVIDERS_PATH = os.path.join(PROVIDERS_DIR, "providers.json")

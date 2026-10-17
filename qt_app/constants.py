@@ -15,8 +15,6 @@ MODEL_DISPLAY_NAMES = {
     "openvino:GPU:medium": "medium (Intel Arc GPU)",
     "parakeet:tdt-0.6b-v3": "Parakeet v3 (fast, CPU)",
 }
-MODEL_IDS_BY_DISPLAY = {v: k for k, v in MODEL_DISPLAY_NAMES.items()}
-MODELS = list(MODEL_DISPLAY_NAMES.values())
 FORMATS = ["txt", "srt", "json"]
 
 # Must match transcriber.APPLE_SPEECHANALYZER_MODEL. Duplicated here as its
