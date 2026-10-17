@@ -16,6 +16,12 @@ import whisperx
 from whisperx.utils import LANGUAGES as _WHISPER_LANGUAGE_NAMES
 
 from voxscribe.paths import get_base_dir, get_bundled_models_dir
+from voxscribe.transcription.audio import (  # noqa: F401  (re-exported)
+    SAMPLE_RATE, _load_audio_via_container, load_audio_universal, load_audio_without_ffmpeg,
+)
+from voxscribe.transcription.formats import (  # noqa: F401  (re-exported)
+    _format_time, _format_time_srt, _to_srt, format_transcript, save_transcript,
+)
 
 # whisperx.diarize (pyannote.audio + lightning) is imported lazily inside
 # transcribe()'s diarization step and via prewarm_diarization(): it's ~80%
@@ -27,8 +33,6 @@ from voxscribe.paths import get_base_dir, get_bundled_models_dir
 # flag those crash with NotImplementedError instead of transparently running
 # on CPU.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-
-SAMPLE_RATE = 16000
 
 # Map full language names (e.g. "german", as returned by OpenAI-compatible
 # APIs) to ISO-639-1 codes (e.g. "de"), which is what whisperx expects for
@@ -84,62 +88,6 @@ def _guess_language_from_text(text: str) -> str | None:
 
 _get_base_dir = get_base_dir
 _get_bundled_models_dir = get_bundled_models_dir
-
-
-def load_audio_without_ffmpeg(audio_path: str) -> np.ndarray:
-    """Loads an audio file and converts it to 16kHz mono float32 (no ffmpeg)."""
-    data, sr = sf.read(audio_path, dtype="float32")
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    if sr != SAMPLE_RATE:
-        from scipy.signal import resample_poly
-        from math import gcd
-        g = gcd(SAMPLE_RATE, sr)
-        data = resample_poly(data, SAMPLE_RATE // g, sr // g).astype(np.float32)
-    return data
-
-
-def _load_audio_via_container(audio_path: str) -> np.ndarray:
-    """Extracts the audio track from an arbitrary container (MKV, MP4, MOV, ...) via PyAV.
-
-    Used as a fallback when soundfile can't read the format directly (e.g.
-    video containers like MKV, where only the audio track is needed).
-    """
-    import av
-
-    container = av.open(audio_path)
-    stream = next((s for s in container.streams if s.type == "audio"), None)
-    if stream is None:
-        container.close()
-        raise ValueError(f"No audio track found in: {audio_path}")
-
-    resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
-    chunks = []
-    for frame in container.decode(stream):
-        for resampled in resampler.resample(frame):
-            chunks.append(resampled.to_ndarray())
-    for resampled in resampler.resample(None):
-        chunks.append(resampled.to_ndarray())
-    container.close()
-
-    if not chunks:
-        return np.zeros(0, dtype=np.float32)
-
-    data = np.concatenate(chunks, axis=1).reshape(-1)
-    return (data.astype(np.float32) / 32768.0)
-
-
-def load_audio_universal(audio_path: str) -> np.ndarray:
-    """Loads an audio or video file as a 16kHz mono float32 array.
-
-    Tries soundfile first (fast path for WAV/FLAC/OGG etc.). If that fails
-    (e.g. video containers like MKV/MP4, or compressed formats libsndfile
-    doesn't know), falls back to decoding just the audio track via PyAV.
-    """
-    try:
-        return load_audio_without_ffmpeg(audio_path)
-    except Exception:
-        return _load_audio_via_container(audio_path)
 
 
 REMOTE_MODEL_PREFIX = "server:"
@@ -1499,89 +1447,3 @@ def transcribe_multi(
         combined["speaker_id_map"] = combined_speaker_id_map
         combined["speaker_embeddings"] = combined_speaker_embeddings
     return combined
-
-
-def format_transcript(result: dict, include_speakers: bool = True) -> str:
-    """Formats the transcript as readable text with timestamps."""
-    lines = []
-    for seg in result.get("segments", []):
-        start = _format_time(seg.get("start", 0))
-        end = _format_time(seg.get("end", 0))
-        text = seg.get("text", "").strip()
-        speaker = seg.get("speaker", "")
-
-        if include_speakers and speaker:
-            lines.append(f"[{start} - {end}] {speaker}: {text}")
-        else:
-            lines.append(f"[{start} - {end}] {text}")
-
-    return "\n".join(lines)
-
-
-def save_transcript(result: dict, output_path: str,
-                    formats: list[str] | None = None):
-    """Saves the transcript in various formats.
-
-    Args:
-        result: WhisperX result dict
-        output_path: Base path without extension (e.g. "recordings/meeting")
-        formats: List of formats ("txt", "srt", "json"). Default: ["txt"]
-    """
-    if formats is None:
-        formats = ["txt"]
-
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    saved = []
-
-    for fmt in formats:
-        path = f"{output_path}.{fmt}"
-        if fmt == "txt":
-            content = format_transcript(result)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-        elif fmt == "srt":
-            content = _to_srt(result)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-        elif fmt == "json":
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2, default=str)
-        else:
-            print(f"  Unknown format: {fmt}")
-            continue
-        saved.append(path)
-        print(f"  Saved: {path}")
-
-    return saved
-
-
-def _format_time(seconds: float) -> str:
-    """Formats seconds as MM:SS."""
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h:02d}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
-
-
-def _format_time_srt(seconds: float) -> str:
-    """Formats seconds in SRT format HH:MM:SS,mmm."""
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds % 1) * 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-
-def _to_srt(result: dict) -> str:
-    """Converts a WhisperX result to SRT format."""
-    lines = []
-    for i, seg in enumerate(result.get("segments", []), 1):
-        start = _format_time_srt(seg.get("start", 0))
-        end = _format_time_srt(seg.get("end", 0))
-        text = seg.get("text", "").strip()
-        speaker = seg.get("speaker", "")
-        if speaker:
-            text = f"[{speaker}] {text}"
-        lines.append(f"{i}\n{start} --> {end}\n{text}\n")
-    return "\n".join(lines)

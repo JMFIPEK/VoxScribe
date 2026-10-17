@@ -25,6 +25,8 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "voxscribe.tracks",
     "voxscribe.speaker_profiles",
     "voxscribe.transcription",
+    "voxscribe.transcription.audio",
+    "voxscribe.transcription.formats",
     "qt_app.constants",
 ])
 def test_cheap_module_stays_light(module):
