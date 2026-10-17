@@ -163,3 +163,17 @@ Similarly stored outside the repo at `~/.voxscribe/providers.json` (created on f
   - https://huggingface.co/pyannote/segmentation-3.0
 - The app uses `PyAudioWPatch` (not standard PyAudio) for Windows WASAPI support
 - **The user's configured default provider is the default transcription model** (`transcriber.default_model_size()`), on all platforms — not local-by-default, since a provider needs no model download and works regardless of local hardware. If no provider is configured, or the request fails (network, missing/invalid API key, server down, ...), `transcribe()` catches the exception and automatically retries once with the best local model for the current platform/hardware (`transcriber.default_local_model_size()`: Apple SpeechAnalyzer on macOS, otherwise whatever `hardware_detect.recommend_model()` picks — CUDA large-v3/medium/base on an NVIDIA GPU, the OpenVINO Arc-GPU model if no NVIDIA GPU but an Intel Arc GPU is present, else a RAM-sized CPU model). This fallback only triggers on an actual failure, not proactively — if the provider succeeds, everything else about the pipeline is unaffected. Explicitly picking a local model still works exactly as before and is unaffected by any of this.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitLab Issues on the `origin` remote (gitlab.kit.edu), via the `glab` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
