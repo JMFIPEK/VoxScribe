@@ -5,7 +5,7 @@ heavy dependencies (torch, onnx-asr, optimum, ...) are only loaded for the
 Backend actually selected. Importing this package stays cheap.
 """
 
-from voxscribe.transcription.model_ids import PARAKEET_MODEL_PREFIX
+from voxscribe.transcription.model_ids import OPENVINO_MODEL_PREFIX, PARAKEET_MODEL_PREFIX
 from voxscribe.transcription.registry import default_registry
 
 
@@ -14,4 +14,10 @@ def _parakeet():
     return ParakeetBackend()
 
 
+def _openvino():
+    from voxscribe.transcription.backends.openvino import OpenVinoBackend
+    return OpenVinoBackend()
+
+
+default_registry.register(OPENVINO_MODEL_PREFIX, _openvino)
 default_registry.register(PARAKEET_MODEL_PREFIX, _parakeet)

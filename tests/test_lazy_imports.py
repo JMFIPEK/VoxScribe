@@ -31,6 +31,7 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "voxscribe.transcription.model_ids",
     "voxscribe.transcription.registry",
     "voxscribe.transcription.backends",
+    "voxscribe.transcription.backends.openvino",
     "voxscribe.transcription.backends.parakeet",
     "qt_app.constants",
 ])

@@ -43,3 +43,32 @@ def test_parakeet_backend_maps_progress_into_its_slice(tmp_path, monkeypatch):
     assert result == {"segments": [], "language": "de"}
     assert events == [(0.0, "Loading audio..."), (0.05, "Loading Parakeet model..."),
                       (0.225, "Transcribing... 50%")]
+
+
+def test_openvino_backend_describes_itself():
+    backend = default_registry.resolve("openvino:GPU:medium")
+
+    assert backend.skips_alignment is False
+    assert backend.describe("openvino:GPU:medium", "xpu") == (
+        "Device: transcription=Intel OpenVINO (GPU), alignment/diarization=xpu")
+
+
+def test_openvino_backend_passes_device_and_size_and_maps_progress(tmp_path, monkeypatch):
+    from voxscribe.transcription.backends import openvino
+
+    seen = {}
+
+    def fake(audio_path, language, ov_device, whisper_size, on_progress=None, audio=None):
+        seen.update(path=audio_path, language=language, device=ov_device, size=whisper_size,
+                    samples=len(audio))
+        on_progress(50.0)
+        return {"segments": [], "language": "en"}
+
+    monkeypatch.setattr(openvino, "transcribe_openvino", fake)
+    request, events = _request(tmp_path, "openvino:GPU:medium", language="en")
+
+    default_registry.resolve(request.model_id).transcribe(request)
+
+    assert seen == {"path": request.audio_path, "language": "en", "device": "GPU",
+                    "size": "medium", "samples": 16000}
+    assert events == [(0.0, "Loading OpenVINO model..."), (0.2, "Transcribing... 50%")]

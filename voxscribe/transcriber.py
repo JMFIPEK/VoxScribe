@@ -29,6 +29,7 @@ from voxscribe.transcription.model_ids import (  # noqa: F401  (re-exported)
 )
 from voxscribe.transcription.backend import FallbackRequested, TranscribeRequest
 from voxscribe.transcription import backends  # noqa: F401  (registers the built-in Backends)
+from voxscribe.transcription.backends.openvino import transcribe_openvino  # noqa: F401  (re-exported)
 from voxscribe.transcription.backends.parakeet import transcribe_parakeet  # noqa: F401  (re-exported)
 from voxscribe.transcription.registry import default_registry
 from voxscribe.transcription.formats import (  # noqa: F401  (re-exported)
@@ -49,107 +50,6 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 _get_base_dir = get_base_dir
 _get_bundled_models_dir = get_bundled_models_dir
-
-
-_OPENVINO_LANG_TOKEN_RE = re.compile(r"<\|([a-z]{2})\|>")
-
-
-def _detect_language_from_token_ids(processor, generated_ids) -> str | None:
-    """Extracts the language token Whisper predicted (e.g. '<|de|>') from the
-    first generated tokens, when generate() ran without a forced language."""
-    tokens = processor.tokenizer.convert_ids_to_tokens(generated_ids[0].tolist()[:3])
-    for tok in tokens:
-        m = _OPENVINO_LANG_TOKEN_RE.match(tok)
-        if m:
-            return m.group(1)
-    return None
-
-
-_OPENVINO_CHUNK_SECONDS = 30
-
-
-def transcribe_openvino(
-    audio_path: str,
-    language: str | None,
-    ov_device: str,
-    whisper_size: str,
-    on_progress=None,
-) -> dict:
-    """Transcribes via Intel's OpenVINO backend (Arc GPU or NPU) instead of CTranslate2.
-
-    CTranslate2 (WhisperX' default inference backend, see transcribe()) has no
-    Intel GPU/NPU support at all - this path instead loads a Whisper model
-    exported to OpenVINO IR via `optimum-intel` (export step: see
-    download_models.py::export_openvino_model()) and runs it on the requested
-    OpenVINO device ("GPU" = Arc, "NPU" = Intel AI Boost, "CPU").
-
-    Chunking is implemented manually in 30s windows instead of using
-    HuggingFace's own ASR pipeline (`transformers.pipeline(
-    "automatic-speech-recognition", chunk_length_s=...)`), because its
-    internal chunking iterators unconditionally import `torchcodec`
-    (ffmpeg-based) - deliberately not installed in this project, see
-    load_audio_universal()/load_audio_without_ffmpeg() elsewhere in this file
-    for the same ffmpeg-avoidance reason.
-
-    Returns the same {"segments": [...], "language": ...} shape the
-    CTranslate2 path returns, so the subsequent alignment step (which adds
-    the word-level timestamps this path doesn't produce on its own) and
-    diarization can run unmodified afterward.
-    """
-    from transformers import AutoProcessor
-    from optimum.intel.openvino import OVModelForSpeechSeq2Seq
-
-    bundled = _get_bundled_models_dir()
-    if not bundled:
-        raise FileNotFoundError(
-            "No bundled_models folder found - run 'python download_models.py' "
-            "to export the OpenVINO model."
-        )
-    model_dir = os.path.join(bundled, "openvino", f"whisper-{whisper_size}")
-    if not os.path.isdir(model_dir):
-        raise FileNotFoundError(
-            f"OpenVINO model not found: {model_dir}. "
-            "Run 'python download_models.py' first."
-        )
-    cache_dir = os.path.join(bundled, "openvino", "_ov_cache")
-
-    processor = AutoProcessor.from_pretrained(model_dir)
-    model = OVModelForSpeechSeq2Seq.from_pretrained(
-        model_dir, device=ov_device, ov_config={"CACHE_DIR": cache_dir}
-    )
-
-    audio = load_audio_universal(audio_path)
-    sr = SAMPLE_RATE
-    chunk_samples = _OPENVINO_CHUNK_SECONDS * sr
-    n_chunks = max(1, -(-len(audio) // chunk_samples))
-
-    detected_language = language
-    segments = []
-    for i, start in enumerate(range(0, len(audio), chunk_samples)):
-        chunk = audio[start:start + chunk_samples]
-        inputs = processor(chunk, sampling_rate=sr, return_tensors="pt")
-        gen_kwargs = {"task": "transcribe"}
-        if detected_language:
-            gen_kwargs["language"] = detected_language
-        generated_ids = model.generate(inputs["input_features"], **gen_kwargs)
-        if detected_language is None:
-            # Whisper detects the language itself on the first (unforced)
-            # call - force it consistently for every subsequent chunk from
-            # here on, mirroring the CTranslate2 path which also only uses
-            # the first 30s for detection.
-            detected_language = _detect_language_from_token_ids(processor, generated_ids) or "en"
-        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
-        if text:
-            segments.append({
-                "start": start / sr,
-                "end": min(start + chunk_samples, len(audio)) / sr,
-                "text": text,
-            })
-        if on_progress:
-            on_progress((i + 1) / n_chunks * 100)
-
-    del model
-    return {"segments": segments, "language": detected_language or "en"}
 
 
 class _PayloadTooLarge(Exception):
@@ -809,7 +709,6 @@ def transcribe(
     compute_type = "float16" if whisper_device == "cuda" else "int8"
     remote = is_remote_model(model_size)
     apple = is_apple_model(model_size)
-    openvino = is_openvino_model(model_size)
     try:
         backend = default_registry.resolve(model_size)
     except LookupError:
@@ -819,9 +718,6 @@ def transcribe(
         print(backend.describe(model_size, device))
     elif apple:
         print(f"Device: transcription=Apple Neural Engine (SpeechAnalyzer), diarization={torch_device}")
-    elif openvino:
-        ov_device, _ = _parse_openvino_model(model_size)
-        print(f"Device: transcription=Intel OpenVINO ({ov_device}), alignment/diarization={torch_device}")
     elif device == "mps":
         print(f"Device: Whisper={whisper_device} ({compute_type}), alignment/diarization={torch_device} (Apple MPS)")
     elif device == "xpu":
@@ -892,24 +788,6 @@ def transcribe(
         result = transcribe_apple(audio_path, language, on_progress=_apple_progress)
         # The diarization step below needs the audio as an array (the Swift
         # helper loads/decodes the file again internally).
-        audio = load_audio_universal(audio_path)
-
-        t1 = time.time()
-        n_segs = len(result["segments"])
-        print(f"     Transcription complete ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} segments detected")
-        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
-    elif openvino:
-        ov_device, whisper_size = _parse_openvino_model(model_size)
-        print(f"1/3  Transcribing via Intel OpenVINO ({ov_device})...")
-        _prog(0.0, "Loading OpenVINO model...")
-
-        def _openvino_progress(frac):
-            mapped = frac / 100 * 0.40
-            _prog(mapped, f"Transcribing... {frac:.0f}%")
-
-        result = transcribe_openvino(
-            audio_path, language, ov_device, whisper_size, on_progress=_openvino_progress)
         audio = load_audio_universal(audio_path)
 
         t1 = time.time()
