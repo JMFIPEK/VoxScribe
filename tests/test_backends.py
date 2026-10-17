@@ -72,3 +72,40 @@ def test_openvino_backend_passes_device_and_size_and_maps_progress(tmp_path, mon
     assert seen == {"path": request.audio_path, "language": "en", "device": "GPU",
                     "size": "medium", "samples": 16000}
     assert events == [(0.0, "Loading OpenVINO model..."), (0.2, "Transcribing... 50%")]
+
+
+def test_apple_backend_skips_alignment_and_describes_itself():
+    backend = default_registry.resolve("apple:speechanalyzer")
+
+    assert backend.skips_alignment is True
+    assert backend.name == "Apple SpeechAnalyzer"
+    assert backend.describe("apple:speechanalyzer", "mps") == (
+        "Device: transcription=Apple Neural Engine (SpeechAnalyzer), diarization=mps")
+
+
+def test_apple_backend_uses_the_file_path_and_maps_progress(tmp_path, monkeypatch):
+    from voxscribe.transcription.backends import apple
+
+    seen = {}
+
+    def fake(audio_path, language=None, on_progress=None):
+        seen.update(path=audio_path, language=language)
+        on_progress(0.5)
+        return {"segments": [], "word_segments": [], "language": "de"}
+
+    monkeypatch.setattr(apple, "transcribe_apple", fake)
+    request, events = _request(tmp_path, "apple:speechanalyzer")
+
+    default_registry.resolve(request.model_id).transcribe(request)
+
+    assert seen == {"path": request.audio_path, "language": None}
+    assert events == [(0.0, "SpeechAnalyzer transcribing..."), (0.2, "Transcribing... 50%")]
+
+
+def test_apple_locale_identifier():
+    from voxscribe.transcription.backends.apple import _apple_locale_identifier
+
+    assert _apple_locale_identifier("de") == "de-DE"
+    assert _apple_locale_identifier("DE") == "de-DE"
+    assert _apple_locale_identifier(None) == "en-US"
+    assert _apple_locale_identifier("xx") == "en-US"
