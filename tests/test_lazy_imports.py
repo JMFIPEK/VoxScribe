@@ -30,6 +30,8 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "voxscribe.transcription.language",
     "voxscribe.transcription.model_ids",
     "voxscribe.transcription.registry",
+    "voxscribe.transcription.backends",
+    "voxscribe.transcription.backends.parakeet",
     "qt_app.constants",
 ])
 def test_cheap_module_stays_light(module):

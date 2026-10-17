@@ -28,6 +28,8 @@ from voxscribe.transcription.model_ids import (  # noqa: F401  (re-exported)
     openvino_model_id, remote_model_id,
 )
 from voxscribe.transcription.backend import FallbackRequested, TranscribeRequest
+from voxscribe.transcription import backends  # noqa: F401  (registers the built-in Backends)
+from voxscribe.transcription.backends.parakeet import transcribe_parakeet  # noqa: F401  (re-exported)
 from voxscribe.transcription.registry import default_registry
 from voxscribe.transcription.formats import (  # noqa: F401  (re-exported)
     _format_time, _format_time_srt, _to_srt, format_transcript, save_transcript,
@@ -148,66 +150,6 @@ def transcribe_openvino(
 
     del model
     return {"segments": segments, "language": detected_language or "en"}
-
-
-_PARAKEET_ONNX_ASR_NAMES = {"tdt-0.6b-v3": "nemo-parakeet-tdt-0.6b-v3"}
-
-
-def _parakeet_local_dirs(variant: str) -> tuple[str | None, str | None]:
-    """Bundled model/VAD dirs (see download_models.py), or (None, None) to use
-    the HuggingFace cache instead."""
-    bundled = _get_bundled_models_dir()
-    if not bundled:
-        return None, None
-    model_dir = os.path.join(bundled, "parakeet", variant)
-    vad_dir = os.path.join(bundled, "parakeet", "silero-vad")
-    return (model_dir if os.path.isdir(model_dir) else None,
-            vad_dir if os.path.isdir(vad_dir) else None)
-
-
-def transcribe_parakeet(audio: np.ndarray, language: str | None, model_size: str,
-                        on_progress=None) -> dict:
-    """Transcribes via NVIDIA Parakeet TDT 0.6B v3 (25 European languages,
-    including German/English) through `onnx-asr` on ONNX Runtime (CPU).
-
-    Roughly 8-10x realtime on a laptop CPU (measured on a Core Ultra 7 258V),
-    i.e. several times faster than Whisper int8 on the same CPU, at
-    comparable accuracy. Parakeet only accepts ~20-30s of audio at once, so
-    long recordings are cut into speech segments by Silero VAD first (also
-    via onnx-asr); those segments become the WhisperX-style segments that the
-    regular alignment/diarization steps then process unchanged.
-
-    Parakeet detects the language internally but doesn't report it, so it's
-    guessed from the text (_guess_language_from_text()) unless given.
-    """
-    import onnx_asr
-
-    variant = model_size[len(PARAKEET_MODEL_PREFIX):]
-    name = _PARAKEET_ONNX_ASR_NAMES.get(variant)
-    if name is None:
-        raise ValueError(f"Unknown Parakeet model: {model_size}")
-    model_dir, vad_dir = _parakeet_local_dirs(variant)
-
-    model = onnx_asr.load_model(name, model_dir, quantization="int8")
-    vad = onnx_asr.load_vad("silero", vad_dir)
-    # min_silence_duration_ms: merge speech separated by short pauses into
-    # longer segments - Parakeet is noticeably more accurate with a full
-    # sentence of context than with the VAD's default ~100ms fragments.
-    asr = model.with_vad(vad, batch_size=4, max_speech_duration_s=25,
-                         min_silence_duration_ms=800)
-
-    duration = len(audio) / SAMPLE_RATE
-    segments = []
-    for seg in asr.recognize(audio, sample_rate=SAMPLE_RATE):
-        text = (seg.text or "").strip()
-        if text:
-            segments.append({"start": float(seg.start), "end": float(seg.end), "text": text})
-        if on_progress and duration > 0:
-            on_progress(min(seg.end / duration, 1.0))
-
-    detected = language or _guess_language_from_text(" ".join(s["text"] for s in segments))
-    del model, vad, asr
-    return {"segments": segments, "language": detected or "en"}
 
 
 class _PayloadTooLarge(Exception):
@@ -868,7 +810,6 @@ def transcribe(
     remote = is_remote_model(model_size)
     apple = is_apple_model(model_size)
     openvino = is_openvino_model(model_size)
-    parakeet = is_parakeet_model(model_size)
     try:
         backend = default_registry.resolve(model_size)
     except LookupError:
@@ -876,8 +817,6 @@ def transcribe(
 
     if backend is not None:
         print(backend.describe(model_size, device))
-    elif parakeet:
-        print(f"Device: transcription=Parakeet (ONNX Runtime, CPU), alignment/diarization={torch_device}")
     elif apple:
         print(f"Device: transcription=Apple Neural Engine (SpeechAnalyzer), diarization={torch_device}")
     elif openvino:
@@ -940,7 +879,7 @@ def transcribe(
         t1 = time.time()
         n_segs = len(result["segments"])
         print(f"     Transcription complete ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} segments detected")
+        print(f"     {n_segs} segments detected, language: {result['language']}")
         _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
     elif apple:
         print("1/3  Transcribing via Apple SpeechAnalyzer (Neural Engine)...")
@@ -977,23 +916,6 @@ def transcribe(
         n_segs = len(result["segments"])
         print(f"     Transcription complete ({t1 - t0:.1f}s)")
         print(f"     {n_segs} segments detected")
-        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
-    elif parakeet:
-        print("1/3  Transcribing via Parakeet (ONNX Runtime)...")
-        _prog(0.0, "Loading audio...")
-        audio = load_audio_universal(audio_path)
-        _prog(0.05, "Loading Parakeet model...")
-
-        def _parakeet_progress(frac):
-            mapped = 0.05 + frac * 0.35
-            _prog(mapped, f"Transcribing... {frac * 100:.0f}%")
-
-        result = transcribe_parakeet(audio, language, model_size, on_progress=_parakeet_progress)
-
-        t1 = time.time()
-        n_segs = len(result["segments"])
-        print(f"     Transcription complete ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} segments detected, language: {result['language']}")
         _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
     elif remote:
         from voxscribe.providers import get_provider
