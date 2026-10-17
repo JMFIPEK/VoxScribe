@@ -34,6 +34,8 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "voxscribe.transcription.backends.apple",
     "voxscribe.transcription.backends.openvino",
     "voxscribe.transcription.backends.parakeet",
+    "voxscribe.transcription.backends.remote",
+    "voxscribe.transcription.devices",
     "qt_app.constants",
 ])
 def test_cheap_module_stays_light(module):

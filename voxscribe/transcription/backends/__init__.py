@@ -5,7 +5,9 @@ heavy dependencies (torch, onnx-asr, optimum, ...) are only loaded for the
 Backend actually selected. Importing this package stays cheap.
 """
 
-from voxscribe.transcription.model_ids import APPLE_MODEL_PREFIX, OPENVINO_MODEL_PREFIX, PARAKEET_MODEL_PREFIX
+from voxscribe.transcription.model_ids import (
+    APPLE_MODEL_PREFIX, OPENVINO_MODEL_PREFIX, PARAKEET_MODEL_PREFIX, REMOTE_MODEL_PREFIX,
+)
 from voxscribe.transcription.registry import default_registry
 
 
@@ -24,6 +26,12 @@ def _apple():
     return AppleBackend()
 
 
+def _remote():
+    from voxscribe.transcription.backends.remote import RemoteBackend
+    return RemoteBackend()
+
+
+default_registry.register(REMOTE_MODEL_PREFIX, _remote)
 default_registry.register(APPLE_MODEL_PREFIX, _apple)
 default_registry.register(OPENVINO_MODEL_PREFIX, _openvino)
 default_registry.register(PARAKEET_MODEL_PREFIX, _parakeet)

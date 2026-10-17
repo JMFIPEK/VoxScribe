@@ -109,3 +109,105 @@ def test_apple_locale_identifier():
     assert _apple_locale_identifier("DE") == "de-DE"
     assert _apple_locale_identifier(None) == "en-US"
     assert _apple_locale_identifier("xx") == "en-US"
+
+
+# --- remote Provider ---------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from voxscribe.transcription.backend import FallbackRequested  # noqa: E402
+
+PROVIDER = {"id": "p1", "name": "My Provider", "base_url": "https://x/v1",
+            "api_key": "secret", "model": "whisper-large"}
+
+
+def _remote_calls(monkeypatch, provider=PROVIDER, error=None):
+    from voxscribe.transcription.backends import remote
+
+    calls = []
+    monkeypatch.setattr("voxscribe.providers.get_provider", lambda pid: provider)
+
+    def fake(audio, language, model_name, api_key, base_url, on_progress=None, **kw):
+        calls.append(dict(samples=len(audio), language=language, model=model_name,
+                          key=api_key, url=base_url))
+        if error:
+            raise error
+        on_progress(0.5)
+        return {"segments": [], "language": "de"}
+
+    monkeypatch.setattr(remote, "transcribe_remote", fake)
+    return calls
+
+
+def test_remote_backend_describes_like_local_whisper():
+    backend = default_registry.resolve("server:p1")
+
+    assert backend.skips_alignment is False
+    assert backend.describe("server:p1", "cpu") == "Device: cpu (int8)"
+    assert backend.describe("server:p1", "cuda") == "Device: cuda (float16)"
+    assert backend.describe("server:p1", "mps") == (
+        "Device: Whisper=cpu (int8), alignment/diarization=mps (Apple MPS)")
+    assert backend.describe("server:p1", "xpu") == (
+        "Device: Whisper=cpu (int8), alignment/diarization=xpu (Intel Arc GPU)")
+
+
+def test_remote_backend_uses_the_stored_provider(tmp_path, monkeypatch):
+    calls = _remote_calls(monkeypatch)
+    request, events = _request(tmp_path, "server:p1", language="de")
+
+    default_registry.resolve(request.model_id).transcribe(request)
+
+    assert calls == [dict(samples=16000, language="de", model="whisper-large",
+                          key="secret", url="https://x/v1")]
+    assert events == [(0.0, "Loading audio..."), (0.1, "Sending audio to server (My Provider)..."),
+                      (0.25, "Sending audio to server... 50%")]
+
+
+def test_remote_backend_explicit_credentials_override_the_provider(tmp_path, monkeypatch):
+    calls = _remote_calls(monkeypatch)
+    request, _ = _request(tmp_path, "server:p1", api_key="k2", api_base_url="https://other")
+
+    default_registry.resolve(request.model_id).transcribe(request)
+
+    assert (calls[0]["key"], calls[0]["url"], calls[0]["model"]) == ("k2", "https://other", "whisper-large")
+
+
+def test_remote_backend_unknown_provider_is_a_plain_error(tmp_path, monkeypatch):
+    _remote_calls(monkeypatch, provider=None)
+    request, _ = _request(tmp_path, "server:nope")
+
+    with pytest.raises(ValueError, match="Unknown provider 'nope'"):
+        default_registry.resolve(request.model_id).transcribe(request)
+
+
+def test_remote_backend_request_failure_asks_for_the_local_fallback(tmp_path, monkeypatch):
+    _remote_calls(monkeypatch, error=RuntimeError("HTTP 502"))
+    request, _ = _request(tmp_path, "server:p1")
+
+    with pytest.raises(FallbackRequested, match="HTTP 502"):
+        default_registry.resolve(request.model_id).transcribe(request)
+
+
+def test_transcribe_remote_shifts_chunks_and_tags_the_language(monkeypatch):
+    from voxscribe.transcription.backends import remote
+
+    def fake_chunk(chunk, language, model_name, api_key, base_url, timeout=0):
+        return [{"start": 0.0, "end": 1.0, "text": "hello"}], None, True
+
+    monkeypatch.setattr(remote, "_transcribe_chunk_with_backoff", fake_chunk)
+    audio = np.zeros(40 * 16000, dtype=np.float32)
+
+    result = remote.transcribe_remote(audio, "de", "m", api_key="k", base_url="u")
+
+    # The first 30s chunk is cut at the quietest 100ms frame of its last 4s
+    # (all-silent audio: the first one); the rest starts from there.
+    assert [(s["start"], s["language"]) for s in result["segments"]] == [
+        (0.0, "de"), (pytest.approx(26.05), "de")]
+    assert result["language"] == "de"
+
+
+def test_transcribe_remote_requires_an_api_key():
+    from voxscribe.transcription.backends import remote
+
+    with pytest.raises(ValueError, match="No API key"):
+        remote.transcribe_remote(np.zeros(10, dtype=np.float32), "de", "m", api_key="", base_url="u")
