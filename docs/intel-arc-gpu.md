@@ -43,9 +43,10 @@ uv pip install torch torchaudio torchvision --index-url https://download.pytorch
 with CUDA. A plain `uv sync`/`uv run` (without `--no-sync`) reverts this back
 to CUDA, since `pyproject.toml` still declares CUDA as the default; the
 automatic check above exists specifically to self-heal that. To keep that from
-happening on every start, `VoxScribe.bat` launches with `uv run --no-sync` and
-only runs `uv sync` when `uv.lock` changed since the last sync (the copy kept at
-`.venv\.voxscribe-synced-uv.lock`). When starting by hand on an Arc machine, use
+happening on every start, `VoxScribe.bat` (and the shortcuts from
+`Create-Shortcuts.ps1`) starts the venv's `pythonw` directly and only runs
+`uv sync` when `uv.lock` changed since the last sync (the copy kept at
+`.venv\.voxscribe-synced-uv.lock`), keeping the XPU build during that sync. When starting by hand on an Arc machine, use
 `uv run --no-sync python gui_qt.py`, and run `uv sync` yourself after a
 dependency change.
 

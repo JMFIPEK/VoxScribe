@@ -66,11 +66,14 @@ re-syncs the venv first, which on an Intel Arc machine reverts torch to the
 CUDA build and makes the next start re-install the XPU build. Run `uv sync`
 yourself only after pulling dependency changes.
 
-**Desktop shortcut (Windows):** double-click `VoxScribe.bat` in the repo folder, or
-run `Create-Desktop-Shortcut.ps1` once (right-click → *Run with PowerShell*) to drop a
-`VoxScribe` icon on your Desktop. The shortcut points back at the repo, so it keeps
-working across updates — re-run the script only if you move the folder. Run `setup.bat`
-once first on a fresh machine.
+**Shortcuts (Windows):** run `Create-Shortcuts.ps1` once (right-click → *Run with
+PowerShell*) to get a `VoxScribe` entry on the Desktop and in the Start menu; to pin
+it to the taskbar, right-click the Start menu entry → *Pin to taskbar*. They start
+`VoxScribe.bat` (you can also double-click it directly), which syncs the venv only
+when `uv.lock` changed (also on a fresh machine) and then starts the GUI without a
+console window. The GUI's output goes to `%USERPROFILE%\.voxscribe\voxscribe.log`
+(previous session: `voxscribe.log.1`). The shortcuts point back at the repo, so they
+keep working across updates; re-run the script only if you move the folder.
 
 Three tabs: **Record** (source/device, live level, start/stop), **Transcription** (file picker, language/model/diarization, progress, speaker rename, export), **Settings** (providers, HuggingFace token, recording folder, performance). See [Providers](docs/providers.md) for setting up a transcription endpoint.
 

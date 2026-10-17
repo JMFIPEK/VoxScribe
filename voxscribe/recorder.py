@@ -206,26 +206,11 @@ def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
     return np.pad(audio, (0, length - len(audio)), mode="constant")
 
 
-def _tail_audio_from_frames(frames: list[bytes], channels: int, sample_rate: int,
-                            seconds: float) -> np.ndarray:
-    """Converts frame chunks to a mono float64 array (int16 value range) and
-    trims it to the last `seconds` seconds - building block for
-    AudioRecorder.snapshot_recent_audio()."""
-    audio = _frames_to_mono_float(frames, channels)
-    max_samples = int(seconds * sample_rate)
-    if len(audio) > max_samples:
-        audio = audio[-max_samples:]
-    return audio
-
-
 def _mix_sources(mic_audio: np.ndarray, sys_audio: np.ndarray) -> np.ndarray:
     """Mixes two mono signals already resampled to the same sample rate
-    (microphone + system loopback, int16 value range as float) - shared basis
-    for both the final mix after stop (_record_both()/_record_both_macos())
-    and a live snapshot while recording is still in progress (see
-    AudioRecorder.snapshot_recent_audio()). Returns the int16 value range
-    (neither normalized to -1..1 nor cast to int16) - callers decide based on
-    their purpose (WAV saving vs. STT upload)."""
+    (microphone + system loopback, int16 value range as float) for the final
+    mix after stop (_record_both()/_record_both_macos()). Returns the int16
+    value range (neither normalized to -1..1 nor cast to int16)."""
     out_len = max(len(mic_audio), len(sys_audio))
     mic_audio = _pad_to_length(mic_audio, out_len)
     sys_audio = _pad_to_length(sys_audio, out_len)
@@ -377,16 +362,6 @@ class AudioRecorder:
         self._thread = None
         self._channels = 1
         self._sample_rate = 16000
-        # Only populated when source == "both" (see _record_both()/
-        # _record_both_macos()) - separate microphone/system buffers, so
-        # snapshot_recent_audio() can mix both live while recording is still
-        # in progress, not just once at the end (see there).
-        self._mic_frames = None
-        self._sys_frames = None
-        self._mic_rate = None
-        self._mic_channels = None
-        self._sys_rate = None
-        self._sys_channels = None
         self._on_level = None
         self._on_done = None
 
@@ -427,55 +402,6 @@ class AudioRecorder:
     @property
     def is_recording(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
-
-    def snapshot_recent_audio(self, seconds: float = 180.0):
-        """Returns the last `seconds` seconds of audio recorded so far as a
-        normalized mono float32 array (range -1..1, 16kHz) - WITHOUT
-        interrupting the ongoing recording.
-
-        Supports all three sources, including "both" (microphone + system):
-        for that, _record_both()/_record_both_macos() also expose their
-        otherwise-local microphone/system frame lists as instance attributes
-        (`self._mic_frames`/`self._sys_frames`), which are trimmed and mixed
-        live here (_mix_sources() - the same mix formula as the final mix
-        after stop).
-
-        Thread-safe because it's read-only: the frame lists are only ever
-        extended by the recording thread via `.append()` (GIL-atomic),
-        `list(...)` copies the current state immediately without blocking
-        the recording thread.
-        """
-        if not self.is_recording:
-            return None
-
-        if self._source == "both":
-            if not self._mic_frames or not self._sys_frames:
-                return None
-            mic_audio = _tail_audio_from_frames(
-                list(self._mic_frames), self._mic_channels, self._mic_rate, seconds)
-            sys_audio = _tail_audio_from_frames(
-                list(self._sys_frames), self._sys_channels, self._sys_rate, seconds)
-            mic_audio = _resample_to_rate(mic_audio, self._mic_rate, OUT_RATE)
-            sys_audio = _resample_to_rate(sys_audio, self._sys_rate, OUT_RATE)
-            mixed = _mix_sources(mic_audio, sys_audio)
-            if len(mixed) == 0:
-                return None
-            return (mixed / 32768.0).astype(np.float32)
-
-        if not self._frames:
-            return None
-
-        audio = _tail_audio_from_frames(
-            list(self._frames), self._channels, self._sample_rate, seconds)
-        if len(audio) == 0:
-            return None
-        audio = _resample_to_rate(audio, self._sample_rate, OUT_RATE)
-
-        # _frames_to_mono_float returns the int16 value range as float64 (for
-        # the internal mix/resample pipeline) - callers processing this for
-        # STT typically expect values normalized to -1..1, like
-        # load_audio_universal() returns.
-        return (audio / 32768.0).astype(np.float32)
 
     def _record(self):
         if IS_MACOS and self._source == "system":
@@ -646,16 +572,6 @@ class AudioRecorder:
 
         mic_frames = []
         sys_frames = []
-
-        # Exposed as instance attributes for snapshot_recent_audio() - same
-        # list objects, mic_callback()/the read loop below keep extending
-        # them via `.append()`.
-        self._mic_frames = mic_frames
-        self._mic_rate = mic_rate
-        self._mic_channels = mic_ch
-        self._sys_frames = sys_frames
-        self._sys_rate = sys_rate
-        self._sys_channels = sys_ch
 
         def mic_callback(indata, frames, time_info, status):
             data = indata.tobytes()
@@ -829,16 +745,6 @@ class AudioRecorder:
             sys_rate = int(loopback["defaultSampleRate"])
             sys_ch = loopback["maxInputChannels"]
             sys_chunk = _chunk_size_for_rate(sys_rate)
-
-            # Exposed as instance attributes for snapshot_recent_audio() -
-            # same list objects, `read_loop()` keeps extending them via
-            # `.append()`.
-            self._mic_frames = mic_frames
-            self._mic_rate = mic_rate
-            self._mic_channels = mic_ch
-            self._sys_frames = sys_frames
-            self._sys_rate = sys_rate
-            self._sys_channels = sys_ch
 
             mic_stream = p.open(
                 format=FORMAT, channels=mic_ch, rate=mic_rate,

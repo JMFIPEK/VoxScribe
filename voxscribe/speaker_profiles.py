@@ -109,11 +109,3 @@ def enroll_speaker(name: str, embedding, profiles: dict | None = None) -> dict:
 
     save_profiles(profiles)
     return profiles
-
-
-def delete_profile(name: str, profiles: dict | None = None) -> dict:
-    if profiles is None:
-        profiles = load_profiles()
-    profiles.pop(name, None)
-    save_profiles(profiles)
-    return profiles

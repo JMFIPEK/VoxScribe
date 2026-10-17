@@ -21,7 +21,7 @@ process, a change after it no longer does, see the call order in
 main()/gui_qt.py).
 
 To stop that reinstall from repeating on every launch, VoxScribe.bat starts
-the app with `uv run --no-sync` and only runs `uv sync` when uv.lock actually
+the venv's pythonw directly (no `uv run`) and only runs `uv sync` when uv.lock actually
 changed (so the XPU build is reverted - and re-fixed here - only after a
 dependency change, not on every start). If you start it by hand, use
 `uv run --no-sync python gui_qt.py` for the same effect.
@@ -52,6 +52,7 @@ def _detect_gpu_names() -> list[str]:
             ["powershell", "-NoProfile", "-Command",
              "(Get-CimInstance Win32_VideoController).Name"],
             capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
     except Exception:
@@ -141,6 +142,11 @@ def ensure_correct_torch_backend(on_status=print) -> None:
             [uv, "pip", "install", *_TORCH_PACKAGES,
              "--index-url", index, *reinstall_args],
             timeout=1800,
+            # The GUI runs under pythonw (no console): without this, uv would
+            # pop up its own console window. Its output goes to wherever ours
+            # goes - the terminal for the CLI, the log file for the GUI.
+            stdout=sys.stdout, stderr=sys.stderr,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except Exception as e:
         on_status(f"[GPU setup] Automatic correction failed: {e}")
@@ -148,6 +154,14 @@ def ensure_correct_torch_backend(on_status=print) -> None:
 
     if result.returncode == 0:
         on_status(f"[GPU setup] torch successfully switched to '{desired}'.")
+        if desired == "xpu":
+            # The usual cause of a repeat: a plain `uv run`/`uv sync` reverted
+            # torch to the CUDA build pinned in uv.lock (see module docstring).
+            on_status(
+                "[GPU setup] If this happens on every start, launch VoxScribe "
+                "via VoxScribe.bat or its shortcut - a plain `uv run`/`uv sync` "
+                "reverts torch to the CUDA build."
+            )
     else:
         on_status(
             f"[GPU setup] Automatic correction failed (exit code "
