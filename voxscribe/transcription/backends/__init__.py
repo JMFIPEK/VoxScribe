@@ -31,6 +31,13 @@ def _remote():
     return RemoteBackend()
 
 
+def _whisperx():
+    from voxscribe.transcription.backends.whisperx_local import WhisperXBackend
+    return WhisperXBackend()
+
+
+# The empty prefix is the default: Model IDs without a prefix name a local Whisper size.
+default_registry.register("", _whisperx)
 default_registry.register(REMOTE_MODEL_PREFIX, _remote)
 default_registry.register(APPLE_MODEL_PREFIX, _apple)
 default_registry.register(OPENVINO_MODEL_PREFIX, _openvino)

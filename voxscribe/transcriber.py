@@ -34,7 +34,7 @@ from voxscribe.transcription.backends.remote import (  # noqa: F401  (re-exporte
     REMOTE_CHUNK_SECONDS, REMOTE_MIN_CHUNK_SECONDS, REMOTE_REFINE_PIECE_SECONDS,
     REMOTE_TEXT_ONLY_CHUNK_SECONDS, _find_quiet_split, transcribe_remote,
 )
-from voxscribe.transcription.devices import describe_whisper_device
+from voxscribe.transcription.devices import resolve_device
 from voxscribe.transcription.backends.openvino import transcribe_openvino  # noqa: F401  (re-exported)
 from voxscribe.transcription.backends.parakeet import transcribe_parakeet  # noqa: F401  (re-exported)
 from voxscribe.transcription.registry import default_registry
@@ -188,38 +188,11 @@ def transcribe(
     Returns:
         Dict with "segments", "language", and speaker labels if applicable
     """
-    if device is None:
-        # Priority dGPU > iGPU > CPU: CUDA (dedicated NVIDIA GPU) first, then
-        # Intel XPU (Arc GPU - only available if torch was installed with an
-        # XPU-capable build, see gpu_setup.py; the standard CUDA install has
-        # torch.xpu.is_available() == False and falls through here
-        # transparently), then Apple MPS.
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
-            device = "xpu"
-        elif torch.backends.mps.is_available():
-            device = "mps"
-        else:
-            device = "cpu"
-
-    # CTranslate2 (WhisperX' inference backend) only knows "cuda"/"cpu" -
-    # neither MPS nor XPU. Alignment (wav2vec2) and diarization (pyannote)
-    # are plain PyTorch and can use MPS/XPU instead, hence two separate
-    # device variables.
-    whisper_device = device if device == "cuda" else "cpu"
+    device = resolve_device(device)
     torch_device = device
+    backend = default_registry.resolve(model_size)
 
-    compute_type = "float16" if whisper_device == "cuda" else "int8"
-    try:
-        backend = default_registry.resolve(model_size)
-    except LookupError:
-        backend = None  # not moved to a Backend yet, handled by the branches below
-
-    if backend is not None:
-        print(backend.describe(model_size, device))
-    else:
-        print(describe_whisper_device(device))
+    print(backend.describe(model_size, device))
     print(f"Model: {model_size}")
     print(f"Language: {language or 'auto-detect'}")
     print(f"Audio: {audio_path}")
@@ -229,11 +202,6 @@ def transcribe(
     def _prog(pct, msg):
         if on_progress:
             on_progress(pct, msg)
-
-    def _transcribe_progress(pct_within):
-        """pct_within: 0-100 from the whisperx callback -> mapped to 0.15-0.40"""
-        mapped = 0.15 + (pct_within / 100) * 0.25
-        _prog(mapped, f"Transcribing... {pct_within:.0f}%")
 
     def _align_progress(pct_within):
         """pct_within: 0-100 from the whisperx callback -> mapped to 0.50-0.63"""
@@ -246,81 +214,39 @@ def transcribe(
     # Use the bundled model path if present
     bundled = _get_bundled_models_dir()
 
-    if backend is not None:
-        audio_source = AudioSource(audio_path)
-        request = TranscribeRequest(
-            audio_path=audio_path, audio=audio_source, language=language, model_id=model_size,
-            progress=_prog, batch_size=batch_size, device=torch_device,
+    audio_source = AudioSource(audio_path)
+    request = TranscribeRequest(
+        audio_path=audio_path, audio=audio_source, language=language, model_id=model_size,
+        progress=_prog, batch_size=batch_size, device=torch_device,
+        api_key=api_key, api_base_url=api_base_url,
+    )
+    try:
+        result = backend.transcribe(request)
+    except FallbackRequested as e:
+        fallback_model = default_local_model_size()
+        print(f"     [WARNING] Provider request failed ({e}) "
+              f"- falling back to local model ({fallback_model})")
+        _prog(0.0, f"Provider request failed - falling back to {fallback_model}...")
+        return transcribe(
+            audio_path, language=language, model_size=fallback_model, diarize=diarize,
+            hf_token=hf_token, min_speakers=min_speakers, max_speakers=max_speakers,
+            batch_size=batch_size, device=device, on_progress=on_progress,
             api_key=api_key, api_base_url=api_base_url,
         )
-        try:
-            result = backend.transcribe(request)
-        except FallbackRequested as e:
-            fallback_model = default_local_model_size()
-            print(f"     [WARNING] Provider request failed ({e}) "
-                  f"- falling back to local model ({fallback_model})")
-            _prog(0.0, f"Provider request failed - falling back to {fallback_model}...")
-            return transcribe(
-                audio_path, language=language, model_size=fallback_model, diarize=diarize,
-                hf_token=hf_token, min_speakers=min_speakers, max_speakers=max_speakers,
-                batch_size=batch_size, device=device, on_progress=on_progress,
-                api_key=api_key, api_base_url=api_base_url,
-            )
-        audio = audio_source.load()
+    audio = audio_source.load()
 
-        t1 = time.time()
-        n_segs = len(result["segments"])
-        print(f"     Transcription complete ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} segments detected, language: {result['language']}")
-        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
-    else:
-        print("1/3  Transcribing...")
-        _prog(0.0, "Loading Whisper model...")
-
-        whisper_arch = model_size
-        whisper_local_only = False
-        if bundled:
-            whisper_path = os.path.join(bundled, "whisper", model_size)
-            if os.path.isdir(whisper_path):
-                # faster_whisper's WhisperModel takes a directory as-is (no HF
-                # lookup at all) if given a path directly - passing it via
-                # download_root instead would be treated as a cache_dir
-                # expecting the models--org--name/snapshots/<rev>/... HF cache
-                # layout, which download_models.py's flat output_dir=...
-                # download doesn't produce.
-                whisper_arch = whisper_path
-                whisper_local_only = True
-
-        model = whisperx.load_model(
-            whisper_arch, whisper_device, compute_type=compute_type, language=language,
-            download_root=None, local_files_only=whisper_local_only,
-        )
-
-        _prog(0.10, "Loading audio...")
-        audio = load_audio_universal(audio_path)
-
-        _prog(0.15, "Transcribing...")
-        result = model.transcribe(audio, batch_size=batch_size,
-                                  progress_callback=_transcribe_progress)
-
-        t1 = time.time()
-        n_segs = len(result['segments'])
-        print(f"     Transcription complete ({t1 - t0:.1f}s)")
-        print(f"     {n_segs} segments detected")
-        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
-
-        # Unload the model
-        del model
-        gc.collect()
-        if whisper_device == "cuda":
-            torch.cuda.empty_cache()
+    t1 = time.time()
+    n_segs = len(result["segments"])
+    print(f"     Transcription complete ({t1 - t0:.1f}s)")
+    print(f"     {n_segs} segments detected, language: {result['language']}")
+    _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
 
     # --- 2. Alignment ---
     # SpeechAnalyzer already provides word-accurate timestamps (see
     # transcribe_apple()) - the wav2vec2 alignment step is redundant for that
     # result and would additionally load another PyTorch model on macOS that
     # isn't needed at all.
-    if backend is not None and backend.skips_alignment:
+    if backend.skips_alignment:
         print(f"2/3  Alignment skipped ({backend.name} already provides word timestamps)")
         _prog(0.65, f"Alignment not needed ({backend.name})")
     else:

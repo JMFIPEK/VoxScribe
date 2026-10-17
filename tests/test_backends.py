@@ -211,3 +211,65 @@ def test_transcribe_remote_requires_an_api_key():
 
     with pytest.raises(ValueError, match="No API key"):
         remote.transcribe_remote(np.zeros(10, dtype=np.float32), "de", "m", api_key="", base_url="u")
+
+
+# --- local WhisperX ----------------------------------------------------------
+
+class _FakeWhisperModel:
+    def __init__(self):
+        self.batch_size = None
+
+    def transcribe(self, audio, batch_size, progress_callback):
+        self.batch_size = batch_size
+        progress_callback(50.0)
+        return {"segments": [{"start": 0.0, "end": 1.0, "text": "x"}], "language": "de"}
+
+
+def _patch_whisperx(monkeypatch, bundled):
+    import whisperx
+    from voxscribe.transcription.backends import whisperx_local
+
+    loaded = {}
+    model = _FakeWhisperModel()
+
+    def fake_load_model(arch, device, **kw):
+        loaded.update(arch=arch, device=device, **kw)
+        return model
+
+    # raising=False: whisperx loads its attributes lazily, don't trigger that import
+    monkeypatch.setattr(whisperx, "load_model", fake_load_model, raising=False)
+    monkeypatch.setattr(whisperx_local, "get_bundled_models_dir", lambda: bundled)
+    return loaded, model
+
+
+def test_unprefixed_model_ids_use_local_whisperx():
+    backend = default_registry.resolve("large-v3")
+
+    assert backend.name == "WhisperX"
+    assert backend.skips_alignment is False
+    assert backend.describe("large-v3", "cuda") == "Device: cuda (float16)"
+
+
+def test_local_backend_loads_the_named_model_and_maps_progress(tmp_path, monkeypatch):
+    loaded, model = _patch_whisperx(monkeypatch, bundled=None)
+    request, events = _request(tmp_path, "medium", language="de", batch_size=4, device="mps")
+
+    result = default_registry.resolve("medium").transcribe(request)
+
+    assert loaded == dict(arch="medium", device="cpu", compute_type="int8", language="de",
+                          download_root=None, local_files_only=False)
+    assert model.batch_size == 4
+    assert result["language"] == "de"
+    assert events == [(0.0, "Loading Whisper model..."), (0.1, "Loading audio..."),
+                      (0.15, "Transcribing..."), (0.275, "Transcribing... 50%")]
+
+
+def test_local_backend_prefers_a_bundled_model_directory(tmp_path, monkeypatch):
+    (tmp_path / "bundled" / "whisper" / "medium").mkdir(parents=True)
+    loaded, _ = _patch_whisperx(monkeypatch, bundled=str(tmp_path / "bundled"))
+    request, _ = _request(tmp_path, "medium")
+
+    default_registry.resolve("medium").transcribe(request)
+
+    assert loaded["arch"] == str(tmp_path / "bundled" / "whisper" / "medium")
+    assert loaded["local_files_only"] is True
