@@ -16,7 +16,7 @@ import whisperx
 
 from voxscribe.paths import get_base_dir, get_bundled_models_dir
 from voxscribe.transcription.audio import (  # noqa: F401  (re-exported)
-    SAMPLE_RATE, _load_audio_via_container, load_audio_universal, load_audio_without_ffmpeg,
+    AudioSource, SAMPLE_RATE, _load_audio_via_container, load_audio_universal, load_audio_without_ffmpeg,
 )
 from voxscribe.transcription.language import (  # noqa: F401  (re-exported)
     _guess_language_from_text, _normalize_language_code,
@@ -27,6 +27,8 @@ from voxscribe.transcription.model_ids import (  # noqa: F401  (re-exported)
     default_model_size, is_apple_model, is_openvino_model, is_parakeet_model, is_remote_model,
     openvino_model_id, remote_model_id,
 )
+from voxscribe.transcription.backend import FallbackRequested, TranscribeRequest
+from voxscribe.transcription.registry import default_registry
 from voxscribe.transcription.formats import (  # noqa: F401  (re-exported)
     _format_time, _format_time_srt, _to_srt, format_transcript, save_transcript,
 )
@@ -867,8 +869,14 @@ def transcribe(
     apple = is_apple_model(model_size)
     openvino = is_openvino_model(model_size)
     parakeet = is_parakeet_model(model_size)
+    try:
+        backend = default_registry.resolve(model_size)
+    except LookupError:
+        backend = None  # not moved to a Backend yet, handled by the branches below
 
-    if parakeet:
+    if backend is not None:
+        print(backend.describe(model_size, device))
+    elif parakeet:
         print(f"Device: transcription=Parakeet (ONNX Runtime, CPU), alignment/diarization={torch_device}")
     elif apple:
         print(f"Device: transcription=Apple Neural Engine (SpeechAnalyzer), diarization={torch_device}")
@@ -907,7 +915,34 @@ def transcribe(
     # Use the bundled model path if present
     bundled = _get_bundled_models_dir()
 
-    if apple:
+    if backend is not None:
+        audio_source = AudioSource(audio_path)
+        request = TranscribeRequest(
+            audio_path=audio_path, audio=audio_source, language=language, model_id=model_size,
+            progress=_prog, batch_size=batch_size, device=torch_device,
+            api_key=api_key, api_base_url=api_base_url,
+        )
+        try:
+            result = backend.transcribe(request)
+        except FallbackRequested as e:
+            fallback_model = default_local_model_size()
+            print(f"     [WARNING] Provider request failed ({e}) "
+                  f"- falling back to local model ({fallback_model})")
+            _prog(0.0, f"Provider request failed - falling back to {fallback_model}...")
+            return transcribe(
+                audio_path, language=language, model_size=fallback_model, diarize=diarize,
+                hf_token=hf_token, min_speakers=min_speakers, max_speakers=max_speakers,
+                batch_size=batch_size, device=device, on_progress=on_progress,
+                api_key=api_key, api_base_url=api_base_url,
+            )
+        audio = audio_source.load()
+
+        t1 = time.time()
+        n_segs = len(result["segments"])
+        print(f"     Transcription complete ({t1 - t0:.1f}s)")
+        print(f"     {n_segs} segments detected")
+        _prog(0.40, f"Transcription done - {n_segs} segments ({t1 - t0:.0f}s)")
+    elif apple:
         print("1/3  Transcribing via Apple SpeechAnalyzer (Neural Engine)...")
         _prog(0.0, "SpeechAnalyzer transcribing...")
 
@@ -1054,7 +1089,10 @@ def transcribe(
     # transcribe_apple()) - the wav2vec2 alignment step is redundant for that
     # result and would additionally load another PyTorch model on macOS that
     # isn't needed at all.
-    if apple:
+    if backend is not None and backend.skips_alignment:
+        print(f"2/3  Alignment skipped ({backend.name} already provides word timestamps)")
+        _prog(0.65, f"Alignment not needed ({backend.name})")
+    elif apple:
         print("2/3  Alignment skipped (SpeechAnalyzer already provides word timestamps)")
         _prog(0.65, "Alignment not needed (Apple SpeechAnalyzer)")
     else:

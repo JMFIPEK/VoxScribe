@@ -42,3 +42,17 @@ def test_save_transcript_writes_requested_formats(tmp_path):
 def test_save_transcript_defaults_to_txt(tmp_path):
     base = str(tmp_path / "x")
     assert formats.save_transcript({"segments": []}, base) == [f"{base}.txt"]
+
+
+def test_audio_source_decodes_only_once(tmp_path, monkeypatch):
+    path = str(tmp_path / "a.wav")
+    sf.write(path, np.zeros(1600, dtype=np.float32), 16000)
+    calls = []
+    real = audio.load_audio_universal
+    monkeypatch.setattr(audio, "load_audio_universal", lambda p: calls.append(p) or real(p))
+
+    source = audio.AudioSource(path)
+    first, second = source.load(), source.load()
+
+    assert first is second
+    assert calls == [path]

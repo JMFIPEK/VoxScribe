@@ -60,3 +60,17 @@ def load_audio_universal(audio_path: str) -> np.ndarray:
         return load_audio_without_ffmpeg(audio_path)
     except Exception:
         return _load_audio_via_container(audio_path)
+
+
+class AudioSource:
+    """An audio file that is decoded at most once, however many pipeline
+    stages (Backend, alignment, diarization) ask for the samples."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self._samples: np.ndarray | None = None
+
+    def load(self) -> np.ndarray:
+        if self._samples is None:
+            self._samples = load_audio_universal(self.path)
+        return self._samples
