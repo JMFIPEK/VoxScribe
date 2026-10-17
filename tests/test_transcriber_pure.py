@@ -218,3 +218,19 @@ def test_transcribe_multi_single_file_keeps_labels(monkeypatch):
     combined = t.transcribe_multi(["one.wav"], language="de")
 
     assert [s["speaker"] for s in combined["segments"]] == ["SPEAKER_00", "Alice"]
+
+
+def test_transcribe_multi_result_key_order_is_stable(fake_transcribe):
+    combined = t.transcribe_multi(["one.wav", "two.wav"], language=None)
+
+    assert list(combined) == [
+        "segments", "word_segments", "language", "duration",
+        "speaker_id_map", "speaker_embeddings"]
+
+
+def test_transcribe_multi_without_diarization_has_no_speaker_maps(monkeypatch):
+    monkeypatch.setattr(t, "transcribe", lambda **kw: _file_result(10.0))
+
+    combined = t.transcribe_multi(["one.wav"], language="de", diarize=False)
+
+    assert list(combined) == ["segments", "word_segments", "language", "duration"]
