@@ -13,11 +13,19 @@ import numpy as np
 import soundfile as sf
 import torch
 import whisperx
-from whisperx.utils import LANGUAGES as _WHISPER_LANGUAGE_NAMES
 
 from voxscribe.paths import get_base_dir, get_bundled_models_dir
 from voxscribe.transcription.audio import (  # noqa: F401  (re-exported)
     SAMPLE_RATE, _load_audio_via_container, load_audio_universal, load_audio_without_ffmpeg,
+)
+from voxscribe.transcription.language import (  # noqa: F401  (re-exported)
+    _guess_language_from_text, _normalize_language_code,
+)
+from voxscribe.transcription.model_ids import (  # noqa: F401  (re-exported)
+    APPLE_MODEL_PREFIX, APPLE_SPEECHANALYZER_MODEL, OPENVINO_MODEL_PREFIX, PARAKEET_MODEL,
+    PARAKEET_MODEL_PREFIX, REMOTE_MODEL_PREFIX, _parse_openvino_model, default_local_model_size,
+    default_model_size, is_apple_model, is_openvino_model, is_parakeet_model, is_remote_model,
+    openvino_model_id, remote_model_id,
 )
 from voxscribe.transcription.formats import (  # noqa: F401  (re-exported)
     _format_time, _format_time_srt, _to_srt, format_transcript, save_transcript,
@@ -34,95 +42,9 @@ from voxscribe.transcription.formats import (  # noqa: F401  (re-exported)
 # on CPU.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
-# Map full language names (e.g. "german", as returned by OpenAI-compatible
-# APIs) to ISO-639-1 codes (e.g. "de"), which is what whisperx expects for
-# alignment.
-_LANGUAGE_NAME_TO_CODE = {name.lower(): code for code, name in _WHISPER_LANGUAGE_NAMES.items()}
-
-
-def _normalize_language_code(raw: str | None, fallback: str | None = None) -> str | None:
-    """Normalizes a language identifier (name or code) returned by a server API."""
-    if not raw:
-        return fallback
-    raw = raw.strip().lower()
-    if raw in _WHISPER_LANGUAGE_NAMES:
-        return raw
-    return _LANGUAGE_NAME_TO_CODE.get(raw, fallback)
-
-
-# Very common function words per language - enough to tell the GUI's
-# languages (see qt_app/constants.py LANGUAGES) apart reliably from a few
-# sentences of transcribed text. Used where the transcription backend
-# returns no language of its own (text-only providers, Parakeet), since the
-# alignment step needs the correct language-specific wav2vec2 model.
-_STOPWORDS = {
-    "de": {"der", "die", "das", "und", "ist", "nicht", "ich", "wir", "es", "ein", "eine",
-           "zu", "mit", "auf", "für", "auch", "dass", "sie", "den", "dem", "von", "haben",
-           "aber", "noch", "jetzt", "also", "oder", "wenn", "schon", "mal", "kann", "sind"},
-    "en": {"the", "and", "is", "not", "we", "it", "a", "to", "of", "that", "you", "this",
-           "for", "with", "on", "have", "are", "be", "but", "so", "what", "if", "can",
-           "there", "they", "do", "was", "would", "just", "or", "will", "at"},
-    "fr": {"le", "la", "les", "et", "est", "pas", "je", "nous", "un", "une", "des", "que",
-           "pour", "avec", "sur", "dans", "ce", "qui", "mais", "vous", "il", "elle", "du"},
-    "es": {"el", "la", "los", "las", "y", "es", "no", "yo", "un", "una", "que", "de",
-           "para", "con", "en", "por", "pero", "lo", "se", "del", "como", "está", "muy"},
-    "it": {"il", "la", "le", "e", "è", "non", "io", "noi", "un", "una", "che", "di",
-           "per", "con", "su", "ma", "sono", "gli", "della", "anche", "questo", "molto"},
-}
-_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
-
-
-def _guess_language_from_text(text: str) -> str | None:
-    """Best-guess ISO-639-1 code from transcribed text, or None if there's
-    too little evidence (short/empty text, or no clear winner)."""
-    words = _WORD_RE.findall((text or "").lower())
-    if len(words) < 8:
-        return None
-    scores = {lang: sum(1 for w in words if w in sw) for lang, sw in _STOPWORDS.items()}
-    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    (best, best_score), (_, second_score) = ranked[0], ranked[1]
-    if best_score < 3 or best_score < 1.5 * second_score:
-        return None
-    return best
-
 
 _get_base_dir = get_base_dir
 _get_bundled_models_dir = get_bundled_models_dir
-
-
-REMOTE_MODEL_PREFIX = "server:"
-
-
-def is_remote_model(model_size: str) -> bool:
-    """Checks whether this refers to a server-hosted (provider) model."""
-    return model_size.startswith(REMOTE_MODEL_PREFIX)
-
-
-def remote_model_id(provider_id: str) -> str:
-    """Builds the model_size string for a configured provider, e.g. 'server:my-provider'."""
-    return f"{REMOTE_MODEL_PREFIX}{provider_id}"
-
-
-OPENVINO_MODEL_PREFIX = "openvino:"
-
-
-def is_openvino_model(model_size: str) -> bool:
-    """Checks whether transcription should run via the Intel OpenVINO backend
-    (Arc GPU or NPU) instead of CTranslate2 (WhisperX' default backend, which
-    has no Intel GPU/NPU support at all - see CLAUDE.md)."""
-    return model_size.startswith(OPENVINO_MODEL_PREFIX)
-
-
-def openvino_model_id(ov_device: str, whisper_size: str) -> str:
-    """Builds the model_size string for transcribe(), e.g. 'openvino:GPU:medium'."""
-    return f"{OPENVINO_MODEL_PREFIX}{ov_device}:{whisper_size}"
-
-
-def _parse_openvino_model(model_size: str) -> tuple[str, str]:
-    """'openvino:GPU:medium' -> ('GPU', 'medium')."""
-    rest = model_size[len(OPENVINO_MODEL_PREFIX):]
-    ov_device, whisper_size = rest.split(":", 1)
-    return ov_device, whisper_size
 
 
 _OPENVINO_LANG_TOKEN_RE = re.compile(r"<\|([a-z]{2})\|>")
@@ -226,14 +148,7 @@ def transcribe_openvino(
     return {"segments": segments, "language": detected_language or "en"}
 
 
-PARAKEET_MODEL_PREFIX = "parakeet:"
-PARAKEET_MODEL = "parakeet:tdt-0.6b-v3"
 _PARAKEET_ONNX_ASR_NAMES = {"tdt-0.6b-v3": "nemo-parakeet-tdt-0.6b-v3"}
-
-
-def is_parakeet_model(model_size: str) -> bool:
-    """Checks whether transcription should run via NVIDIA Parakeet (onnx-asr)."""
-    return model_size.startswith(PARAKEET_MODEL_PREFIX)
 
 
 def _parakeet_local_dirs(variant: str) -> tuple[str | None, str | None]:
@@ -674,15 +589,6 @@ def _align_by_language(result: dict, audio: np.ndarray, torch_device: str,
     return {"segments": segments, "word_segments": word_segments, "language": main}
 
 
-APPLE_MODEL_PREFIX = "apple:"
-APPLE_SPEECHANALYZER_MODEL = "apple:speechanalyzer"
-
-
-def is_apple_model(model_size: str) -> bool:
-    """Checks whether the Apple SpeechAnalyzer engine (macOS only) should be used."""
-    return model_size.startswith(APPLE_MODEL_PREFIX)
-
-
 # ISO-639-1 -> full BCP-47 locale, as expected by SpeechTranscriber. Unlike
 # WhisperX/provider models, SpeechAnalyzer (as of macOS 26) has no automatic
 # language detection of its own - see detect_apple_language() for how
@@ -788,41 +694,6 @@ def detect_apple_language(audio_path: str) -> str:
         return best_lang
     finally:
         os.remove(probe_path)
-
-
-def default_model_size() -> str:
-    """Platform-wide default for model_size when the caller has no explicit
-    preference: the user's configured default provider (see providers.py),
-    if one is set up - otherwise falls back to the best local model for this
-    platform/hardware (default_local_model_size()). transcribe() also falls
-    back to a local model automatically if a chosen provider call fails
-    (network, server down, ...), see there.
-    """
-    from voxscribe.providers import get_default_provider
-    provider = get_default_provider()
-    if provider:
-        return remote_model_id(provider["id"])
-    return default_local_model_size()
-
-
-def default_local_model_size() -> str:
-    """Recommended *local* model - used as a fallback whenever a remote
-    provider call fails or isn't configured, and anywhere a local model is
-    explicitly wanted. Platform-/hardware-dependent:
-    - macOS: always Apple's SpeechAnalyzer (Neural Engine) - the only local
-      transcription engine there, no Whisper model download/inference at
-      all, see CLAUDE.md ("Apple Silicon (MPS) acceleration is partial by
-      design").
-    - Windows/Linux: whatever hardware_detect.recommend_model() picks - a
-      dedicated NVIDIA GPU (CUDA) recommends large-v3/medium/base depending
-      on VRAM, an Intel Arc GPU (no CUDA present) recommends the OpenVINO
-      model, otherwise it falls back to a RAM-sized CPU model.
-    """
-    if sys.platform == "darwin":
-        return APPLE_SPEECHANALYZER_MODEL
-    from voxscribe.hardware_detect import recommend_model
-    model_size, _device, _reason = recommend_model()
-    return model_size
 
 
 def transcribe_apple(

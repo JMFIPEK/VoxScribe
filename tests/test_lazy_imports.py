@@ -27,6 +27,8 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "voxscribe.transcription",
     "voxscribe.transcription.audio",
     "voxscribe.transcription.formats",
+    "voxscribe.transcription.language",
+    "voxscribe.transcription.model_ids",
     "voxscribe.transcription.registry",
     "qt_app.constants",
 ])
