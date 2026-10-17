@@ -247,6 +247,10 @@ QFrame[role="card"] {{
     border-radius: 10px;
 }}
 
+QWidget[role="row"] {{
+    background: transparent;
+}}
+
 QFrame[role="separator"] {{
     background-color: {BORDER};
     max-height: 1px;
@@ -344,6 +348,16 @@ QPushButton[role="success"] {{
 }}
 QPushButton[role="success"]:hover {{ background-color: {SUCCESS_HOVER}; }}
 QPushButton[role="success"]:disabled {{ background-color: {SURFACE_ALT}; color: {TEXT_MUTED}; }}
+
+QPushButton[role="choice"] {{
+    text-align: left;
+    padding: 10px 14px;
+    border-radius: 8px;
+}}
+QPushButton[role="choice"]:checked {{
+    background-color: #2c4a6e;
+    border: 2px solid {ACCENT};
+}}
 
 QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit {{
     background-color: {SURFACE_ALT};

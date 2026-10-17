@@ -87,3 +87,19 @@ def test_small_minority_share_is_not_split():
 
     assert tracks.split_speakers_by_track(result, mic, system) == {}
     assert {s["speaker"] for s in result["segments"]} == {"SPEAKER_00"}
+
+
+def test_save_tracks_stores_setup_and_load_setup_reads_it(tmp_path):
+    audio_path = str(tmp_path / "x.wav")
+    mic, system = _tracks()
+    tracks.save_tracks(audio_path, mic * 1000, system * 1000, setup="loudspeaker")
+    assert tracks.load_setup(audio_path) == "loudspeaker"
+    assert tracks.load_tracks(audio_path) is not None
+
+
+def test_load_setup_is_none_for_untagged_or_missing_sidecar(tmp_path):
+    audio_path = str(tmp_path / "x.wav")
+    assert tracks.load_setup(audio_path) is None
+    mic, system = _tracks()
+    tracks.save_tracks(audio_path, mic, system)
+    assert tracks.load_setup(audio_path) is None

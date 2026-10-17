@@ -81,9 +81,9 @@ Three tabs: **Record** (source/device, live level, start/stop), **Transcription*
 
 ```bash
 uv run --no-sync python main.py devices                      # list audio devices
-uv run --no-sync python main.py record --source mic           # record from microphone
+uv run --no-sync python main.py record --mode room            # record from microphone
 uv run --no-sync python main.py transcribe -i audio.wav        # transcribe a file
-uv run --no-sync python main.py run --source system            # record + transcribe
+uv run --no-sync python main.py run --mode call                # record a call + transcribe
 ```
 
 Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
@@ -117,8 +117,8 @@ Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
 ## Notes
 
 - On first use, local models download from HuggingFace (~1-3 GB, depending on model). After that, everything runs offline unless using a remote provider.
-- **Microphone + system** records both sources at once and mixes them.
-- **System audio** captures whatever is playing through speakers/headphones — ideal for Teams/Zoom.
+- The Record tab offers three **Recording modes**: **Listen only** records whatever plays through your speakers/headphones (Teams/Zoom audio), **Call** records that plus your microphone (as separate tracks, so you and remote speakers are told apart reliably), and **In room** records the microphone only.
+- For a **Call**, pick the **Setup**: **Headset** (headphones with their own mic) or **Loudspeaker** (speakers with a room mic, mic array or speakerphone). The app preselects it from your devices and warns if a headset's mic doesn't match the headset you're listening on.
 - The GUI stops recording via its button; the CLI stops on **ENTER** or **Ctrl+C**.
 - Transcripts are saved in the `recordings/` folder.
 - **Rename & remember speakers**: after transcription, rename SPEAKER_00 etc. to real names in the GUI. With "remember" checked, the voice is saved as a profile (`~/.voxscribe/speaker_profiles.json`) and recognized automatically in future recordings — this is a heuristic voice match, so occasional misassignments (especially on short/quiet segments) are possible and worth checking before saving.

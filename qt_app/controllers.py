@@ -36,11 +36,14 @@ class RecorderController(QObject):
     def refresh_devices(self):
         return get_devices()
 
-    def start(self, output_path: str, source: str, device_index):
+    def start(self, output_path: str, source: str, device_index,
+              loopback_index=None, setup=None):
         self._recorder.start(
             output_path=output_path,
             source=source,
             device_index=device_index,
+            loopback_index=loopback_index,
+            setup=setup,
             on_level=lambda ch, rms: self.levelUpdated.emit(ch, rms),
             on_done=lambda path, dur, err: self.recordingFinished.emit(path, dur, err),
         )

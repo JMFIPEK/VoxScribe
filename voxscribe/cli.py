@@ -7,11 +7,12 @@ module (and the requests/torch imports it eventually pulls in) is imported.
 
 Commands:
     python main.py devices                      List audio devices
-    python main.py record --source mic           Microphone recording
-    python main.py record --source system        System audio (Teams/Zoom)
-    python main.py record --source both          Microphone + system audio
+    python main.py record --mode room            In room (microphone only)
+    python main.py record --mode playback        Playback only (Teams/Zoom audio)
+    python main.py record --mode call            Call: playback + microphone
+                          [--setup headset|loudspeaker]
     python main.py transcribe --input audio.wav  Start transcription
-    python main.py run --source mic              Record + transcribe
+    python main.py run --mode call               Record + transcribe
 """
 
 import os
@@ -44,17 +45,62 @@ def cmd_record(args):
         os.makedirs("recordings", exist_ok=True)
         output = f"recordings/{timestamp}.wav"
 
-    if args.source == "mic":
+    from voxscribe import recording_modes as rm
+
+    mode = rm.mode_for_source(args.source) if args.source else args.mode
+    if mode == rm.MODE_ROOM:
         record_microphone(output, device_index=args.device)
-    elif args.source == "system":
-        record_system_audio(output, device_index=args.device)
-    elif args.source == "both":
-        record_microphone_and_system(output, device_index=args.device)
+    elif mode == rm.MODE_PLAYBACK:
+        # --device used to be the loopback index for --source system.
+        playback = args.playback_device if args.playback_device is not None else args.device
+        record_system_audio(output, device_index=playback)
     else:
-        print(f"Unknown source: {args.source}")
-        sys.exit(1)
+        setup = args.setup or _guess_setup(args.device, args.playback_device)
+        print(f"Setup: {setup}")
+        record_microphone_and_system(output, device_index=args.device,
+                                     loopback_index=args.playback_device, setup=setup)
 
     return output
+
+
+def _guess_setup(mic_index, playback_index):
+    """Setup for a Call when --setup wasn't given: Headset if the microphone
+    (the chosen one, else the guessed one) belongs to the playback device."""
+    from voxscribe import recording_modes as rm
+    from voxscribe.recorder import get_devices
+
+    devices = get_devices()
+    loopback_index = playback_index if playback_index is not None else devices["default_loopback"]
+    loopback_name = next((d["name"] for d in devices["loopback"] if d["index"] == loopback_index), None)
+    mics = devices["microphones"]
+    if mic_index is not None:
+        mics = [d for d in mics if d["index"] == mic_index]
+    setup, _mic = rm.guess_setup(mics, loopback_name)
+    return setup
+
+
+def _add_mode_arguments(parser):
+    parser.add_argument(
+        "--mode", choices=["room", "playback", "call"], default="room",
+        help=("Recording mode: room (microphone only), playback (what the "
+              "computer plays, e.g. Teams/Zoom), or call (playback + microphone "
+              "as separate tracks)")
+    )
+    parser.add_argument(
+        "--setup", choices=["headset", "loudspeaker"], default=None,
+        help="Call only: headset or loudspeaker (guessed from the devices if omitted)"
+    )
+    parser.add_argument(
+        "--device", type=int, default=None,
+        help="Microphone device index (see the 'devices' command)"
+    )
+    parser.add_argument(
+        "--playback-device", type=int, default=None,
+        help="Playback (loopback) device index, default: Windows default output"
+    )
+    # Deprecated alias from before Recording modes: mic/system/both.
+    parser.add_argument("--source", choices=["mic", "system", "both"], default=None,
+                        help=argparse.SUPPRESS)
 
 
 def _cli_progress(state):
@@ -145,16 +191,8 @@ def main():
 
     # --- record ---
     sub_record = subparsers.add_parser("record", help="Record audio")
-    sub_record.add_argument(
-        "--source", choices=["mic", "system", "both"], default="mic",
-        help=("Audio source: mic, system (WASAPI loopback), or "
-              "both (microphone + system)")
-    )
+    _add_mode_arguments(sub_record)
     sub_record.add_argument("--output", "-o", help="Output path (WAV)")
-    sub_record.add_argument(
-        "--device", type=int, default=None,
-        help="Device index (see the 'devices' command)"
-    )
     sub_record.set_defaults(func=cmd_record)
 
     # --- transcribe ---
@@ -219,12 +257,8 @@ def main():
     sub_run = subparsers.add_parser(
         "run", help="Record + transcribe immediately"
     )
-    sub_run.add_argument(
-        "--source", choices=["mic", "system", "both"], default="mic",
-        help="Audio source: mic, system, or both"
-    )
+    _add_mode_arguments(sub_run)
     sub_run.add_argument("--output", "-o", default=None)
-    sub_run.add_argument("--device", type=int, default=None)
     sub_run.add_argument("--language", "-l", default="auto")
     sub_run.add_argument("--model", "-m", default=None)
     sub_run.add_argument("--diarize", action="store_true", default=True)

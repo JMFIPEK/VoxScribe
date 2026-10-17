@@ -6,11 +6,12 @@ before anything (including voxscribe.cli) imports requests/torch/etc.
 
 Commands:
     python main.py devices                      List audio devices
-    python main.py record --source mic           Microphone recording
-    python main.py record --source system        System audio (Teams/Zoom)
-    python main.py record --source both          Microphone + system audio
+    python main.py record --mode room            In room (microphone only)
+    python main.py record --mode playback        Playback only (Teams/Zoom audio)
+    python main.py record --mode call            Call: playback + microphone
+                          [--setup headset|loudspeaker]
     python main.py transcribe --input audio.wav  Start transcription
-    python main.py run --source mic              Record + transcribe
+    python main.py run --mode call               Record + transcribe
 """
 
 import os

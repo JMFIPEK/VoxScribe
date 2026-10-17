@@ -15,7 +15,6 @@ experimental macOS).
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 import wave
@@ -23,6 +22,8 @@ import threading
 import time
 import numpy as np
 
+from voxscribe.recording_modes import normalize_device_name as _normalize_device_name
+from voxscribe.recording_modes import suggest_mic_for_loopback  # noqa: F401 (re-export)
 from voxscribe.tracks import save_tracks
 
 IS_WINDOWS = sys.platform == "win32"
@@ -74,10 +75,6 @@ def _device_score(device: dict) -> tuple[int, int, int]:
     return (api_score, default_score, channel_score)
 
 
-def _normalize_device_name(name: str) -> str:
-    return " ".join(name.casefold().split())
-
-
 def _is_generic_input_alias(name: str) -> bool:
     normalized = _normalize_device_name(name)
     return any(alias in normalized for alias in _GENERIC_INPUT_ALIASES)
@@ -122,42 +119,6 @@ def _dedupe_audio_devices(devices: list[dict]) -> list[dict]:
         result.append(device)
 
     return sorted(result, key=lambda d: (not d.get("is_default"), d["name"].casefold()))
-
-
-def _physical_device_key(name: str) -> str:
-    """'Mikrofon (Razer BlackShark V2 Pro 2.4)' and
-    'Lautsprecher (Razer BlackShark V2 Pro 2.4) [Loopback]' -> 'razer blackshark v2 pro 2.4'.
-
-    Windows names a headset's input and output endpoints "<role> (<device>)";
-    the part in parentheses identifies the physical device (minus the
-    "2- " instance prefix Windows adds for repeated devices)."""
-    name = name.replace("[Loopback]", "").strip()
-    start, end = name.rfind("("), name.rfind(")")
-    inner = name[start + 1:end] if 0 <= start < end else name
-    inner = re.sub(r"^\d+-\s*", "", inner.strip())
-    return _normalize_device_name(inner)
-
-
-def suggest_mic_for_loopback(microphones: list[dict], loopback_name: str | None) -> dict | None:
-    """For "microphone + system" recording: the microphone belonging to the
-    same physical device as the system-audio output (e.g. a headset's own
-    mic), or None if there's no such match.
-
-    Windows' default *recording* device is independent of its default
-    *playback* device - with two headsets connected it's easy to listen on
-    one while the other one's (unworn) mic is the default input, which then
-    records only silence for your own voice."""
-    if not loopback_name:
-        return None
-    key = _physical_device_key(loopback_name)
-    if not key:
-        return None
-    for mic in microphones:
-        mic_key = _physical_device_key(mic["name"])
-        # MME truncates names to 31 chars, hence prefix matching.
-        if mic_key and (mic_key == key or (len(mic_key) >= 8 and key.startswith(mic_key))):
-            return mic
-    return None
 
 
 def _chunk_size_for_rate(sample_rate: int) -> int:
@@ -367,8 +328,14 @@ class AudioRecorder:
 
     def start(self, output_path: str, source: str = "mic",
               device_index: int | None = None,
-              on_level=None, on_done=None):
-        """Starts recording in a background thread."""
+              on_level=None, on_done=None,
+              loopback_index: int | None = None, setup: str | None = None):
+        """Starts recording in a background thread.
+
+        For source "both" (a Call), device_index is the microphone,
+        loopback_index the playback device (None = Windows default; ignored
+        on macOS, which captures all playback), and setup ("headset" /
+        "loudspeaker", see recording_modes) is stored in the tracks sidecar."""
         if not IS_WINDOWS and source != "mic":
             if IS_MACOS and source == "system":
                 pass  # experimentally supported, see _record_system_macos()
@@ -390,6 +357,8 @@ class AudioRecorder:
         self._on_done = on_done
         self._source = source
         self._device_index = device_index
+        self._loopback_index = loopback_index
+        self._setup = setup
         self._thread = threading.Thread(target=self._record, daemon=True)
         self._thread.start()
 
@@ -655,7 +624,7 @@ class AudioRecorder:
         self._sample_rate = OUT_RATE
         self._frames = [mixed.tobytes()]
         _save_wav(self._output_path, self._frames, 1, OUT_RATE)
-        _save_tracks_quietly(self._output_path, mic_audio, sys_audio)
+        _save_tracks_quietly(self._output_path, mic_audio, sys_audio, self._setup)
 
         duration = len(mixed) / OUT_RATE
         if self._on_done:
@@ -740,7 +709,7 @@ class AudioRecorder:
             mic_chunk = _chunk_size_for_rate(mic_rate)
 
             # Set up system audio (loopback)
-            loopback = p.get_default_wasapi_loopback()
+            loopback = _get_loopback_device(p, self._loopback_index)
             sys_idx = loopback["index"]
             sys_rate = int(loopback["defaultSampleRate"])
             sys_ch = loopback["maxInputChannels"]
@@ -870,19 +839,20 @@ class AudioRecorder:
         self._sample_rate = OUT_RATE
         self._frames = [mixed.tobytes()]
         _save_wav(self._output_path, self._frames, 1, OUT_RATE)
-        _save_tracks_quietly(self._output_path, mic_audio, sys_audio)
+        _save_tracks_quietly(self._output_path, mic_audio, sys_audio, self._setup)
 
         duration = len(mixed) / OUT_RATE
         if self._on_done:
             self._on_done(self._output_path, duration, None)
 
 
-def _save_tracks_quietly(output_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray):
+def _save_tracks_quietly(output_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray,
+                         setup: str | None = None):
     """Saves the separate mic/system tracks next to the mix (see
     voxscribe/tracks.py). Never fails the recording itself - the mix is
     already saved and fully usable without the sidecar."""
     try:
-        path = save_tracks(output_path, mic_audio, sys_audio)
+        path = save_tracks(output_path, mic_audio, sys_audio, setup=setup)
         print(f"Saved: {path} (separate microphone/system tracks)")
     except Exception as e:
         print(f"[WARNING] Could not save separate tracks: {e}")
@@ -1171,8 +1141,11 @@ def _record_system_audio_macos_cli(output_path: str):
 
 
 def record_microphone_and_system(output_path: str,
-                                 device_index: int | None = None):
-    """Records microphone + system audio and saves the mix as a WAV file."""
+                                 device_index: int | None = None,
+                                 loopback_index: int | None = None,
+                                 setup: str | None = None):
+    """Records a Call (microphone + playback audio) and saves the mix as a
+    WAV file, plus the separate tracks tagged with the Setup."""
     recorder = AudioRecorder()
     done_event = threading.Event()
     stop_requested = threading.Event()
@@ -1193,6 +1166,8 @@ def record_microphone_and_system(output_path: str,
         output_path=output_path,
         source="both",
         device_index=device_index,
+        loopback_index=loopback_index,
+        setup=setup,
         on_done=on_done,
     )
 
