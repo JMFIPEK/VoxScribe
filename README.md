@@ -96,7 +96,8 @@ Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
 ├── voxscribe/                    # Backend package
 │   ├── cli.py                     # CLI command implementations
 │   ├── recorder.py                # Audio recording (microphone + WASAPI loopback/ScreenCaptureKit + combined)
-│   ├── transcriber.py             # WhisperX/Apple SpeechAnalyzer transcription + alignment + diarization + provider models + video input
+│   ├── transcriber.py             # Facade for the transcription API (re-exports from transcription/)
+│   ├── transcription/             # Pipeline: Backends (WhisperX, Provider, OpenVINO, Parakeet, Apple), alignment, diarization, speakers
 │   ├── providers.py               # Persistent transcription-provider configuration
 │   ├── speaker_profiles.py        # Persistent speaker profiles (voice prints) for recognition
 │   ├── hardware_detect.py         # GPU/CPU detection + model recommendation

@@ -40,3 +40,14 @@ Each step is one small commit (or a few), and the app must work after every one.
 - `uv run pytest` is green.
 - A real transcription gives the same result as before on the same file for at least one local run and one Provider run (manual check).
 - The GUI starts and a transcription runs end to end.
+
+## Status
+
+Steps 1-10 are done on this branch. Deviations from the plan and open items:
+
+- **Backend interface.** Not the plain `(audio, language, model, progress)` of step 6: a Backend takes a `TranscribeRequest` (audio path plus an `AudioSource` that decodes once, language, Model ID, `progress(fraction, message)`, batch size, device, ad-hoc Provider credentials), because Apple needs the file path and Provider needs credentials. Each Backend owns its slice of the 0-40% progress range, so percentages and messages are unchanged. Backends also expose `name`, `skips_alignment` (Apple) and `describe()` (the "Device:" line).
+- **Provider fallback.** A Provider request failure is raised as `FallbackRequested`; `transcribe()` catches it and retries with `default_local_model_size()`. Unknown-Provider and other errors still propagate.
+- **Facade is now lazy.** `voxscribe.transcriber` imports neither torch nor whisperx (the lazy-import test is a normal test now). `prewarm_diarization()` imports torch, whisperx and pyannote, so the GUI's idle-thread prewarm still absorbs the cold import.
+- **Small console/status differences.** The "segments detected" line now prints the language for every Backend (it was Parakeet only); the "Alignment skipped" console line uses the Backend's name. Progress percentages and GUI status texts are unchanged.
+- **Known bug, not fixed here:** `transcribe_multi` renames the speaker on segments and `word_segments` but not on the words nested inside a segment (pinned by a characterization test).
+- **Manual checks.** Local run verified identical to the pre-refactor code (result and progress sequence, Whisper base, diarization, track sidecar). Still to do by hand: a Provider run, the Apple/OpenVINO/Parakeet paths on their hardware, and a full GUI transcription.
