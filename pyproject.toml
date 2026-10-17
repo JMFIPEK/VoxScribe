@@ -27,6 +27,11 @@ dependencies = [
     "onnx-asr[hub]>=0.12",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
 [project.scripts]
 whisperx-recorder = "main:main"
 
@@ -42,6 +47,10 @@ build-backend = "setuptools.build_meta"
 # `macos/` (Swift sources, no __init__.py) and the gitignored runtime output
 # dirs `recordings/`/`bundled_models/` as ambiguous "top-level packages" and
 # refuses to build at all.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.setuptools]
 py-modules = ["main", "gui_qt", "download_models", "build_exe"]
 
