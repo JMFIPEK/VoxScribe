@@ -11,6 +11,25 @@ import sys
 import warnings
 
 APP_ID = "voxscribe.app"
+LOG_PATH = os.path.join(os.path.expanduser("~"), ".voxscribe", "voxscribe.log")
+
+
+def _redirect_output_to_log():
+    """Under pythonw (VoxScribe.bat) and in the windowed .exe there is no
+    console: sys.stdout/sys.stderr are None, so tracebacks vanish and libraries
+    that write progress bars (tqdm, huggingface_hub) crash. Send both to a log
+    file instead; the previous session's log is kept as voxscribe.log.1."""
+    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+    try:
+        os.replace(LOG_PATH, LOG_PATH + ".1")
+    except OSError:
+        pass  # no log yet, or a second running instance still holds it
+    log = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
+    sys.stdout = sys.stderr = log
+
+
+if sys.stdout is None or sys.stderr is None:
+    _redirect_output_to_log()
 
 # --- Suppress warnings ---
 warnings.filterwarnings("ignore")

@@ -1,14 +1,11 @@
 @echo off
 REM ============================================================
-REM  VoxScribe - double-click launcher for the GUI
+REM  VoxScribe - launcher for the GUI
 REM ============================================================
-REM  Put this on your Desktop as a shortcut:
-REM    - run  Create-Desktop-Shortcut.ps1  once (right-click > Run with PowerShell),
-REM      or
-REM    - right-click this file > Send to > Desktop (create shortcut)
-REM
-REM  First time on a fresh machine: run  setup.bat  once to install
-REM  dependencies, then use this launcher from then on.
+REM  Run  Create-Shortcuts.ps1  once (right-click > Run with PowerShell) to get
+REM  a Desktop and Start menu entry; pin the Start menu entry to the taskbar
+REM  from there. Also works on a fresh machine: the first start creates the
+REM  environment (needs uv, see README).
 REM ============================================================
 
 setlocal
@@ -18,6 +15,16 @@ cd /d "%~dp0"
 REM Locate uv: the official installer's path first, then anything on PATH
 set "UV=%USERPROFILE%\.local\bin\uv.exe"
 if not exist "%UV%" set "UV=uv"
+"%UV%" --version >nul 2>nul
+if errorlevel 1 (
+    echo uv was not found. Install it once in PowerShell with:
+    echo.
+    echo     powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+    echo.
+    echo then start VoxScribe again.
+    set "RC=1"
+    goto :done
+)
 
 REM Only sync the venv when it's missing or uv.lock changed since the last
 REM successful sync - not on every start. A plain `uv run` re-syncs every
@@ -26,7 +33,7 @@ REM in pyproject.toml and makes voxscribe/gpu_setup.py re-download the XPU
 REM build on every launch. The stamp is a copy of the uv.lock last synced.
 set "STAMP=.venv\.voxscribe-synced-uv.lock"
 set "NEED_SYNC=0"
-if not exist ".venv\Scripts\python.exe" set "NEED_SYNC=1"
+if not exist ".venv\Scripts\pythonw.exe" set "NEED_SYNC=1"
 if not exist "%STAMP%" set "NEED_SYNC=1"
 if "%NEED_SYNC%"=="0" (
     fc /b "uv.lock" "%STAMP%" >nul 2>nul || set "NEED_SYNC=1"
@@ -50,17 +57,20 @@ if "%NEED_SYNC%"=="1" (
     copy /y "uv.lock" "%STAMP%" >nul
 )
 
-"%UV%" run --no-sync python gui_qt.py
-set "RC=%ERRORLEVEL%"
+REM Start the GUI without a console and return right away, so only the app's
+REM own taskbar button stays. Its output goes to %USERPROFILE%\.voxscribe\
+REM voxscribe.log (see gui_qt.py). VIRTUAL_ENV lets gpu_setup's `uv pip
+REM install` find this venv, as it would under `uv run`.
+set "VIRTUAL_ENV=%~dp0.venv"
+start "" ".venv\Scripts\pythonw.exe" gui_qt.py
+set "RC=0"
 
 :done
 
 if not "%RC%"=="0" (
     echo.
     echo ------------------------------------------------------------
-    echo  VoxScribe exited with an error ^(code %RC%^).
-    echo  If this is the first start on this machine, run  setup.bat
-    echo  once to install dependencies, then try again.
+    echo  VoxScribe could not be started ^(see the message above^).
     echo ------------------------------------------------------------
     echo.
     pause
