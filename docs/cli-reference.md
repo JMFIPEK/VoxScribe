@@ -9,11 +9,20 @@
 | `transcribe` | Transcribe an audio file |
 | `run` | Record + transcribe immediately |
 
+## `record` / `run` recording options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--mode` | `room` | Recording mode: `room` (microphone only), `playback` (what the computer plays, e.g. Teams/Zoom), or `call` (playback + microphone, saved as separate tracks too) |
+| `--setup` | guessed | Call only: `headset` or `loudspeaker` (speakers + room mic/speakerphone). Guessed from the devices if omitted, and stored with the recording |
+| `--device` | default input | Microphone device index (see `devices`) |
+| `--playback-device` | default output | Playback (loopback) device index (Windows) |
+| `--source` | – | Deprecated alias: `mic` = `--mode room`, `system` = `--mode playback`, `both` = `--mode call` |
+
 ## `transcribe` options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--source` | `mic` | `mic`, `system` (WASAPI loopback), or `both` (microphone + system) |
 | `--language`, `-l` | `auto` | Language (en, de, fr, es, ...) or `auto` for automatic detection |
 | `--model`, `-m` | your default provider, if configured (falls back automatically to the recommended local model on failure) | Whisper model (large-v2, large-v3, medium, base), `openvino:GPU:medium` (Intel Arc GPU, Windows only, see [Intel Arc GPU](intel-arc-gpu.md)), a configured provider (`server:<provider-id>`, see [Providers](providers.md)), or `apple:speechanalyzer` (macOS only) |
 | `--diarize` / `--no-diarize` | `--diarize` | Speaker diarization on/off |
@@ -30,13 +39,16 @@
 
 ```bash
 # Record from microphone (stop with ENTER)
-python main.py record --source mic
+python main.py record --mode room
 
-# System audio / Teams / Zoom (WASAPI loopback)
-python main.py record --source system
+# Playback audio only - what Teams/Zoom plays (WASAPI loopback)
+python main.py record --mode playback
+
+# A call on a headset: playback + the headset's microphone
+python main.py record --mode call --setup headset
 
 # Pick a specific microphone (index from 'devices')
-python main.py record --source mic --device 15
+python main.py record --mode room --device 15
 
 # Transcribe with automatic language detection (default)
 python main.py transcribe -i recordings/meeting.wav
@@ -63,5 +75,5 @@ python main.py transcribe -i recordings/meeting.mkv
 python main.py transcribe -i recordings/meeting.wav -m server:my-provider
 
 # Record + transcribe immediately
-python main.py run --source system -l en -m large-v2 --min-speakers 2 --max-speakers 2 -f txt,srt
+python main.py run --mode call -l en -m large-v2 --min-speakers 2 --max-speakers 2 -f txt,srt
 ```

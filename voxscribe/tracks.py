@@ -8,6 +8,11 @@ person speaks either into the local microphone or comes out of the speakers,
 never both. Diarization clusters that clearly span both sides (pyannote
 merged a local and a remote voice) are split apart again.
 
+The sidecar's FLAC comment tag records the Call's Setup ("mode=call;
+setup=headset" or "...setup=loudspeaker", see recording_modes.py) so
+transcription can take it into account later; sidecars recorded before the
+tag existed have no Setup (load_setup() returns None).
+
 Deliberately numpy/soundfile-only (no pyaudio, no torch), so both
 recorder.py and transcriber.py can import it cheaply.
 """
@@ -40,16 +45,32 @@ def tracks_path_for(audio_path: str) -> str:
     return os.path.splitext(audio_path)[0] + TRACKS_SUFFIX
 
 
-def save_tracks(audio_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray) -> str:
+def save_tracks(audio_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray,
+                setup: str | None = None) -> str:
     """Saves both tracks (int16 value range as float, same sample rate
-    SAMPLE_RATE, as produced by recorder._record_both*) next to the mix."""
+    SAMPLE_RATE, as produced by recorder._record_both*) next to the mix,
+    tagged with the Call's Setup if given."""
     n = max(len(mic_audio), len(sys_audio))
     stereo = np.zeros((n, 2), dtype=np.int16)
     stereo[:len(mic_audio), 0] = np.clip(mic_audio, -32768, 32767).astype(np.int16)
     stereo[:len(sys_audio), 1] = np.clip(sys_audio, -32768, 32767).astype(np.int16)
     path = tracks_path_for(audio_path)
-    sf.write(path, stereo, SAMPLE_RATE, format="FLAC", subtype="PCM_16")
+    with sf.SoundFile(path, "w", SAMPLE_RATE, 2, "PCM_16", format="FLAC") as f:
+        f.comment = f"mode=call;setup={setup}" if setup else "mode=call"
+        f.write(stereo)
     return path
+
+
+def load_setup(audio_path: str) -> str | None:
+    """The Setup stored in the recording's sidecar, or None if there's no
+    sidecar or it predates the tag."""
+    path = tracks_path_for(audio_path)
+    if not os.path.isfile(path):
+        return None
+    with sf.SoundFile(path) as f:
+        comment = f.comment or ""
+    fields = dict(part.split("=", 1) for part in comment.split(";") if "=" in part)
+    return fields.get("setup") or None
 
 
 def load_tracks(audio_path: str) -> tuple[np.ndarray, np.ndarray] | None:

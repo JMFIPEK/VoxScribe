@@ -4,6 +4,24 @@ Desktop and CLI tool that records meetings and turns audio into speaker-labelled
 
 ## Language
 
+### Recording
+
+**Playback audio**:
+Everything the computer plays through its speakers or headphones, in a meeting mainly the remote participants' voices.
+_Avoid_: System audio, loopback, outgoing audio, incoming audio
+
+**Microphone audio**:
+Everything a microphone picks up in the user's room, mainly the user's own voice.
+_Avoid_: Mic input, outgoing audio, incoming audio
+
+**Recording mode**:
+What a recording captures: Playback only (Playback audio alone), Call (Playback audio and Microphone audio as separate tracks), or In room (Microphone audio alone).
+_Avoid_: Source, input
+
+**Setup**:
+How a Call is heard and spoken: Headset (headphones and their own microphone, so the two tracks stay clean) or Loudspeaker (speakers and a room microphone, so the remote voices also reach the microphone).
+_Avoid_: Device type, hardware mode
+
 ### Transcription engines
 
 **Provider**:
