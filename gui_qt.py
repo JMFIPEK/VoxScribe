@@ -99,7 +99,11 @@ def main():
         # NSApp.applicationIconImage) - window.setWindowIcon() below only
         # affects the title bar/alt-tab icon and left the Dock showing the
         # generic blank-document icon.
-        app.setWindowIcon(QIcon(logo_path))
+        if sys.platform == "darwin":
+            from qt_app.app_icon import build_icon_pixmap
+            app.setWindowIcon(QIcon(build_icon_pixmap(logo_path)))
+        else:
+            app.setWindowIcon(QIcon(logo_path))
     splash = QSplashScreen(_build_splash_pixmap(logo_path))
     splash.showMessage(
         "Loading modules...", Qt.AlignBottom | Qt.AlignHCenter, Qt.white)
@@ -147,7 +151,7 @@ def main():
 
     from qt_app.main_window import MainWindow
     window = MainWindow()
-    if os.path.exists(logo_path):
+    if sys.platform != "darwin" and os.path.exists(logo_path):
         window.setWindowIcon(QIcon(logo_path))
 
     # show() before finish(): finish() waits for the window to be exposed,

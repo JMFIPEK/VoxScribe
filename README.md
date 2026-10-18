@@ -107,7 +107,7 @@ Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
 │   ├── gpu_setup.py               # Automatic CUDA/XPU torch backend correction (Windows)
 │   ├── download_models.py         # Pre-download models for offline/bundled operation
 │   └── build_exe.py               # PyInstaller build for a standalone .exe (Windows)
-├── macos/                        # macOS Swift helpers: SystemAudioCapture.swift, SpeechAnalyzerTranscribe.swift, build.sh
+├── macos/                        # macOS Swift helpers: SystemAudioCapture.swift, SpeechAnalyzerTranscribe.swift, build.sh, make-app.sh
 ├── docs/                          # Detailed docs: providers, Intel Arc GPU, macOS, CLI reference
 ├── pyproject.toml                 # Python dependencies (incl. CUDA PyTorch pinning), primary source for `uv`
 ├── .env                           # HuggingFace token (not committed!)

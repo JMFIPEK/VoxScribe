@@ -42,6 +42,27 @@ cd ..
 Then activate the venv with `source .venv/bin/activate` (or use
 `uv run python ...` without activating).
 
+## Dock icon (VoxScribe.app)
+
+```bash
+macos/make-app.sh          # creates ~/Applications/VoxScribe.app
+```
+
+This builds a small launcher app with the VoxScribe icon that starts the GUI
+from this repo in place (the counterpart of `VoxScribe.bat` on Windows). Open
+it from Spotlight or Launchpad, then right-click its Dock icon > Options >
+Keep in Dock. It re-syncs the environment when `uv.lock` changes and builds
+the Swift helpers if they are missing; output goes to
+`~/.voxscribe/voxscribe.log`.
+
+- The repo path is baked in - re-run `macos/make-app.sh` if you move the repo.
+- macOS attributes the microphone and "Screen & System Audio Recording"
+  permissions to **VoxScribe** (not Terminal) when started this way, so grant
+  them once for the app on first use.
+- The icon (Logo.png on a dark rounded tile) is rendered by
+  `qt_app/app_icon.py`; running `python gui_qt.py` from a terminal shows the
+  same icon in the Dock while it runs.
+
 ## Important notes
 
 - Without the `macos/build.sh` step, neither system-audio recording nor
@@ -54,8 +75,8 @@ Then activate the venv with `source .venv/bin/activate` (or use
   relevant there.
 - System-audio recording requires the "Screen & System Audio Recording"
   permission (System Settings → Privacy & Security) for the process running
-  VoxScribe (Terminal while testing, later the packaged app) - macOS prompts
-  for this on first use.
+  VoxScribe (VoxScribe.app, or Terminal when started from there) - macOS
+  prompts for this on first use.
 - Speaker diarization (pyannote) works unchanged from Windows/Linux, just
   with MPS instead of CUDA - see the main README's HuggingFace token section,
   still needed here.
