@@ -2,7 +2,10 @@
 
 ## Loudspeaker setup: echo on the microphone track
 
-**Status:** found 2026-10-18 on macOS, not investigated further, not fixed.
+**Status:** found 2026-10-18 on macOS. Partly fixed (issue #22): for a
+Loudspeaker Setup the track-based speaker split now gets the microphone track
+with the Echo removed (`voxscribe/echo.py`, ADR 0003; verified on synthetic
+signals only). The transcribed mix still contains the Echo (issue #13).
 
 In Call mode with Loudspeaker setup, the room microphone hears the speakers, so
 the microphone track contains the Playback audio as an echo.

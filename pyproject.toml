@@ -25,6 +25,9 @@ dependencies = [
     # Intel Arc hardware - macOS uses Apple's SpeechAnalyzer instead.
     "optimum-intel[openvino]>=2.1; sys_platform == 'win32'",
     "onnx-asr[hub]>=0.12",
+    # WebRTC echo canceller (AEC3) for Loudspeaker Calls, see
+    # voxscribe/echo.py and docs/adr/0003. Imported lazily, never at startup.
+    "livekit>=1.1.21",
 ]
 
 [dependency-groups]

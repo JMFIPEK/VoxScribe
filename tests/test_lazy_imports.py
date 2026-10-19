@@ -1,18 +1,25 @@
 """Importing modules the GUI loads eagerly must not pull in torch/whisperx
-(a cold import takes minutes). Each check runs in a fresh interpreter,
-because sys.modules is shared across tests."""
+(a cold import takes minutes) or livekit (only the echo canceller needs it).
+Each check runs in a fresh interpreter, because sys.modules is shared across
+tests."""
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+
+# -I keeps the user's environment out, but also drops the current directory
+# from sys.path; put this checkout first, so the code under test is imported
+# rather than whichever checkout the venv was installed from.
+_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def _heavy_modules_loaded_by(module: str) -> set[str]:
     code = (
-        "import importlib, sys; "
+        f"import importlib, sys; sys.path.insert(0, {_ROOT!r}); "
         f"importlib.import_module({module!r}); "
-        "print(' '.join(m for m in ('torch', 'whisperx') if m in sys.modules))"
+        "print(' '.join(m for m in ('torch', 'whisperx', 'livekit') if m in sys.modules))"
     )
     out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True,
                          text=True, check=True).stdout
@@ -23,6 +30,7 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "voxscribe.paths",
     "voxscribe.providers",
     "voxscribe.tracks",
+    "voxscribe.echo",
     "voxscribe.speaker_profiles",
     "voxscribe.transcription",
     "voxscribe.transcription.align",
