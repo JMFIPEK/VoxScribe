@@ -9,9 +9,11 @@ never both. Diarization clusters that clearly span both sides (pyannote
 merged a local and a remote voice) are split apart again.
 
 The sidecar's FLAC comment tag records the Call's Setup ("mode=call;
-setup=headset" or "...setup=loudspeaker", see recording_modes.py) so
-transcription can take it into account later; sidecars recorded before the
-tag existed have no Setup (load_setup() returns None).
+setup=headset" or "...setup=loudspeaker", see recording_modes.py); sidecars
+recorded before the tag existed have no Setup (load_setup() returns None).
+With a Loudspeaker Setup the microphone track also holds the Playback audio
+as Echo, so load_tracks() returns it cleaned (echo.py, docs/adr/0003); the
+file itself stays untouched.
 
 Deliberately numpy/soundfile-only (no pyaudio, no torch), so both
 recorder.py and transcriber.py can import it cheaply.
@@ -21,6 +23,9 @@ import os
 
 import numpy as np
 import soundfile as sf
+
+from voxscribe import echo
+from voxscribe.recording_modes import SETUP_LOUDSPEAKER
 
 SAMPLE_RATE = 16000
 TRACKS_SUFFIX = ".tracks.flac"
@@ -74,14 +79,19 @@ def load_setup(audio_path: str) -> str | None:
 
 
 def load_tracks(audio_path: str) -> tuple[np.ndarray, np.ndarray] | None:
-    """Returns (mic, system) as float32 arrays, or None if there's no sidecar."""
+    """Returns (mic, system) as float32 arrays, or None if there's no sidecar.
+    For a Loudspeaker Setup the mic track comes with the Echo removed."""
     path = tracks_path_for(audio_path)
     if not os.path.isfile(path):
         return None
     data, sr = sf.read(path, dtype="float32", always_2d=True)
     if sr != SAMPLE_RATE or data.shape[1] != 2:
         return None
-    return data[:, 0], data[:, 1]
+    mic, system = data[:, 0], data[:, 1]
+    if load_setup(audio_path) == SETUP_LOUDSPEAKER:
+        print("     Loudspeaker Setup: removing the Echo from the microphone track...")
+        mic = echo.cancel_echo(mic, system)
+    return mic, system
 
 
 def _frame_db(audio: np.ndarray) -> np.ndarray:

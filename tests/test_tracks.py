@@ -1,6 +1,8 @@
 """Characterization tests for voxscribe.tracks (numpy/soundfile only)."""
 
 import numpy as np
+import pytest
+import soundfile as sf
 
 from voxscribe import tracks
 
@@ -103,3 +105,51 @@ def test_load_setup_is_none_for_untagged_or_missing_sidecar(tmp_path):
     mic, system = _tracks()
     tracks.save_tracks(audio_path, mic, system)
     assert tracks.load_setup(audio_path) is None
+
+
+def _loudspeaker_call(seconds=20.0):
+    """(mic, playback) in int16 value range: remote speech-like noise bursts
+    on the playback track, and on the microphone only their Echo - 300 ms
+    late, low-passed, at a third of the level."""
+    rng = np.random.default_rng(5)
+    n = int(seconds * SR)
+    bursts = (rng.uniform(size=n // 4000 + 1) < 0.7).repeat(4000)[:n]
+    playback = np.convolve(rng.standard_normal(n), np.hanning(7), mode="same") * bursts * 3000
+    delay = int(0.3 * SR)
+    mic = np.convolve(np.concatenate([np.zeros(delay), playback[:-delay]]), [0.3, 0.15, 0.05])[:n]
+    return mic.astype(np.float32), playback.astype(np.float32)
+
+
+def _raw_sidecar(audio_path):
+    data, _ = sf.read(tracks.tracks_path_for(audio_path), dtype="float32", always_2d=True)
+    return data[:, 0], data[:, 1]
+
+
+def test_loudspeaker_sidecar_loads_the_mic_track_without_echo(tmp_path):
+    audio_path = str(tmp_path / "x.wav")
+    mic, playback = _loudspeaker_call()
+    tracks.save_tracks(audio_path, mic, playback, setup="loudspeaker")
+    raw_mic, raw_playback = _raw_sidecar(audio_path)
+
+    loaded_mic, loaded_playback = tracks.load_tracks(audio_path)
+
+    def level_db(x):
+        x = x[2 * SR:].astype(np.float64)  # after the canceller has adapted
+        return 10 * np.log10(np.mean(x ** 2) + 1e-20)
+
+    assert len(loaded_mic) == len(raw_mic)
+    assert level_db(loaded_mic) <= level_db(raw_mic) - 15.0
+    np.testing.assert_array_equal(loaded_playback, raw_playback)
+
+
+@pytest.mark.parametrize("setup", ["headset", None])
+def test_headset_and_pre_setup_sidecars_load_unchanged(tmp_path, setup):
+    audio_path = str(tmp_path / "x.wav")
+    mic, playback = _loudspeaker_call()
+    tracks.save_tracks(audio_path, mic, playback, setup=setup)
+    raw_mic, raw_playback = _raw_sidecar(audio_path)
+
+    loaded_mic, loaded_playback = tracks.load_tracks(audio_path)
+
+    np.testing.assert_array_equal(loaded_mic, raw_mic)
+    np.testing.assert_array_equal(loaded_playback, raw_playback)
