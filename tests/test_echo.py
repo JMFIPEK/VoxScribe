@@ -139,7 +139,7 @@ def test_double_talk_keeps_local_speech(drift):
     assert _speech_dips_db(cleaned, local, DOUBLE_TALK) >= -6.0
 
 
-def test_failure_returns_the_uncleaned_track(monkeypatch, capsys):
+def test_aec3_failure_keeps_the_linear_stage(monkeypatch, capsys):
     import sys
 
     class Broken:
@@ -148,6 +148,20 @@ def test_failure_returns_the_uncleaned_track(monkeypatch, capsys):
 
     monkeypatch.setitem(sys.modules, "livekit", Broken())
     monkeypatch.setitem(sys.modules, "livekit.rtc", Broken())
+    _, _, mic, far, _ = _call(False)
+    cleaned = echo.cancel_echo(mic, far)
+    # The linear stage alone already removes most of the Echo, so a broken
+    # livekit costs the residual suppression, not the whole cleaning.
+    span = (FAR_ONLY[0] + WARMUP, FAR_ONLY[1])
+    assert _db(_span(mic, span)) - _db(_span(cleaned, span)) >= 15
+    assert "[WARNING]" in capsys.readouterr().out
+
+
+def test_failure_before_aec3_returns_the_uncleaned_track(monkeypatch, capsys):
+    def broken(*args):
+        raise RuntimeError("linear stage exploded")
+
+    monkeypatch.setattr(echo, "_cancel_linear", broken)
     mic = np.random.default_rng(0).standard_normal(SR * 2).astype(np.float32) * 0.1
     playback = np.random.default_rng(1).standard_normal(SR * 2).astype(np.float32) * 0.1
     out = echo.cancel_echo(mic, playback)

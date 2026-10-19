@@ -71,7 +71,7 @@ def _current_torch_variant() -> str | None:
     return version.split("+", 1)[1]
 
 
-def _find_uv() -> str | None:
+def find_uv() -> str | None:
     """Prefers the standard path used by astral.sh's official installer (see
     README) over a generic PATH hit - on development machines,
     `shutil.which("uv")` can otherwise find a `uv.exe` bundled with some
@@ -115,7 +115,7 @@ def ensure_correct_torch_backend(on_status=print) -> None:
     if current == desired:
         return  # already the right build - nothing to install
 
-    uv = _find_uv()
+    uv = find_uv()
     if uv is None:
         on_status(
             f"[GPU setup] {gpu_names[0] if gpu_names else 'GPU'} detected, but "

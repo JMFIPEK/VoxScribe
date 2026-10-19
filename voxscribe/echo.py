@@ -68,14 +68,20 @@ _APM_LATENCY = 128
 def cancel_echo(mic: np.ndarray, playback: np.ndarray) -> np.ndarray:
     """Removes the Echo of `playback` from `mic` (both float32 mono at
     SAMPLE_RATE, value range -1..1, as tracks.load_tracks() returns them).
-    Returns the cleaned microphone track, same length as `mic`; on any error
-    a warning is printed and `mic` is returned unchanged."""
+    Returns the cleaned microphone track, same length as `mic`. On an error
+    a warning is printed: if WebRTC AEC3 fails, the linear stage's result is
+    returned (most of the Echo is already gone), otherwise `mic` unchanged."""
     try:
         reference = _line_up(mic, playback)
-        return _run_aec3(_cancel_linear(mic, reference), reference)
+        linear = _cancel_linear(mic, reference)
     except Exception as e:
         print(f"     [WARNING] Echo cancellation failed, using the uncleaned microphone track: {e}")
         return mic
+    try:
+        return _run_aec3(linear, reference)
+    except Exception as e:
+        print(f"     [WARNING] WebRTC echo canceller failed, using the linear stage only: {e}")
+        return linear
 
 
 def _estimate_delays(mic: np.ndarray, playback: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

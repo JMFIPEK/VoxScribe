@@ -11,7 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from voxscribe.gpu_setup import _find_uv
+from voxscribe import updates
+from voxscribe.gpu_setup import find_uv
 from voxscribe.paths import get_base_dir
 
 # The private GitHub mirror ("github") is deliberately not listed: it's a
@@ -19,7 +20,6 @@ from voxscribe.paths import get_base_dir
 REMOTES = ("origin", "public")
 BRANCH = "main"
 
-VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 # pyproject.toml's [project] name, also the package's entry in uv.lock
 PROJECT_NAME = "whisperx-recorder"
@@ -32,10 +32,10 @@ class ReleaseError(Exception):
 def parse_version(text: str) -> tuple[int, int, int]:
     """"1.10.0" -> (1, 10, 0); tuples compare numerically. Raises ValueError
     for anything that isn't MAJOR.MINOR.PATCH."""
-    match = VERSION_RE.match(text)
-    if not match:
+    parsed = updates.parse_version(text)
+    if parsed is None:
         raise ValueError(f"not a MAJOR.MINOR.PATCH version: {text!r}")
-    return tuple(int(n) for n in match.groups())
+    return parsed
 
 
 # Both files are edited textually (not re-serialized), so the commit diff is
@@ -120,7 +120,7 @@ def _check_preconditions(repo: Path, new_version: str) -> str:
             raise ReleaseError(f"{remote}/{BRANCH} has commits that local {BRANCH} lacks - "
                                f"pull/merge them first")
 
-    if (repo / "uv.lock").exists() and _find_uv() is None:
+    if (repo / "uv.lock").exists() and find_uv() is None:
         raise ReleaseError("uv.lock needs a version bump verified by uv, but uv was not found")
     return current
 
@@ -160,7 +160,7 @@ def release(repo, new_version: str, dry_run: bool = False, log=print) -> None:
     if "uv.lock" in files:
         try:
             # Only checks; never re-resolves or syncs the environment.
-            run(_find_uv() or "uv", "lock", "--check")
+            run(find_uv() or "uv", "lock", "--check")
         except ReleaseError:
             for name, text in originals.items():
                 with open(repo / name, "w", encoding="utf-8", newline="") as f:

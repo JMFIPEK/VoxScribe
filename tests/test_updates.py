@@ -34,6 +34,13 @@ def test_clean_checkout_on_release_tag_shows_the_release(install):
     assert updates.installed_version(install) == "v1.2.3"
 
 
+def test_frozen_build_is_development(install, monkeypatch):
+    # Frozen builds are out of scope for Updates (#15); an .exe can be built
+    # from any commit, so it never claims to be a Release.
+    monkeypatch.setattr(updates.sys, "frozen", True, raising=False)
+    assert updates.installed_version(install) == "development"
+
+
 def test_local_edits_mean_development(install):
     (install / "app.py").write_text("print('tweaked')\n")
     assert updates.installed_version(install) == "development"

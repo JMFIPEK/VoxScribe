@@ -13,7 +13,7 @@ from voxscribe.paths import get_base_dir
 
 DEVELOPMENT = "development"
 
-RELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 # Each call is a local, fast Git operation; the timeout only guards against
 # a hung git (e.g. a stale lock on a network drive).
@@ -37,19 +37,27 @@ def _git(repo, *args) -> str | None:
     return result.stdout
 
 
+def parse_version(text: str) -> tuple[int, int, int] | None:
+    """"1.10.0" -> (1, 10, 0), None for anything that isn't MAJOR.MINOR.PATCH.
+    Tuples compare numerically, so v1.10.0 sorts above v1.9.0."""
+    match = VERSION_RE.match(text)
+    return tuple(int(n) for n in match.groups()) if match else None
+
+
+def parse_release_tag(tag: str) -> tuple[int, int, int] | None:
+    """"v1.10.0" -> (1, 10, 0), None if the tag isn't a Release tag."""
+    return parse_version(tag[1:]) if tag.startswith("v") else None
+
+
 def installed_version(repo=None) -> str:
     """Returns the installed Release ("v1.2.3") or "development".
 
     Runs two local git calls - cheap, but not free on Windows (process
     start), so the GUI calls it off the GUI thread."""
     if getattr(sys, "frozen", False):
-        # The PyInstaller .exe has no checkout to look at - report the
-        # version it was built from, if its package metadata was bundled.
-        try:
-            from importlib.metadata import version
-            return f"v{version('whisperx-recorder')}"
-        except Exception:
-            return DEVELOPMENT
+        # The PyInstaller .exe has no checkout and gets no Updates (out of
+        # scope, see docs/adr/0002-*); it can be built from any commit.
+        return DEVELOPMENT
 
     repo = repo if repo is not None else get_base_dir()
 
@@ -69,7 +77,7 @@ def installed_version(repo=None) -> str:
     tags = _git(repo, "tag", "--points-at", "HEAD")
     if tags is None:
         return DEVELOPMENT
-    releases = [t for t in tags.split() if RELEASE_TAG_RE.match(t)]
+    releases = [t for t in tags.split() if parse_release_tag(t)]
     if not releases:
         return DEVELOPMENT
-    return max(releases, key=lambda t: tuple(int(n) for n in RELEASE_TAG_RE.match(t).groups()))
+    return max(releases, key=parse_release_tag)

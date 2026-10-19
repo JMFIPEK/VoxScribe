@@ -159,7 +159,7 @@ class SettingsPage(QWidget):
         self._build_ui()
         self._reload_providers()
         self._version_ready.connect(
-            lambda version: self.version_label.setText(f"Installed version: {version}"))
+            lambda version: self.version_label.setText(f"Installed Release: {version}"))
         # A couple of git subprocess calls (~0.1s on Windows, longer if git
         # hangs) shouldn't delay the window, which is built before it's shown.
         threading.Thread(target=self._determine_version, daemon=True).start()
@@ -285,7 +285,7 @@ class SettingsPage(QWidget):
         root.addWidget(info_sub)
         # The Release this install is on, or "development" (a branch, local
         # edits, commits past the tag) - see voxscribe/updates.py.
-        self.version_label = self._bold("Installed version: checking...")
+        self.version_label = self._bold("Installed Release: checking...")
         root.addWidget(self.version_label)
 
         info_text = QTextEdit()

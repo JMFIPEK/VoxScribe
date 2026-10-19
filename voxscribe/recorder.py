@@ -757,7 +757,7 @@ class AudioRecorder:
             return
         if not assembler.has_audio(SYSTEM):
             if self._on_done:
-                self._on_done(None, 0, "System audio produced no audio data.")
+                self._on_done(None, 0, "Playback audio produced no audio data.")
             return
 
         mixed = assembler.save(self._output_path, self._setup)
