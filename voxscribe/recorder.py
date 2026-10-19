@@ -24,7 +24,8 @@ import numpy as np
 
 from voxscribe.recording_modes import normalize_device_name as _normalize_device_name
 from voxscribe.recording_modes import suggest_mic_for_loopback  # noqa: F401 (re-export)
-from voxscribe.tracks import save_tracks
+from voxscribe.track_assembler import TrackAssembler
+from voxscribe.tracks import MIC, SYSTEM
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -133,53 +134,9 @@ def _mic_channels(info: dict) -> int:
     devices (seen with a Jabra Link 390 Bluetooth headset, 48kHz/2ch) that
     path delivers mostly digital silence with garbled fragments of speech,
     while a native 2-channel stream of the same device is clean. Callers
-    downmix to mono themselves (_frames_to_mono_float()).
+    downmix to mono themselves (e.g. the TrackAssembler for a Call).
     """
     return max(1, min(2, int(info.get("maxInputChannels", 1) or 1)))
-
-
-def _frames_to_mono_float(frames: list[bytes], channels: int) -> np.ndarray:
-    if not frames:
-        return np.array([], dtype=np.float64)
-
-    audio = np.frombuffer(b"".join(frames), dtype=np.int16).astype(np.float64)
-    if channels > 1:
-        usable_len = len(audio) - (len(audio) % channels)
-        audio = audio[:usable_len].reshape(-1, channels).mean(axis=1)
-    return audio
-
-
-def _resample_to_rate(audio: np.ndarray, source_rate: int,
-                      target_rate: int) -> np.ndarray:
-    if source_rate == target_rate or len(audio) == 0:
-        return audio
-
-    from math import gcd
-    from scipy.signal import resample_poly
-
-    divisor = gcd(target_rate, source_rate)
-    return resample_poly(audio, target_rate // divisor, source_rate // divisor)
-
-
-def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
-    if len(audio) >= length:
-        return audio[:length]
-    return np.pad(audio, (0, length - len(audio)), mode="constant")
-
-
-def _mix_sources(mic_audio: np.ndarray, sys_audio: np.ndarray) -> np.ndarray:
-    """Mixes two mono signals already resampled to the same sample rate
-    (microphone + system loopback, int16 value range as float) for the final
-    mix after stop (_record_both()/_record_both_macos()). Returns the int16
-    value range (neither normalized to -1..1 nor cast to int16)."""
-    out_len = max(len(mic_audio), len(sys_audio))
-    mic_audio = _pad_to_length(mic_audio, out_len)
-    sys_audio = _pad_to_length(sys_audio, out_len)
-    mixed = (mic_audio * 0.65) + (sys_audio * 0.65)
-    peak = np.max(np.abs(mixed)) if len(mixed) else 0
-    if peak > 32767:
-        mixed = mixed * (32767 / peak)
-    return mixed
 
 
 def _macos_system_audio_binary_path() -> str:
@@ -510,8 +467,8 @@ class AudioRecorder:
 
         The microphone runs on sounddevice's own callback thread, the
         system-audio side is read in a blocking loop on the current thread
-        (identical to _record_system_macos()); both frame lists are only
-        mixed after stop.
+        (identical to _record_system_macos()); both feed a TrackAssembler,
+        which builds the tracks and the mix after stop.
         """
         binary = _macos_system_audio_binary_path()
         if not os.path.isfile(binary):
@@ -538,13 +495,11 @@ class AudioRecorder:
         sys_ch = 1
         sys_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
         chunk_bytes = CHUNK * SAMPLE_WIDTH
-
-        mic_frames = []
-        sys_frames = []
+        assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch)
 
         def mic_callback(indata, frames, time_info, status):
             data = indata.tobytes()
-            mic_frames.append(data)
+            assembler.add_chunk(MIC, data)
             if self._on_level:
                 self._on_level("mic", compute_rms(data))
 
@@ -573,7 +528,7 @@ class AudioRecorder:
                 data = proc.stdout.read(chunk_bytes)
                 if not data:
                     break
-                sys_frames.append(data)
+                assembler.add_chunk(SYSTEM, data)
                 if self._on_level:
                     self._on_level("system", compute_rms(data))
 
@@ -602,33 +557,7 @@ class AudioRecorder:
                 except Exception:
                     pass
 
-        if not mic_frames:
-            if self._on_done:
-                self._on_done(None, 0, "Microphone produced no audio data.")
-            return
-        if not sys_frames:
-            if self._on_done:
-                self._on_done(None, 0, "System audio produced no audio data.")
-            return
-
-        # Mix both streams down to mono 16kHz (identical to _record_both())
-        mic_audio = _frames_to_mono_float(mic_frames, mic_ch)
-        sys_audio = _frames_to_mono_float(sys_frames, sys_ch)
-        mic_audio = _resample_to_rate(mic_audio, mic_rate, OUT_RATE)
-        sys_audio = _resample_to_rate(sys_audio, sys_rate, OUT_RATE)
-        mixed = _mix_sources(mic_audio, sys_audio)
-        mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
-
-        os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
-        self._channels = 1
-        self._sample_rate = OUT_RATE
-        self._frames = [mixed.tobytes()]
-        _save_wav(self._output_path, self._frames, 1, OUT_RATE)
-        _save_tracks_quietly(self._output_path, mic_audio, sys_audio, self._setup)
-
-        duration = len(mixed) / OUT_RATE
-        if self._on_done:
-            self._on_done(self._output_path, duration, None)
+        self._finish_call(assembler)
 
     def _record_single(self):
         p = pyaudio.PyAudio()
@@ -689,8 +618,6 @@ class AudioRecorder:
     def _record_both(self):
         """Records microphone + system audio simultaneously and mixes them."""
         p = pyaudio.PyAudio()
-        mic_frames = []
-        sys_frames = []
         mic_stream = None
         sys_stream = None
         mic_thread = None
@@ -714,6 +641,7 @@ class AudioRecorder:
             sys_rate = int(loopback["defaultSampleRate"])
             sys_ch = loopback["maxInputChannels"]
             sys_chunk = _chunk_size_for_rate(sys_rate)
+            assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch)
 
             mic_stream = p.open(
                 format=FORMAT, channels=mic_ch, rate=mic_rate,
@@ -725,7 +653,7 @@ class AudioRecorder:
                 input=True, input_device_index=sys_idx,
                 frames_per_buffer=sys_chunk)
 
-            def read_loop(stream, frames, chunk_size, level_channel,
+            def read_loop(stream, source, chunk_size,
                           rate=0, channels=1, fill_gaps=False):
                 # WASAPI loopback streams deliver no packets while nothing is
                 # playing on the system - a blocking read() can therefore
@@ -759,7 +687,7 @@ class AudioRecorder:
                         if fill_gaps:
                             expected = int((time.monotonic() - started) * rate)
                             while expected - received - guard >= chunk_size:
-                                frames.append(silence_chunk)
+                                assembler.add_chunk(source, silence_chunk)
                                 received += chunk_size
                         self._stop_event.wait(0.02)
                         continue
@@ -771,17 +699,17 @@ class AudioRecorder:
                         self._stop_event.set()
                         break
 
-                    frames.append(data)
+                    assembler.add_chunk(source, data)
                     received += chunk_size
                     if self._on_level:
-                        self._on_level(level_channel, compute_rms(data))
+                        self._on_level(source, compute_rms(data))
 
             mic_thread = threading.Thread(
-                target=read_loop, args=(mic_stream, mic_frames, mic_chunk, "mic"),
+                target=read_loop, args=(mic_stream, MIC, mic_chunk),
                 daemon=True)
             sys_thread = threading.Thread(
                 target=read_loop,
-                args=(sys_stream, sys_frames, sys_chunk, "system", sys_rate, sys_ch, True),
+                args=(sys_stream, SYSTEM, sys_chunk, sys_rate, sys_ch, True),
                 daemon=True)
             mic_thread.start()
             sys_thread.start()
@@ -817,45 +745,29 @@ class AudioRecorder:
                (sys_thread is None or not sys_thread.is_alive()):
                 p.terminate()
 
-        if not mic_frames:
+        self._finish_call(assembler)
+
+    def _finish_call(self, assembler: TrackAssembler):
+        """After-recording work shared by both Call paths (_record_both(),
+        _record_both_macos()): saves the mix and the tracks sidecar and
+        reports the result via on_done."""
+        if not assembler.has_audio(MIC):
             if self._on_done:
                 self._on_done(None, 0, "Microphone produced no audio data.")
             return
-        if not sys_frames:
+        if not assembler.has_audio(SYSTEM):
             if self._on_done:
                 self._on_done(None, 0, "System audio produced no audio data.")
             return
 
-        # Mix both streams down to mono 16kHz
-        mic_audio = _frames_to_mono_float(mic_frames, mic_ch)
-        sys_audio = _frames_to_mono_float(sys_frames, sys_ch)
-        mic_audio = _resample_to_rate(mic_audio, mic_rate, OUT_RATE)
-        sys_audio = _resample_to_rate(sys_audio, sys_rate, OUT_RATE)
-        mixed = _mix_sources(mic_audio, sys_audio)
-        mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
-
-        os.makedirs(os.path.dirname(self._output_path) or ".", exist_ok=True)
+        mixed = assembler.save(self._output_path, self._setup)
         self._channels = 1
         self._sample_rate = OUT_RATE
         self._frames = [mixed.tobytes()]
-        _save_wav(self._output_path, self._frames, 1, OUT_RATE)
-        _save_tracks_quietly(self._output_path, mic_audio, sys_audio, self._setup)
 
         duration = len(mixed) / OUT_RATE
         if self._on_done:
             self._on_done(self._output_path, duration, None)
-
-
-def _save_tracks_quietly(output_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray,
-                         setup: str | None = None):
-    """Saves the separate mic/system tracks next to the mix (see
-    voxscribe/tracks.py). Never fails the recording itself - the mix is
-    already saved and fully usable without the sidecar."""
-    try:
-        path = save_tracks(output_path, mic_audio, sys_audio, setup=setup)
-        print(f"Saved: {path} (separate microphone/system tracks)")
-    except Exception as e:
-        print(f"[WARNING] Could not save separate tracks: {e}")
 
 
 def list_devices():

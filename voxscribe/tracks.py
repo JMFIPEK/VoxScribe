@@ -48,7 +48,7 @@ def tracks_path_for(audio_path: str) -> str:
 def save_tracks(audio_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray,
                 setup: str | None = None) -> str:
     """Saves both tracks (int16 value range as float, same sample rate
-    SAMPLE_RATE, as produced by recorder._record_both*) next to the mix,
+    SAMPLE_RATE, as produced by track_assembler) next to the mix,
     tagged with the Call's Setup if given."""
     n = max(len(mic_audio), len(sys_audio))
     stereo = np.zeros((n, 2), dtype=np.int16)
