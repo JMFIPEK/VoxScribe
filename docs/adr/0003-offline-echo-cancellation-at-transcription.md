@@ -4,13 +4,14 @@ status: accepted
 
 # Echo is cancelled offline at transcription time, only for a Loudspeaker Setup
 
-In a Call with a Loudspeaker Setup, the microphone picks up the Playback audio again (Echo). That smears the mono mix and makes the track split attribute remote speech to the local speaker. A Call already stores both tracks in `<name>.tracks.flac`, and the playback track is exactly the far-end reference that echo cancellation needs. So echo is cancelled after recording, while transcribing: the delay between playback and microphone track is estimated block by block (it drifts with the two device clocks), the playback track is lined up accordingly, and both are run through WebRTC's echo canceller (`livekit` AudioProcessingModule), and the mix going into the pipeline is rebuilt from the cleaned microphone track. The raw files on disk stay untouched.
+In a Call with a Loudspeaker Setup, the microphone picks up the Playback audio again (Echo). That smears the mono mix and makes the track split attribute remote speech to the local speaker. A Call already stores both tracks in `<name>.tracks.flac`, and the playback track is exactly the far-end reference that echo cancellation needs. So echo is cancelled after recording, while transcribing: the delay between playback and microphone track is estimated block by block (it drifts with the two device clocks), the playback track is lined up accordingly, a linear per-frequency echo filter (numpy) subtracts most of the echo, and WebRTC's echo canceller (`livekit` AudioProcessingModule) removes what is left, and the mix going into the pipeline is rebuilt from the cleaned microphone track. The raw files on disk stay untouched.
 
 ## Considered Options
 
 - **Live echo cancellation while recording.** Rejected: hard real-time constraints and WASAPI timing drift, and every mistake would be baked into the saved audio.
 - **Muting the microphone track whenever playback is active.** Rejected: it drops double-talk, which is when the local speaker talks over a remote one.
-- **Speex (`pyaec`) or a self-written numpy adaptive filter.** Kept as fallbacks: lighter dependencies but weaker on double-talk. The canceller sits behind one function, so it can be swapped.
+- **WebRTC AEC3 alone.** Rejected after measuring: it removes the echo well (about 43 dB on synthetic Calls) but mutes the local speaker during double-talk (worst frames down about 38 dB). The linear stage in front can't mute speech and leaves too little echo for AEC3's muting to trigger.
+- **Speex (`pyaec`).** Lighter, but weaker on double-talk. The canceller sits behind one function, so it can still be swapped.
 
 ## Consequences
 
