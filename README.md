@@ -26,6 +26,9 @@ Transcription uses your configured default [provider](docs/providers.md) if one 
 # 1. Get the code
 git clone https://gitlab.kit.edu/kit/ipek/acm/voxscribe.git
 cd voxscribe
+# Switch to the newest Release (works in PowerShell and bash; Git's
+# "detached HEAD" note is expected - Releases are tags, not a branch)
+git checkout $(git describe --tags --abbrev=0 --match "v*")
 
 # 2. Install uv (if not already installed)
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -35,6 +38,18 @@ uv sync
 ```
 
 `pyproject.toml` already pins `torch`/`torchaudio`/`torchvision` to the CUDA 12.8 index, so that's enough on a machine with an NVIDIA GPU. For an Intel Arc GPU instead, see [Intel Arc GPU](docs/intel-arc-gpu.md) — handled automatically at runtime either way.
+
+### Existing checkouts on `main`
+
+Installs cloned before Releases existed sit on the `main` branch, and Settings → Info shows them as "development". To move onto the newest Release once (commit or stash local edits first):
+
+```bash
+git fetch --tags origin
+git checkout $(git describe --tags --abbrev=0 --match "v*" origin/main)
+uv sync
+```
+
+Use the remote you cloned from in place of `origin` if it's named differently. Afterwards Settings → Info shows the Release, e.g. `v1.0.0`.
 
 ### macOS / Linux
 
@@ -95,6 +110,7 @@ Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
 ├── main.py                      # CLI entry point - thin, delegates to voxscribe/cli.py
 ├── download_models.py            # Thin entry point -> voxscribe/download_models.py
 ├── build_exe.py                  # Thin entry point -> voxscribe/build_exe.py
+├── release.py                    # Thin entry point -> voxscribe/release.py (maintainer: cut a Release)
 ├── qt_app/                       # GUI code: main_window.py, controllers.py, theme.py, pages/, widgets/
 ├── voxscribe/                    # Backend package
 │   ├── cli.py                     # CLI command implementations
@@ -105,6 +121,8 @@ Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
 │   ├── speaker_profiles.py        # Persistent speaker profiles (voice prints) for recognition
 │   ├── hardware_detect.py         # GPU/CPU detection + model recommendation
 │   ├── gpu_setup.py               # Automatic CUDA/XPU torch backend correction (Windows)
+│   ├── updates.py                 # Installed Release (shown in Settings → Info)
+│   ├── release.py                 # Release script: bump version, tag vX.Y.Z, push to origin + public
 │   ├── download_models.py         # Pre-download models for offline/bundled operation
 │   └── build_exe.py               # PyInstaller build for a standalone .exe (Windows)
 ├── macos/                        # macOS Swift helpers: SystemAudioCapture.swift, SpeechAnalyzerTranscribe.swift, build.sh, make-app.sh

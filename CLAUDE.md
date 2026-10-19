@@ -51,6 +51,10 @@ python voxscribe/download_models.py
 
 # Build standalone .exe (Windows, requires PyInstaller)
 python voxscribe/build_exe.py
+
+# Maintainer: cut a Release (clean main checkout only; always dry-run first)
+python release.py 1.1.0 --dry-run
+python release.py 1.1.0
 ```
 
 ## Architecture
@@ -73,6 +77,8 @@ python voxscribe/build_exe.py
 | `voxscribe/track_assembler.py` | Track assembler for a Call: both Call recording paths (`_record_both()`, `_record_both_macos()`) feed it each source's raw chunks; after stop it downmixes, resamples to 16kHz, pads the shorter track, mixes and saves the mono `.wav` plus the `.tracks.flac` sidecar. No device code, tested with synthetic chunks (`tests/test_track_assembler.py`) |
 | `voxscribe/tracks.py` | Separate mic/system track sidecar (`<name>.tracks.flac`) for "microphone + system" recordings, and the track-based speaker split applied after diarization (numpy-only, imported by both recorder and transcriber) |
 | `voxscribe/speaker_profiles.py` | Persistent voice-print storage (`~/.voxscribe/speaker_profiles.json`) and cosine-similarity speaker matching/enrollment |
+| `voxscribe/updates.py` | Stdlib-only installed-Release detection (`installed_version()`): the `vX.Y.Z` tag a clean checkout's detached HEAD sits on, else `"development"` (branch, local edits to tracked files, commits past the tag, no git); the frozen `.exe` reports its package version. Shown in Settings → Info, computed off the GUI thread. Will grow into the Updates module of issue #15 (see ADR 0002) |
+| `voxscribe/release.py` | Maintainer release script (thin entry: root `release.py`): refuses anything but a clean `main`, checks the new `MAJOR.MINOR.PATCH` is greater, bumps `version` in `pyproject.toml` **and** the project's own entry in `uv.lock` (a stale one makes every install's `uv sync` rewrite `uv.lock` and dirty the checkout; verified with `uv lock --check`, never `uv sync`), commits, tags `vX.Y.Z` and pushes `main` + tag `--atomic` to `origin` and `public` only — never the private `github` mirror. `--dry-run` runs every check and prints every step without changing anything; a failed push reports which remotes got the Release and the exact command to finish |
 | `voxscribe/download_models.py` | Pre-download models to `bundled_models/` for offline operation |
 | `voxscribe/build_exe.py` | PyInstaller build script for creating a standalone .exe |
 | `macos/` | macOS-only Swift helpers: `SystemAudioCapture` (experimental system-audio recording via ScreenCaptureKit) and `SpeechAnalyzerTranscribe` (transcription via Apple's Speech framework) — see `macos/README.md` for build steps and known open issues |
