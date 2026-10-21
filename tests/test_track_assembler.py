@@ -383,3 +383,32 @@ def test_a_continuous_playback_source_is_never_padded(tmp_path):
     assembler.save(out)
 
     _assert_aligned(out, [1.0, 2.5])
+
+
+# --- Microphone drops nobody reports (Windows/PyAudio, #21) ----------------
+
+from voxscribe.track_assembler import DropDetector  # noqa: E402
+
+
+def test_drop_detector_reports_samples_the_microphone_lost():
+    detector = DropDetector(rate=16000)
+    assert detector.missing(received=1600, now=10.1) == 0  # first read: 0.1 s of audio
+    assert detector.missing(received=16000, now=11.0) == 0  # on time
+    # 0.5 s later only 0.2 s more arrived: 0.3 s were lost.
+    assert detector.missing(received=19200, now=11.5) == 4800
+
+
+def test_drop_detector_ignores_jitter_and_slow_clock_drift():
+    detector = DropDetector(rate=16000)
+    detector.missing(received=160, now=0.01)
+    assert detector.missing(received=160 + 15800, now=1.01) == 0     # 12 ms short: jitter
+    # Device clock 50 ms per hour slower than the wall clock: far below the threshold.
+    assert detector.missing(received=int(3600 * 16000 - 0.05 * 16000), now=3600.0) == 0
+
+
+def test_drop_detector_counts_reported_padding_as_received():
+    detector = DropDetector(rate=16000)
+    detector.missing(received=1600, now=0.1)
+    lost = detector.missing(received=1600 + 3200, now=0.6)  # 0.3 s lost
+    assert lost == 4800
+    assert detector.missing(received=1600 + 3200 + lost + 16000, now=1.6) == 0

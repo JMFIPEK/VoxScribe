@@ -19,11 +19,12 @@ import subprocess
 import sys
 import wave
 import threading
+import time
 import numpy as np
 
 from voxscribe.recording_modes import normalize_device_name as _normalize_device_name
 from voxscribe.recording_modes import suggest_mic_for_loopback  # noqa: F401 (re-export)
-from voxscribe.track_assembler import TrackAssembler
+from voxscribe.track_assembler import DropDetector, TrackAssembler
 from voxscribe.tracks import MIC, SYSTEM
 
 IS_WINDOWS = sys.platform == "win32"
@@ -647,7 +648,7 @@ class AudioRecorder:
             mic_idx = mic_info["index"]
             mic_rate = int(mic_info["defaultSampleRate"])
             mic_ch = _mic_channels(mic_info)
-            mic_chunk = max(1, mic_rate // 100)  # ~10 ms, see read_loop
+            mic_chunk = max(1, mic_rate // 100)  # read from ~10 ms on, see read_loop
 
             # Set up system audio (loopback)
             loopback = _get_loopback_device(p, self._loopback_index)
@@ -660,7 +661,10 @@ class AudioRecorder:
             mic_stream = p.open(
                 format=FORMAT, channels=mic_ch, rate=mic_rate,
                 input=True, input_device_index=mic_idx,
-                frames_per_buffer=mic_chunk)
+                # A 64 ms buffer, although it's read from 10 ms on: a 10 ms
+                # one overflowed while the GUI kept the reader thread from
+                # the GIL (15 % of the audio lost under load).
+                frames_per_buffer=_chunk_size_for_rate(mic_rate))
 
             sys_stream = p.open(
                 format=FORMAT, channels=sys_ch, rate=sys_rate,
@@ -683,6 +687,13 @@ class AudioRecorder:
                 # the Microphone is read as soon as ~10 ms are available,
                 # all of it at once. Playback reports what's still buffered
                 # behind each chunk, so a late read isn't taken for a gap.
+                #
+                # PyAudio drops input overflows silently, and a lost
+                # Microphone stretch would shift the whole Call; the
+                # DropDetector finds it against the wall clock and it
+                # becomes silence of the same length (#21).
+                drops = DropDetector(mic_rate) if read_all else None
+                received = 0
                 while not self._stop_event.is_set():
                     try:
                         available = stream.get_read_available()
@@ -704,6 +715,12 @@ class AudioRecorder:
                         break
 
                     assembler.add_chunk(source, data, buffered_frames=available - frames)
+                    if drops is not None:
+                        received += frames
+                        lost = drops.missing(received, time.monotonic())
+                        if lost:
+                            assembler.add_dropped(source, lost)
+                            received += lost
                     if self._on_level:
                         self._on_level(source, compute_rms(data))
 
