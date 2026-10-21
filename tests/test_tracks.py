@@ -1,6 +1,8 @@
 """Characterization tests for voxscribe.tracks (numpy/soundfile only)."""
 
 import numpy as np
+import pytest
+import soundfile as sf
 
 from voxscribe import tracks
 
@@ -103,3 +105,109 @@ def test_load_setup_is_none_for_untagged_or_missing_sidecar(tmp_path):
     mic, system = _tracks()
     tracks.save_tracks(audio_path, mic, system)
     assert tracks.load_setup(audio_path) is None
+
+
+def _loudspeaker_call(seconds=20.0):
+    """(mic, playback) in int16 value range: remote speech-like noise bursts
+    on the playback track, and on the microphone only their Echo - 300 ms
+    late, low-passed, at a third of the level."""
+    rng = np.random.default_rng(5)
+    n = int(seconds * SR)
+    bursts = (rng.uniform(size=n // 4000 + 1) < 0.7).repeat(4000)[:n]
+    playback = np.convolve(rng.standard_normal(n), np.hanning(7), mode="same") * bursts * 3000
+    delay = int(0.3 * SR)
+    mic = np.convolve(np.concatenate([np.zeros(delay), playback[:-delay]]), [0.3, 0.15, 0.05])[:n]
+    return mic.astype(np.float32), playback.astype(np.float32)
+
+
+def _raw_sidecar(audio_path):
+    data, _ = sf.read(tracks.tracks_path_for(audio_path), dtype="float32", always_2d=True)
+    return data[:, 0], data[:, 1]
+
+
+def test_loudspeaker_sidecar_loads_the_mic_track_without_echo(tmp_path):
+    audio_path = str(tmp_path / "x.wav")
+    mic, playback = _loudspeaker_call()
+    tracks.save_tracks(audio_path, mic, playback, setup="loudspeaker")
+    raw_mic, raw_playback = _raw_sidecar(audio_path)
+
+    loaded_mic, loaded_playback = tracks.load_tracks(audio_path)
+
+    def level_db(x):
+        x = x[2 * SR:].astype(np.float64)  # after the canceller has adapted
+        return 10 * np.log10(np.mean(x ** 2) + 1e-20)
+
+    assert len(loaded_mic) == len(raw_mic)
+    assert level_db(loaded_mic) <= level_db(raw_mic) - 15.0
+    np.testing.assert_array_equal(loaded_playback, raw_playback)
+
+
+@pytest.mark.parametrize("setup", ["headset", None])
+def test_headset_and_pre_setup_sidecars_load_unchanged(tmp_path, setup):
+    audio_path = str(tmp_path / "x.wav")
+    mic, playback = _loudspeaker_call()
+    tracks.save_tracks(audio_path, mic, playback, setup=setup)
+    raw_mic, raw_playback = _raw_sidecar(audio_path)
+
+    loaded_mic, loaded_playback = tracks.load_tracks(audio_path)
+
+    np.testing.assert_array_equal(loaded_mic, raw_mic)
+    np.testing.assert_array_equal(loaded_playback, raw_playback)
+
+
+# --- Speaker changes inside long segments (#36) ---------------------------
+
+def _long_seg(start, end, speaker, word_seconds=0.5):
+    """One long segment (as Apple SpeechAnalyzer returns them) with a word
+    every word_seconds."""
+    words = [{"start": t, "end": t + word_seconds * 0.8, "word": f"w{t:g}", "speaker": speaker}
+             for t in np.arange(start, end, word_seconds).tolist()]
+    return {"start": start, "end": end, "text": " ".join(w["word"] for w in words),
+            "speaker": speaker, "words": words}
+
+
+def _alternating_tracks():
+    # Mic loud 0-10s and 20-30s, system loud 10-20s and 30-40s.
+    return _signal([(0, 10), (20, 30)], seed=1), _signal([(10, 20), (30, 40)], seed=2)
+
+
+def test_a_speaker_change_inside_a_long_segment_is_split_at_the_words():
+    mic, system = _alternating_tracks()
+    result = {"segments": [_long_seg(0, 20, "SPEAKER_00"), _long_seg(20, 40, "SPEAKER_00")]}
+    result["word_segments"] = [dict(w) for s in result["segments"] for w in s["words"]]
+
+    split = tracks.split_speakers_by_track(result, mic, system)
+
+    # The system side has slightly more speech (20 s vs 19.8 s), so it keeps
+    # SPEAKER_00 and the microphone parts move.
+    assert split == {"SPEAKER_01": "SPEAKER_00"}
+    segs = result["segments"]
+    assert [(s["start"], s["end"], s["speaker"]) for s in segs] == [
+        (0, 9.9, "SPEAKER_01"), (10.0, 20, "SPEAKER_00"),
+        (20, 29.9, "SPEAKER_01"), (30.0, 40, "SPEAKER_00")]
+    assert segs[1]["text"].startswith("w10 w10.5") and segs[1]["text"].endswith("w19.5")
+    assert all(w["speaker"] == s["speaker"] for s in segs for w in s["words"])
+    assert {w["speaker"] for w in result["word_segments"] if w["start"] >= 30} == {"SPEAKER_00"}
+    assert {w["speaker"] for w in result["word_segments"] if w["start"] < 10} == {"SPEAKER_01"}
+
+
+def test_a_long_segment_whose_speaker_is_not_split_stays_whole():
+    # Both sides inside one segment, but only 4 s on the minority side (< 8 s).
+    mic, system = _signal([(0, 16)], seed=1), _signal([(16, 20)], seed=2)
+    seg = _long_seg(0, 20, "SPEAKER_00")
+    result = {"segments": [seg]}
+
+    assert tracks.split_speakers_by_track(result, mic, system) == {}
+    assert result["segments"] == [seg] and len(seg["words"]) == 40
+
+
+def test_a_short_blip_from_the_other_side_does_not_cut_a_segment():
+    # 0.5 s of system audio inside the local speech is not a speaker change.
+    mic = _signal([(0, 10), (10.5, 20), (20, 30)], seed=1)
+    system = _signal([(10, 10.5), (30, 40)], seed=2)
+    result = {"segments": [_long_seg(0, 30, "SPEAKER_00"), _long_seg(30, 40, "SPEAKER_00")]}
+
+    tracks.split_speakers_by_track(result, mic, system)
+
+    assert [(s["start"], s["end"], s["speaker"]) for s in result["segments"]] == [
+        (0, 30, "SPEAKER_00"), (30, 40, "SPEAKER_01")]

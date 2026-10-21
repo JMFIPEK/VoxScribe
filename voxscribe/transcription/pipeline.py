@@ -77,7 +77,7 @@ def _step_align(backend: Backend, result: dict, audio, torch_device: str, prog) 
     return result
 
 
-def _step_identify_speakers(result: dict, audio, audio_path: str, torch_device: str,
+def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_device: str,
                             hf_token: str | None, min_speakers: int | None,
                             max_speakers: int | None, prog) -> dict:
     """Step 3 (progress 65-100%): who speaks when - diarization, the
@@ -92,8 +92,8 @@ def _step_identify_speakers(result: dict, audio, audio_path: str, torch_device: 
     t4 = time.time()
 
     result, speaker_embeddings = run_diarization(
-        result, audio, torch_device, hf_token, min_speakers, max_speakers, prog)
-    split_speakers = split_by_track(result, audio_path)
+        result, audio_source.load(), torch_device, hf_token, min_speakers, max_speakers, prog)
+    split_speakers = split_by_track(result, audio_source)
     label_known_speakers(result, speaker_embeddings, split_speakers)
 
     t5 = time.time()
@@ -197,7 +197,7 @@ def transcribe(
 
     if diarize:
         result = _step_identify_speakers(
-            result, audio, audio_path, device, hf_token, min_speakers, max_speakers, prog)
+            result, audio_source, device, hf_token, min_speakers, max_speakers, prog)
     else:
         print("3/3  Diarization disabled")
 

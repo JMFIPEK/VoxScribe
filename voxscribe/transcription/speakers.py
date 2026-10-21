@@ -1,18 +1,22 @@
 """Speaker handling after diarization: track split, voice-print labels, multi-file merge."""
 
+from voxscribe.transcription.audio import AudioSource
 
-def split_by_track(result: dict, audio_path: str) -> dict[str, str]:
+
+def split_by_track(result: dict, audio: AudioSource) -> dict[str, str]:
     """"Microphone + system" recordings: use the separate tracks (see
     tracks.py) to split speakers that pyannote merged across the
     local/remote boundary. Runs on raw labels, before voice-print
     matching - split-off speakers have no embedding of their own
-    and so are simply left unrecognized.
+    and so are simply left unrecognized. The tracks come from the
+    pipeline's AudioSource, so a Loudspeaker Call's echo canceller doesn't
+    run a second time.
 
     Returns {new_label: original_label} for every split (empty if there is no
     track sidecar, or the split failed - which is only a warning)."""
     try:
-        from voxscribe.tracks import load_tracks, split_speakers_by_track
-        tracks = load_tracks(audio_path)
+        from voxscribe.tracks import split_speakers_by_track
+        tracks = audio.tracks()
         if tracks is None:
             return {}
         split_speakers = split_speakers_by_track(result, *tracks)

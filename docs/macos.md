@@ -22,6 +22,8 @@ plain PyPI `torch` with MPS support:
 # 1. Get the code
 git clone https://gitlab.kit.edu/kit/ipek/acm/voxscribe.git
 cd voxscribe
+# Switch to the newest Release (Git's "detached HEAD" note is expected)
+git checkout $(git describe --tags --abbrev=0 --match "v*")
 
 # 2. Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh

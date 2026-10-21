@@ -149,11 +149,24 @@ class ProviderDialog(QDialog):
 
 
 class SettingsPage(QWidget):
+    # Emitted from a background thread, auto-marshalled to the GUI thread
+    # (same pattern as ProviderDialog._test_finished).
+    _version_ready = Signal(str)
+
     def __init__(self, window):
         super().__init__()
         self.window_ = window
         self._build_ui()
         self._reload_providers()
+        self._version_ready.connect(
+            lambda version: self.version_label.setText(f"Installed Release: {version}"))
+        # A couple of git subprocess calls (~0.1s on Windows, longer if git
+        # hangs) shouldn't delay the window, which is built before it's shown.
+        threading.Thread(target=self._determine_version, daemon=True).start()
+
+    def _determine_version(self):
+        from voxscribe import updates
+        self._version_ready.emit(updates.installed_version())
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -270,6 +283,10 @@ class SettingsPage(QWidget):
         info_sub = QLabel("Features, models used & licenses")
         info_sub.setProperty("role", "muted")
         root.addWidget(info_sub)
+        # The Release this install is on, or "development" (a branch, local
+        # edits, commits past the tag) - see voxscribe/updates.py.
+        self.version_label = self._bold("Installed Release: checking...")
+        root.addWidget(self.version_label)
 
         info_text = QTextEdit()
         info_text.setReadOnly(True)

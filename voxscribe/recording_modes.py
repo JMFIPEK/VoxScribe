@@ -42,6 +42,16 @@ def source_for_mode(mode: str) -> str:
     return _SOURCE_BY_MODE[mode]
 
 
+def records_playback(mode: str) -> bool:
+    """Playback only and Call capture what the computer plays."""
+    return mode in (MODE_PLAYBACK, MODE_CALL)
+
+
+def records_mic(mode: str) -> bool:
+    """Call and In room capture the microphone."""
+    return mode in (MODE_CALL, MODE_ROOM)
+
+
 def mode_for_source(source: str) -> str:
     """'both' -> 'call' - for the CLI's deprecated --source alias."""
     return _MODE_BY_SOURCE[source]
@@ -114,6 +124,23 @@ def guess_setup(microphones: list[dict], loopback_name: str | None) -> tuple[str
     if _is_room_mic(match["name"]):
         return SETUP_LOUDSPEAKER, match
     return SETUP_HEADSET, match
+
+
+def current_device_index(listed: list[dict], fresh: list[dict], index: int | None) -> int | None:
+    """The index the device listed under `index` has in a fresh enumeration.
+
+    PortAudio numbers devices anew on every enumeration, so plugging a device
+    in or out shifts the others' indices (observed: a Jabra Link 390's
+    loopback went from #28 to #35 after a second headset was connected).
+    Matched by name and host API, which get_devices()' deduplication keeps
+    unique. None if the device is gone; `index` itself if it was never
+    listed (e.g. None = system default)."""
+    device = next((d for d in listed if d["index"] == index), None)
+    if device is None:
+        return index
+    match = next((d for d in fresh
+                  if d["name"] == device["name"] and d.get("host_api") == device.get("host_api")), None)
+    return match["index"] if match else None
 
 
 def _is_room_mic(name: str) -> bool:

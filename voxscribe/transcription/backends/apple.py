@@ -219,4 +219,7 @@ class AppleBackend:
         def _progress(frac):
             request.progress(frac * 0.40, f"Transcribing... {frac * 100:.0f}%")
 
-        return transcribe_apple(request.audio_path, request.language, on_progress=_progress)
+        # A Loudspeaker Call's cleaned mix is only in memory; the helper
+        # reads a file, so it gets a temporary copy (#24).
+        with request.audio.as_file() as audio_path:
+            return transcribe_apple(audio_path, request.language, on_progress=_progress)

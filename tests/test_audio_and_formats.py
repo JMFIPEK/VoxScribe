@@ -56,3 +56,109 @@ def test_audio_source_decodes_only_once(tmp_path, monkeypatch):
 
     assert first is second
     assert calls == [path]
+
+
+# --- Loudspeaker Calls: transcribe the mix without the Echo (#23) ----------
+
+import hashlib  # noqa: E402
+import os  # noqa: E402
+
+import pytest  # noqa: E402
+
+from voxscribe import echo, tracks  # noqa: E402
+
+SR = audio.SAMPLE_RATE
+
+
+def _loudspeaker_recording(tmp_path, setup="loudspeaker", seconds=20.0):
+    """A Call as the recorder saves it: the mono mix plus the sidecar. The
+    microphone holds only the Playback's Echo (300 ms late, a third of the
+    level). Returns (path, playback in -1..1)."""
+    rng = np.random.default_rng(5)
+    n = int(seconds * SR)
+    bursts = (rng.uniform(size=n // 4000 + 1) < 0.7).repeat(4000)[:n]
+    playback = np.convolve(rng.standard_normal(n), np.hanning(7), mode="same") * bursts * 3000
+    delay = int(0.3 * SR)
+    mic = np.convolve(np.concatenate([np.zeros(delay), playback[:-delay]]), [0.3, 0.15, 0.05])[:n]
+    path = str(tmp_path / "call.wav")
+    sf.write(path, np.clip(0.65 * (mic + playback), -32768, 32767).astype(np.int16), SR)
+    tracks.save_tracks(path, mic, playback, setup=setup)
+    return path, playback / 32768
+
+
+def _level_db(x):
+    x = np.asarray(x[2 * SR:], dtype=np.float64)  # after the canceller has adapted
+    return 10 * np.log10(np.mean(x ** 2) + 1e-20)
+
+
+def _hashes(path):
+    return [hashlib.sha256(open(p, "rb").read()).hexdigest()
+            for p in (path, tracks.tracks_path_for(path))]
+
+
+def test_loudspeaker_recording_is_transcribed_without_the_echo(tmp_path, capsys):
+    path, playback = _loudspeaker_recording(tmp_path)
+    before = _hashes(path)
+    raw_echo = audio.load_audio_universal(path) - 0.65 * playback
+
+    mix = audio.AudioSource(path).load()
+
+    assert mix.dtype == np.float32 and len(mix) == len(playback)
+    assert _level_db(mix - 0.65 * playback) <= _level_db(raw_echo) - 15.0
+    assert _hashes(path) == before  # the saved files are never written to
+    assert "Echo removal" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("setup", ["headset", None])
+def test_headset_and_pre_setup_recordings_load_the_saved_mix(tmp_path, setup):
+    path, _ = _loudspeaker_recording(tmp_path, setup=setup)
+
+    np.testing.assert_array_equal(audio.AudioSource(path).load(), audio.load_audio_universal(path))
+
+
+def test_the_echo_canceller_runs_once_per_file(tmp_path, monkeypatch):
+    path, _ = _loudspeaker_recording(tmp_path, seconds=5.0)
+    calls = []
+    real = echo.cancel_echo
+    monkeypatch.setattr(echo, "cancel_echo", lambda m, p: calls.append(1) or real(m, p))
+
+    source = audio.AudioSource(path)
+    source.load()
+    source.tracks()
+
+    assert len(calls) == 1
+
+
+# --- Backends that read a file (Apple SpeechAnalyzer, #24) -----------------
+
+def test_a_loudspeaker_recording_is_handed_out_as_a_cleaned_temporary_file(tmp_path):
+    path, playback = _loudspeaker_recording(tmp_path)
+    source = audio.AudioSource(path)
+
+    with source.as_file() as file_path:
+        assert file_path != path and os.path.isfile(file_path)
+        cleaned, sr = sf.read(file_path, dtype="float32")
+        assert sr == SR
+        assert _level_db(cleaned - 0.65 * playback) <= _level_db(
+            audio.load_audio_universal(path) - 0.65 * playback) - 15.0
+
+    assert not os.path.exists(file_path)
+
+
+def test_the_temporary_file_is_removed_when_the_backend_fails(tmp_path):
+    path, _ = _loudspeaker_recording(tmp_path, seconds=5.0)
+
+    with pytest.raises(RuntimeError):
+        with audio.AudioSource(path).as_file() as file_path:
+            raise RuntimeError("helper crashed")
+
+    assert not os.path.exists(file_path)
+
+
+@pytest.mark.parametrize("setup", ["headset", None])
+def test_other_recordings_are_handed_out_as_the_original_file(tmp_path, setup):
+    path, _ = _loudspeaker_recording(tmp_path, setup=setup, seconds=5.0)
+
+    with audio.AudioSource(path).as_file() as file_path:
+        assert file_path == path
+    assert os.path.isfile(path)

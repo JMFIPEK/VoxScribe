@@ -9,18 +9,24 @@ never both. Diarization clusters that clearly span both sides (pyannote
 merged a local and a remote voice) are split apart again.
 
 The sidecar's FLAC comment tag records the Call's Setup ("mode=call;
-setup=headset" or "...setup=loudspeaker", see recording_modes.py) so
-transcription can take it into account later; sidecars recorded before the
-tag existed have no Setup (load_setup() returns None).
+setup=headset" or "...setup=loudspeaker", see recording_modes.py); sidecars
+recorded before the tag existed have no Setup (load_setup() returns None).
+With a Loudspeaker Setup the microphone track also holds the Playback audio
+as Echo, so load_tracks() returns it cleaned (echo.py, docs/adr/0003); the
+file itself stays untouched.
 
 Deliberately numpy/soundfile-only (no pyaudio, no torch), so both
 recorder.py and transcriber.py can import it cheaply.
 """
 
 import os
+import time
 
 import numpy as np
 import soundfile as sf
+
+from voxscribe import echo
+from voxscribe.recording_modes import SETUP_LOUDSPEAKER
 
 SAMPLE_RATE = 16000
 TRACKS_SUFFIX = ".tracks.flac"
@@ -38,6 +44,9 @@ _SIDE_MARGIN_DB = 6.0
 # loudspeaker echo, laughter) would create spurious extra speakers.
 _SPLIT_MIN_SECONDS = 8.0
 _SPLIT_MIN_FRACTION = 0.10
+# Inside one segment, a run of words on one side shorter than this is not a
+# speaker change (a cough, a short echo, an ambiguous word or two).
+_MIN_RUN_SECONDS = 1.0
 
 
 def tracks_path_for(audio_path: str) -> str:
@@ -48,7 +57,7 @@ def tracks_path_for(audio_path: str) -> str:
 def save_tracks(audio_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray,
                 setup: str | None = None) -> str:
     """Saves both tracks (int16 value range as float, same sample rate
-    SAMPLE_RATE, as produced by recorder._record_both*) next to the mix,
+    SAMPLE_RATE, as produced by track_assembler) next to the mix,
     tagged with the Call's Setup if given."""
     n = max(len(mic_audio), len(sys_audio))
     stereo = np.zeros((n, 2), dtype=np.int16)
@@ -59,6 +68,22 @@ def save_tracks(audio_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray,
         f.comment = f"mode=call;setup={setup}" if setup else "mode=call"
         f.write(stereo)
     return path
+
+
+def mix(mic: np.ndarray, system: np.ndarray, full_scale: float) -> np.ndarray:
+    """The mono mix of a Call: both tracks at 0.65, the shorter one padded
+    with silence, scaled down if the peak would exceed full_scale (32767
+    for int16 values, 32767/32768 for -1..1). Shared by the recorder's
+    saved mix and the cleaned mix transcribed for Loudspeaker Calls, so
+    the two stay the same mix. Returns float64."""
+    n = max(len(mic), len(system))
+    mixed = np.zeros(n, dtype=np.float64)
+    mixed[:len(mic)] += 0.65 * np.asarray(mic, dtype=np.float64)
+    mixed[:len(system)] += 0.65 * np.asarray(system, dtype=np.float64)
+    peak = float(np.max(np.abs(mixed))) if n else 0.0
+    if peak > full_scale:
+        mixed *= full_scale / peak
+    return mixed
 
 
 def load_setup(audio_path: str) -> str | None:
@@ -74,14 +99,22 @@ def load_setup(audio_path: str) -> str | None:
 
 
 def load_tracks(audio_path: str) -> tuple[np.ndarray, np.ndarray] | None:
-    """Returns (mic, system) as float32 arrays, or None if there's no sidecar."""
+    """Returns (mic, system) as float32 arrays, or None if there's no sidecar.
+    For a Loudspeaker Setup the mic track comes with the Echo removed."""
     path = tracks_path_for(audio_path)
     if not os.path.isfile(path):
         return None
     data, sr = sf.read(path, dtype="float32", always_2d=True)
     if sr != SAMPLE_RATE or data.shape[1] != 2:
         return None
-    return data[:, 0], data[:, 1]
+    mic, system = data[:, 0], data[:, 1]
+    if load_setup(audio_path) == SETUP_LOUDSPEAKER:
+        print("     Loudspeaker Setup: removing the Echo from the microphone track...")
+        t0 = time.monotonic()
+        mic = echo.cancel_echo(mic, system)
+        print(f"     Echo removal took {time.monotonic() - t0:.1f}s "
+              f"for {len(mic) / SAMPLE_RATE:.0f}s of audio")
+    return mic, system
 
 
 def _frame_db(audio: np.ndarray) -> np.ndarray:
@@ -118,29 +151,100 @@ def _segment_side(mic_db: np.ndarray, sys_db: np.ndarray, start: float, end: flo
     return None
 
 
+def _word_runs(seg: dict, mic_db: np.ndarray, sys_db: np.ndarray) -> list[tuple[list[dict], str]]:
+    """The segment's words grouped into runs on one side each, [(words,
+    side)], or [] if the words don't show a side change.
+
+    Long segments (Apple SpeechAnalyzer returns 10-20 s) can hold both a
+    local and a remote speaker; classifying the whole segment then gives
+    "ambiguous" and keeps the remote words with the local speaker (#36).
+    Ambiguous words and words without timestamps join the run before them
+    (or after, at the start); runs shorter than _MIN_RUN_SECONDS merge into
+    their neighbour."""
+    words = seg.get("words") or []
+    sides = [_segment_side(mic_db, sys_db, w["start"], w.get("end", w["start"]))
+             if "start" in w else None for w in words]
+    known = [side for side in sides if side]
+    if not known:
+        return []
+    current = known[0]
+    runs: list[list] = []  # [words, side]
+    for w, side in zip(words, sides):
+        current = side or current
+        if runs and runs[-1][1] == current:
+            runs[-1][0].append(w)
+        else:
+            runs.append([[w], current])
+
+    def duration(run_words):
+        timed = [w for w in run_words if "start" in w]
+        return timed[-1].get("end", timed[-1]["start"]) - timed[0]["start"] if timed else 0.0
+
+    while len(runs) > 1:
+        short = next((i for i, (ws, _) in enumerate(runs) if duration(ws) < _MIN_RUN_SECONDS), None)
+        if short is None:
+            break
+        into = short - 1 if short > 0 else 1
+        if into < short:
+            runs[into][0].extend(runs[short][0])
+        else:
+            runs[into][0][:0] = runs[short][0]
+        del runs[short]
+        merged = [runs[0]]  # neighbours that now share a side
+        for run in runs[1:]:
+            if run[1] == merged[-1][1]:
+                merged[-1][0].extend(run[0])
+            else:
+                merged.append(run)
+        runs = merged
+    return [(ws, side) for ws, side in runs] if len(runs) > 1 else []
+
+
+def _piece(seg: dict, words: list[dict], first: bool, last: bool) -> dict:
+    """The part of seg holding words (a cut at a side change)."""
+    timed = [w for w in words if "start" in w]
+    piece = dict(seg)
+    piece["start"] = seg.get("start", 0.0) if first else timed[0]["start"]
+    piece["end"] = seg.get("end", 0.0) if last else timed[-1].get("end", timed[-1]["start"])
+    piece["text"] = " ".join(w.get("word", "").strip() for w in words)
+    piece["words"] = words
+    return piece
+
+
 def split_speakers_by_track(result: dict, mic: np.ndarray, system: np.ndarray) -> dict[str, str]:
     """Splits diarization speakers that appear substantially on both the
     microphone and the system side into two speakers (in place).
 
     Operates on raw diarization labels (call before voice-print relabeling).
     Each speaker keeps its label on the side where it speaks most; its
-    segments on the other side move to a new SPEAKER_NN label. Returns
-    {new_label: original_label} for every split performed.
+    segments on the other side move to a new SPEAKER_NN label. A segment
+    whose words change side is cut at the change, if one of its parts
+    moves; other segments stay as they are. Returns {new_label:
+    original_label} for every split performed.
     """
     segments = result.get("segments", [])
     if not segments:
         return {}
     mic_db, sys_db = _frame_db(mic), _frame_db(system)
 
-    sides = []
+    # Per segment: [(piece, side)]; a single entry with the segment itself
+    # unless its words change side.
+    parts: list[list[tuple[dict, str | None]]] = []
     totals: dict[str, dict[str, float]] = {}
     for seg in segments:
         spk = seg.get("speaker")
-        side = _segment_side(mic_db, sys_db, seg.get("start", 0.0), seg.get("end", 0.0)) if spk else None
-        sides.append(side)
-        if spk and side:
-            dur = max(0.0, seg.get("end", 0.0) - seg.get("start", 0.0))
-            totals.setdefault(spk, {MIC: 0.0, SYSTEM: 0.0})[side] += dur
+        runs = _word_runs(seg, mic_db, sys_db) if spk else []
+        if runs:
+            seg_parts = [(_piece(seg, ws, i == 0, i == len(runs) - 1), side)
+                         for i, (ws, side) in enumerate(runs)]
+        else:
+            side = _segment_side(mic_db, sys_db, seg.get("start", 0.0), seg.get("end", 0.0)) if spk else None
+            seg_parts = [(seg, side)]
+        parts.append(seg_parts)
+        for piece, side in seg_parts:
+            if spk and side:
+                dur = max(0.0, piece.get("end", 0.0) - piece.get("start", 0.0))
+                totals.setdefault(spk, {MIC: 0.0, SYSTEM: 0.0})[side] += dur
 
     existing = {seg.get("speaker") for seg in segments if seg.get("speaker")}
     next_idx = 0
@@ -164,17 +268,25 @@ def split_speakers_by_track(result: dict, mic: np.ndarray, system: np.ndarray) -
     if not move_side:
         return {}
 
+    new_segments = []
     moved_windows: dict[str, list[tuple[float, float, str]]] = {}
-    for seg, side in zip(segments, sides):
+    for seg, seg_parts in zip(segments, parts):
         spk = seg.get("speaker")
-        if spk not in move_side or side != move_side[spk][0]:
+        moves = spk in move_side and any(side == move_side[spk][0] for _, side in seg_parts)
+        if not moves:
+            new_segments.append(seg)
             continue
-        new = move_side[spk][1]
-        seg["speaker"] = new
-        for w in seg.get("words", []) or []:
-            if w.get("speaker") == spk:
-                w["speaker"] = new
-        moved_windows.setdefault(spk, []).append((seg.get("start", 0.0), seg.get("end", 0.0), new))
+        for piece, side in seg_parts:
+            new_segments.append(piece)
+            if side != move_side[spk][0]:
+                continue
+            new = move_side[spk][1]
+            piece["speaker"] = new
+            for w in piece.get("words", []) or []:
+                if w.get("speaker") == spk:
+                    w["speaker"] = new
+            moved_windows.setdefault(spk, []).append((piece.get("start", 0.0), piece.get("end", 0.0), new))
+    result["segments"] = new_segments
 
     # word_segments may hold separate dict copies of the same words.
     for w in result.get("word_segments", []) or []:

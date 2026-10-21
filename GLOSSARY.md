@@ -22,6 +22,20 @@ _Avoid_: Source, input
 How a Call is heard and spoken: Headset (headphones and their own microphone, so the two tracks stay clean) or Loudspeaker (speakers and a room microphone, so the remote voices also reach the microphone).
 _Avoid_: Device type, hardware mode
 
+**Echo**:
+Playback audio that the microphone picks up again, so remote voices also land in the Microphone audio; happens with a Loudspeaker Setup.
+_Avoid_: Bleed, crosstalk, feedback
+
+### Distribution
+
+**Release**:
+A version deliberately published to users under a version tag such as v1.1.0; installs only ever move from one Release to a newer one.
+_Avoid_: Build, version (when the published one is meant), latest commit
+
+**Update**:
+Moving an install from its current Release to a newer one, offered by the app and carried out on the next start.
+_Avoid_: Upgrade, sync, pull
+
 ### Transcription engines
 
 **Provider**:

@@ -9,6 +9,7 @@ import pytest
 
 from voxscribe import tracks
 from voxscribe.transcription import align, diarize, speakers
+from voxscribe.transcription.audio import AudioSource
 
 AUDIO = np.zeros(16000, dtype=np.float32)
 
@@ -141,7 +142,7 @@ def test_label_known_speakers_survives_a_broken_profile_store(monkeypatch):
 def test_split_by_track_without_sidecar_changes_nothing(tmp_path):
     result = {"segments": [{"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"}]}
 
-    assert speakers.split_by_track(result, str(tmp_path / "meeting.wav")) == {}
+    assert speakers.split_by_track(result, AudioSource(str(tmp_path / "meeting.wav"))) == {}
 
 
 def test_split_by_track_uses_the_sidecar(tmp_path):
@@ -160,7 +161,7 @@ def test_split_by_track_uses_the_sidecar(tmp_path):
         {"start": 20.0, "end": 30.0, "speaker": "SPEAKER_00"},
     ]}
 
-    assert speakers.split_by_track(result, audio_path) == {"SPEAKER_01": "SPEAKER_00"}
+    assert speakers.split_by_track(result, AudioSource(audio_path)) == {"SPEAKER_01": "SPEAKER_00"}
     assert [s["speaker"] for s in result["segments"]] == ["SPEAKER_00", "SPEAKER_01"]
 
 
@@ -170,4 +171,4 @@ def test_split_by_track_failure_is_not_fatal(tmp_path, monkeypatch):
 
     monkeypatch.setattr("voxscribe.tracks.load_tracks", boom)
 
-    assert speakers.split_by_track({"segments": []}, str(tmp_path / "x.wav")) == {}
+    assert speakers.split_by_track({"segments": []}, AudioSource(str(tmp_path / "x.wav"))) == {}
