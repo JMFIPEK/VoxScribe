@@ -162,3 +162,91 @@ def test_other_recordings_are_handed_out_as_the_original_file(tmp_path, setup):
     with audio.AudioSource(path).as_file() as file_path:
         assert file_path == path
     assert os.path.isfile(path)
+
+
+# --- A quiet Microphone track in the transcribed mix (#39) -----------------
+
+def _call_with_levels(tmp_path, mic_db, playback_db, setup="headset", seconds=20.0):
+    """A Call whose local speech (on the Microphone track, 2-8 s and
+    12-18 s) and remote speech (Playback track, 0-2, 8-12, 18-20 s) have the
+    given speech levels in dBFS. Returns (path, mic_spans, playback_spans)."""
+    rng = np.random.default_rng(7)
+    n = int(seconds * SR)
+    mic_spans, pb_spans = [(2, 8), (12, 18)], [(0, 2), (8, 12), (18, 20)]
+
+    def track(spans, level_db):
+        x = np.zeros(n)
+        for a, b in spans:
+            x[int(a * SR):int(b * SR)] = rng.standard_normal(int((b - a) * SR))
+        return x * 32768 * 10 ** (level_db / 20)
+
+    mic, playback = track(mic_spans, mic_db), track(pb_spans, playback_db)
+    path = str(tmp_path / "call.wav")
+    sf.write(path, np.clip(0.65 * (mic + playback), -32768, 32767).astype(np.int16), SR)
+    tracks.save_tracks(path, mic, playback, setup=setup)
+    return path, mic_spans, pb_spans
+
+
+def _span_db(audio_samples, spans):
+    x = np.concatenate([audio_samples[int(a * SR) + 800:int(b * SR) - 800] for a, b in spans])
+    return 10 * np.log10(np.mean(np.asarray(x, dtype=np.float64) ** 2) + 1e-20)
+
+
+def test_a_quiet_microphone_is_brought_up_to_the_playback_level(tmp_path, capsys):
+    path, mic_spans, pb_spans = _call_with_levels(tmp_path, mic_db=-44, playback_db=-22)
+    saved = audio.load_audio_universal(path)
+    assert _span_db(saved, pb_spans) - _span_db(saved, mic_spans) > 20  # the problem
+
+    mix = audio.AudioSource(path).load()
+
+    assert abs(_span_db(mix, pb_spans) - _span_db(mix, mic_spans)) <= 3
+    assert "Microphone" in capsys.readouterr().out  # the log says it was boosted
+
+
+def test_tracks_at_similar_levels_load_the_saved_mix_unchanged(tmp_path):
+    path, _, _ = _call_with_levels(tmp_path, mic_db=-25, playback_db=-22)
+
+    np.testing.assert_array_equal(audio.AudioSource(path).load(), audio.load_audio_universal(path))
+
+
+def test_a_silent_microphone_track_is_not_boosted_into_noise(tmp_path):
+    path, _, _ = _call_with_levels(tmp_path, mic_db=-200, playback_db=-22)
+
+    np.testing.assert_array_equal(audio.AudioSource(path).load(), audio.load_audio_universal(path))
+
+
+def test_the_boost_is_limited(tmp_path):
+    path, mic_spans, pb_spans = _call_with_levels(tmp_path, mic_db=-65, playback_db=-20)
+
+    mix = audio.AudioSource(path).load()
+
+    gap = _span_db(mix, pb_spans) - _span_db(mix, mic_spans)
+    assert 23 <= gap <= 27  # 45 dB apart, boosted by at most 20 dB
+
+
+def test_rare_local_speech_is_measured_as_speech_not_as_noise(tmp_path):
+    # The local person says one sentence (1 s) in 60 s; the rest of the
+    # Microphone track is room noise 30 dB below it.
+    rng = np.random.default_rng(3)
+    n = 60 * SR
+    mic = rng.standard_normal(n) * 32768 * 10 ** (-74 / 20)
+    mic[30 * SR:31 * SR] = rng.standard_normal(SR) * 32768 * 10 ** (-44 / 20)
+    playback = np.zeros(n)
+    playback[: 50 * SR] = rng.standard_normal(50 * SR) * 32768 * 10 ** (-40 / 20)
+    path = str(tmp_path / "call.wav")
+    sf.write(path, np.clip(0.65 * (mic + playback), -32768, 32767).astype(np.int16), SR)
+    tracks.save_tracks(path, mic, playback, setup="headset")
+
+    # The speech levels are only 4 dB apart, so nothing is boosted - measured
+    # on the noise, the Microphone would look 34 dB quieter.
+    np.testing.assert_array_equal(audio.AudioSource(path).load(), audio.load_audio_universal(path))
+
+
+def test_a_microphone_with_only_room_noise_is_not_boosted(tmp_path):
+    path, _, _ = _call_with_levels(tmp_path, mic_db=-200, playback_db=-22)
+    d, _ = sf.read(tracks.tracks_path_for(path), dtype="float64", always_2d=True)
+    noise = np.random.default_rng(4).standard_normal(len(d)) * 10 ** (-60 / 20) * 32768
+    tracks.save_tracks(path, noise, d[:, 1] * 32768, setup="headset")
+    sf.write(path, np.clip(0.65 * (noise + d[:, 1] * 32768), -32768, 32767).astype(np.int16), SR)
+
+    np.testing.assert_array_equal(audio.AudioSource(path).load(), audio.load_audio_universal(path))

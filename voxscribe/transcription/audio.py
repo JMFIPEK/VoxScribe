@@ -70,22 +70,24 @@ class AudioSource:
     """An audio file that is decoded at most once, however many pipeline
     stages (Backend, alignment, diarization, track split) ask for the samples.
 
-    For a Loudspeaker Call the samples are the mix of the cleaned Microphone
-    track and the Playback track (the saved mix holds the Echo, which
-    garbles the transcript); the saved files stay untouched. The tracks are
-    loaded once too, so the echo canceller runs once per file."""
+    For a Call the samples can be a new mix of its two tracks instead of the
+    saved mix: for a Loudspeaker Setup with the Echo removed from the
+    Microphone track (#23), and for any Call whose tracks' speech levels are
+    far apart with the quieter one brought up (#39). The saved files stay
+    untouched. The tracks are loaded once too, so the echo canceller runs
+    once per file."""
 
     def __init__(self, path: str):
         self.path = path
         self._samples: np.ndarray | None = None
         self._tracks = None
         self._tracks_loaded = False
-        self._cleaned = False  # load() returned the cleaned mix, not the file
+        self._remixed = False  # load() returned a new mix, not the file
 
     def load(self) -> np.ndarray:
         if self._samples is None:
-            self._samples = self._cleaned_mix()
-            self._cleaned = self._samples is not None
+            self._samples = self._remix()
+            self._remixed = self._samples is not None
             if self._samples is None:
                 self._samples = load_audio_universal(self.path)
         return self._samples
@@ -93,14 +95,14 @@ class AudioSource:
     @contextmanager
     def as_file(self):
         """A path to the samples load() returns, for Backends that read a
-        file (Apple SpeechAnalyzer): the recording itself, or for a
-        Loudspeaker Call a temporary WAV of the cleaned mix, removed again
-        afterwards (also when the Backend fails)."""
+        file (Apple SpeechAnalyzer): the recording itself, or a temporary
+        WAV of the new mix (see the class), removed again afterwards (also
+        when the Backend fails)."""
         samples = self.load()
-        if not self._cleaned:
+        if not self._remixed:
             yield self.path
             return
-        fd, tmp_path = tempfile.mkstemp(prefix="voxscribe-cleaned-", suffix=".wav")
+        fd, tmp_path = tempfile.mkstemp(prefix="voxscribe-mix-", suffix=".wav")
         os.close(fd)
         try:
             sf.write(tmp_path, samples, SAMPLE_RATE, subtype="PCM_16")
@@ -120,18 +122,27 @@ class AudioSource:
             self._tracks_loaded = True
         return self._tracks
 
-    def _cleaned_mix(self) -> np.ndarray | None:
+    def _remix(self) -> np.ndarray | None:
+        """The new mix of the Call's tracks, or None to use the saved file."""
         from voxscribe.recording_modes import SETUP_LOUDSPEAKER
-        from voxscribe.tracks import load_setup
+        from voxscribe.tracks import TRACK_NAMES, balance, load_setup, mix
         try:
-            if load_setup(self.path) != SETUP_LOUDSPEAKER or self.tracks() is None:
+            if self.tracks() is None:
                 return None
+            loudspeaker = load_setup(self.path) == SETUP_LOUDSPEAKER
         except Exception as e:
             print(f"     [WARNING] Could not load the Call's tracks ({e}) - "
-                  "transcribing the saved mix, Echo included.")
+                  "transcribing the saved mix.")
             return None
-        from voxscribe.tracks import mix
         mic, system = self._tracks
-        print("     Echo removal ran: transcribing the mix of the cleaned "
-              "Microphone track and the Playback track.")
+        balanced = balance(mic, system)
+        if not loudspeaker and balanced is None:
+            return None
+        if loudspeaker:
+            print("     Echo removal ran: transcribing the mix of the cleaned "
+                  "Microphone track and the Playback track.")
+        if balanced is not None:
+            (mic, system), boosted, gain_db = balanced
+            print(f"     {TRACK_NAMES[boosted]} track boosted by "
+                  f"{gain_db:.0f} dB for transcription (its speech was much quieter).")
         return mix(mic, system, full_scale=32767 / 32768).astype(np.float32)

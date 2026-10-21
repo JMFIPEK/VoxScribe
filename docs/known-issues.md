@@ -2,32 +2,42 @@
 
 ## Loudspeaker setup: echo on the microphone track
 
-**Status:** found 2026-10-18 on macOS. Fixed in code (issues #22-#24): for a
-Loudspeaker Setup the microphone track is cleaned (`voxscribe/echo.py`, ADR
-0003), and both the track-based speaker split and the transcribed audio (all
-Backends, including Apple SpeechAnalyzer) use it. On a real 66 s Mac Call
-(#25) the remote-only passages dropped by 14.5 dB on the microphone track,
-local speech by 1.5 dB. Tuning on real recordings from both platforms is
-open (#26).
+**Status:** found 2026-10-18 on macOS, fixed (issues #22-#24, #36, #39). Tuning
+on a new Mac recording is still open (#26).
 
 In Call mode with Loudspeaker setup, the room microphone hears the speakers, so
-the microphone track contains the Playback audio as an echo.
+the microphone track contains the Playback audio as an echo. First measured
+with a YouTube video playing and nobody speaking (macOS): the microphone track
+alone transcribed the whole video, and the mix - two copies of the same speech
+~300 ms apart - came out garbled in places.
 
-Measured with a YouTube video playing and nobody speaking:
+What happens now:
 
-- Cross-correlation of microphone vs. playback track peaks at 0.35 with a
-  ~299 ms delay.
-- The microphone track alone transcribes the whole video (average word
-  confidence 0.95, playback track alone: 0.97).
-- The mixed `<name>.wav` - what gets transcribed - came out garbled in places
-  ("Wolke besuchen. Jetzt ist ..." instead of "Onkel Wolk besuchen. Ja, es
-  ist ..."), because two copies of the same speech 300 ms apart are summed.
+- **Echo removal** (`voxscribe/echo.py`, ADR 0003) cleans the microphone track
+  of a Loudspeaker Call before the track split and before the mix every
+  Backend transcribes (Apple SpeechAnalyzer via a temporary file).
+- **Track split per run of words** (#36): long segments that hold both sides
+  are cut at the side change, so remote speech isn't left with the local
+  speaker.
+- **Quiet microphone** (#39): if the tracks' speech levels are 12 dB or more
+  apart, the quieter one is boosted by up to 20 dB before mixing for
+  transcription.
 
-**Open questions / next steps**
+Measured on real Loudspeaker Calls:
 
-1. How does `voxscribe/tracks.py` (`split_speakers_by_track`) treat Loudspeaker
-   setup? It classifies segments by per-track level, so echo on the
-   microphone track may be misattributed to the local speaker.
-2. Echo cancellation: subtract the playback track from the microphone track
-   (adaptive filter, ~300 ms delay) before mixing and before the speaker split.
-3. Check whether Windows (WASAPI) shows the same behavior.
+| | Mac, built-in mic (66 s, 2026-10-21, before the recorder fixes) | Windows, Intel Smart Sound mic array (211 s, 2026-10-21) |
+|---|---|---|
+| Raw mic while only the remote side talks | Echo clearly audible | already -69.5 dB, 74 % digital zeros: the mic's own noise suppression |
+| `cancel_echo`, remote-only passages | -14.5 dB | -13.1 dB on top |
+| `cancel_echo`, local speech | -1.5 dB | -0.6 dB |
+| Doubled remote speech in the transcript | - | none |
+| Remote words labelled as the local speaker | 34 of 49 (before #36) | 9 of 198, all fragments: a 1 s piece at a turn, 4 words of double-talk inside a local sentence, single words pyannote labels on its own |
+
+Notes:
+
+- Some laptop mic arrays (Intel Smart Sound, Windows Voice Clarity) gate
+  everything that isn't speech to digital zeros. Clicks never reach the
+  Microphone track; use spoken words as test signals.
+- The remaining misattributed fragments would need a per-word choice between
+  remote speakers; lowering the split's thresholds instead cuts local
+  sentences apart in double-talk.

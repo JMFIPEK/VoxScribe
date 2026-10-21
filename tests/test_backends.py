@@ -273,3 +273,99 @@ def test_local_backend_prefers_a_bundled_model_directory(tmp_path, monkeypatch):
 
     assert loaded["arch"] == str(tmp_path / "bundled" / "whisper" / "medium")
     assert loaded["local_files_only"] is True
+
+
+# --- OpenVINO language auto-detect (#38) -----------------------------------
+
+class _FakeTokenizer:
+    def __init__(self, tokens):
+        self.tokens = tokens
+
+    def convert_ids_to_tokens(self, ids):
+        return [self.tokens[i] for i in ids]
+
+
+class _FakeProcessor:
+    def __init__(self, tokens):
+        self.tokenizer = _FakeTokenizer(tokens)
+
+
+class _FakeWhisper:
+    def __init__(self, language_ids=None, error=None):
+        self.language_ids, self.error = language_ids, error
+
+    def detect_language(self, input_features):
+        if self.error:
+            raise self.error
+        return self.language_ids
+
+
+GERMAN_TEXT = "So, dann kann ich da drauf nochmal. Das ist ein Baum? Aber ich glaub, die hast du auch schon gemacht."
+
+
+def test_openvino_auto_detect_uses_whispers_own_language_detection():
+    from voxscribe.transcription.backends import openvino
+    processor = _FakeProcessor({7: "<|de|>"})
+
+    language = openvino.detect_chunk_language(_FakeWhisper(language_ids=[7]), processor, None, "")
+
+    assert language == "de"
+
+
+def test_openvino_auto_detect_falls_back_to_the_text_not_to_english(capsys):
+    from voxscribe.transcription.backends import openvino
+    model = _FakeWhisper(error=RuntimeError("not supported by this export"))
+
+    language = openvino.detect_chunk_language(model, _FakeProcessor({}), None, GERMAN_TEXT)
+
+    assert language == "de"
+    assert "guessed from the text" in capsys.readouterr().out
+
+
+def test_openvino_auto_detect_says_when_it_has_to_assume_english(capsys):
+    from voxscribe.transcription.backends import openvino
+    model = _FakeWhisper(error=RuntimeError("no detection"))
+
+    assert openvino.detect_chunk_language(model, _FakeProcessor({}), None, "") == "en"
+    assert "assuming English" in capsys.readouterr().out
+
+
+def test_openvino_forces_the_first_chunks_language_on_every_later_chunk(tmp_path, monkeypatch):
+    """transcribe_openvino() end to end with fake transformers/optimum: like
+    the real model, generate() returns text without a language token."""
+    import sys
+    import types
+    import numpy as np
+    from voxscribe.transcription.backends import openvino
+
+    calls = []
+
+    class FakeModel:
+        def generate(self, features, **kwargs):
+            calls.append(kwargs.get("language"))
+            return [[0]]
+
+        def detect_language(self, features):
+            return [7]
+
+    class FakeProcessor:
+        tokenizer = _FakeTokenizer({7: "<|de|>"})
+
+        def __call__(self, chunk, sampling_rate, return_tensors):
+            return {"input_features": chunk}
+
+        def batch_decode(self, ids, skip_special_tokens):
+            return ["Das ist ein Baum, genau."]
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(
+        AutoProcessor=types.SimpleNamespace(from_pretrained=lambda d: FakeProcessor())))
+    monkeypatch.setitem(sys.modules, "optimum.intel.openvino", types.SimpleNamespace(
+        OVModelForSpeechSeq2Seq=types.SimpleNamespace(from_pretrained=lambda d, **kw: FakeModel())))
+    (tmp_path / "openvino" / "whisper-medium").mkdir(parents=True)
+    monkeypatch.setattr(openvino, "_get_bundled_models_dir", lambda: str(tmp_path))
+
+    result = openvino.transcribe_openvino("x.wav", None, "GPU", "medium",
+                                          audio=np.zeros(75 * 16000, dtype=np.float32))
+
+    assert result["language"] == "de"
+    assert calls == [None, "de", "de"]  # first chunk unforced, the rest forced to German

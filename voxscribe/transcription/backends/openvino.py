@@ -8,21 +8,36 @@ import numpy as np
 from voxscribe.paths import get_bundled_models_dir as _get_bundled_models_dir
 from voxscribe.transcription.audio import SAMPLE_RATE, load_audio_universal
 from voxscribe.transcription.backend import TranscribeRequest
+from voxscribe.transcription.language import _guess_language_from_text
 from voxscribe.transcription.model_ids import _parse_openvino_model
 
 
 _OPENVINO_LANG_TOKEN_RE = re.compile(r"<\|([a-z]{2})\|>")
 
 
-def _detect_language_from_token_ids(processor, generated_ids) -> str | None:
-    """Extracts the language token Whisper predicted (e.g. '<|de|>') from the
-    first generated tokens, when generate() ran without a forced language."""
-    tokens = processor.tokenizer.convert_ids_to_tokens(generated_ids[0].tolist()[:3])
-    for tok in tokens:
-        m = _OPENVINO_LANG_TOKEN_RE.match(tok)
-        if m:
-            return m.group(1)
-    return None
+def detect_chunk_language(model, processor, input_features, text: str) -> str:
+    """The language of the first chunk, for auto-detect.
+
+    generate() returns the text tokens without Whisper's <|xx|> prefix, so
+    the language can't be read off its output (that silently gave "en" and
+    made Whisper *translate* every later chunk of German audio, #38).
+    Instead: Whisper's own language detection on the chunk, else a guess
+    from the chunk's text, else English - logged either way."""
+    try:
+        ids = model.detect_language(input_features)
+        ids = ids.tolist() if hasattr(ids, "tolist") else list(ids)
+        token = processor.tokenizer.convert_ids_to_tokens(ids[:1])[0]
+        match = _OPENVINO_LANG_TOKEN_RE.fullmatch(token)
+        if match:
+            return match.group(1)
+    except Exception as e:  # noqa: BLE001 - fall back to the text
+        print(f"     Whisper language detection unavailable ({e})")
+    guessed = _guess_language_from_text(text)
+    if guessed:
+        print(f"     Language guessed from the text: {guessed}")
+        return guessed
+    print("     [WARNING] Could not detect the language - assuming English")
+    return "en"
 
 
 _OPENVINO_CHUNK_SECONDS = 30
@@ -96,13 +111,11 @@ def transcribe_openvino(
         if detected_language:
             gen_kwargs["language"] = detected_language
         generated_ids = model.generate(inputs["input_features"], **gen_kwargs)
-        if detected_language is None:
-            # Whisper detects the language itself on the first (unforced)
-            # call - force it consistently for every subsequent chunk from
-            # here on, mirroring the CTranslate2 path which also only uses
-            # the first 30s for detection.
-            detected_language = _detect_language_from_token_ids(processor, generated_ids) or "en"
         text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+        if detected_language is None:
+            # Detected from the first 30s and forced for every subsequent
+            # chunk, mirroring the CTranslate2 path.
+            detected_language = detect_chunk_language(model, processor, inputs["input_features"], text)
         if text:
             segments.append({
                 "start": start / sr,

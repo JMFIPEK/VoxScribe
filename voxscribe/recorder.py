@@ -20,12 +20,15 @@ import sys
 import wave
 import threading
 import time
+from dataclasses import dataclass
+from typing import Any, Callable
+
 import numpy as np
 
 from voxscribe.recording_modes import normalize_device_name as _normalize_device_name
 from voxscribe.recording_modes import suggest_mic_for_loopback  # noqa: F401 (re-export)
 from voxscribe.track_assembler import DropDetector, TrackAssembler
-from voxscribe.tracks import MIC, SYSTEM
+from voxscribe.tracks import MIC, SYSTEM, TRACK_NAMES
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -36,7 +39,6 @@ else:
     import sounddevice as sd
 
 CHUNK = 1024
-FORMAT = pyaudio.paInt16 if IS_WINDOWS else None
 SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
 OUT_RATE = 16000
 
@@ -271,10 +273,37 @@ def compute_rms(data: bytes) -> float:
     return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
 
 
+@dataclass
+class CaptureSources:
+    """Everything AudioRecorder reaches outside Python through: the audio
+    libraries, the macOS system-audio helper and the platform. Production
+    uses the real ones; tests pass fakes that deliver scripted audio
+    (tests/fake_capture.py), so every Recording mode of every platform can
+    be recorded without devices (spec #17)."""
+    platform: str = sys.platform
+    pyaudio: Any = None       # module-like: PyAudio(), paInt16 (Windows)
+    sounddevice: Any = None   # module-like: query_devices(), InputStream (macOS/Linux)
+    popen: Callable = subprocess.Popen  # launches the macOS helper
+    helper_path: Callable[[], str] | None = None  # path of macos/SystemAudioCapture
+
+    def __post_init__(self):
+        # The real libraries for the platform asked for - each is only
+        # importable on its own platform (see the imports above).
+        if self.pyaudio is None and self.platform == "win32" and IS_WINDOWS:
+            self.pyaudio = pyaudio
+        if self.sounddevice is None and self.platform != "win32" and not IS_WINDOWS:
+            self.sounddevice = sd
+        if self.helper_path is None:
+            self.helper_path = _macos_system_audio_binary_path
+
+
 class AudioRecorder:
     """Reusable audio recorder with callback support for the GUI."""
 
-    def __init__(self):
+    def __init__(self, sources: CaptureSources | None = None):
+        self._sources = sources or CaptureSources()
+        self._windows = self._sources.platform == "win32"
+        self._macos = self._sources.platform == "darwin"
         self._stop_event = threading.Event()
         self._frames = []
         self._thread = None
@@ -293,10 +322,10 @@ class AudioRecorder:
         loopback_index the playback device (None = Windows default; ignored
         on macOS, which captures all playback), and setup ("headset" /
         "loudspeaker", see recording_modes) is stored in the tracks sidecar."""
-        if not IS_WINDOWS and source != "mic":
-            if IS_MACOS and source == "system":
+        if not self._windows and source != "mic":
+            if self._macos and source == "system":
                 pass  # experimentally supported, see _record_system_macos()
-            elif IS_MACOS and source == "both":
+            elif self._macos and source == "both":
                 pass  # experimentally supported, see _record_both_macos()
             else:
                 # System audio (WASAPI loopback) otherwise only exists on Windows.
@@ -330,11 +359,11 @@ class AudioRecorder:
         return self._thread is not None and self._thread.is_alive()
 
     def _record(self):
-        if IS_MACOS and self._source == "system":
+        if self._macos and self._source == "system":
             self._record_system_macos()
-        elif IS_MACOS and self._source == "both":
+        elif self._macos and self._source == "both":
             self._record_both_macos()
-        elif not IS_WINDOWS:
+        elif not self._windows:
             # start() already guarantees source == "mic" on non-Windows
             # (except the macOS system-audio branch above).
             self._record_single_sounddevice()
@@ -348,9 +377,9 @@ class AudioRecorder:
         level_channel = "mic"
         try:
             if self._device_index is not None:
-                info = sd.query_devices(self._device_index)
+                info = self._sources.sounddevice.query_devices(self._device_index)
             else:
-                info = sd.query_devices(kind="input")
+                info = self._sources.sounddevice.query_devices(kind="input")
             self._channels = 1
             self._sample_rate = int(info["default_samplerate"])
 
@@ -360,7 +389,7 @@ class AudioRecorder:
                 if self._on_level:
                     self._on_level(level_channel, compute_rms(data))
 
-            with sd.InputStream(samplerate=self._sample_rate, channels=self._channels,
+            with self._sources.sounddevice.InputStream(samplerate=self._sample_rate, channels=self._channels,
                                  dtype="int16", device=self._device_index,
                                  blocksize=CHUNK, callback=callback):
                 while not self._stop_event.is_set():
@@ -377,37 +406,36 @@ class AudioRecorder:
         if self._on_done:
             self._on_done(self._output_path, duration, None)
 
-    def _record_system_macos(self):
-        """System-audio recording on macOS via a ScreenCaptureKit subprocess.
+    def _helper_path_or_report(self) -> str | None:
+        """The macOS system-audio helper's path, or None after reporting via
+        on_done that it hasn't been built yet."""
+        binary = self._sources.helper_path()
+        if os.path.isfile(binary):
+            return binary
+        if self._on_done:
+            self._on_done(
+                None, 0,
+                "System-audio helper not found. Run './build.sh' in "
+                "macos/ first (see macos/README.md)."
+            )
+        return None
+
+    def _stream_helper(self, binary: str, on_chunk) -> bytes:
+        """Runs the ScreenCaptureKit helper (macos/SystemAudioCapture) until
+        stop() and passes each chunk of its 16kHz mono int16 PCM to on_chunk.
+        Returns its error output. Raises RuntimeError if it exited with an
+        error.
 
         Tested and debugged on real Apple Silicon hardware (see
-        macos/README.md) - the helper (macos/SystemAudioCapture) streams raw
-        16kHz mono int16 PCM bytes to stdout, read here in a blocking loop. A
+        macos/README.md). The helper's stdout is read in a blocking loop; a
         separate watcher thread terminates the subprocess as soon as stop()
         is called - this closes stdout (EOF), so the blocking read() returns
         immediately instead of closing a resource from another thread while a
         read is still active (the original WASAPI bug this pattern avoids).
         """
-        level_channel = "system"
-        binary = _macos_system_audio_binary_path()
-        if not os.path.isfile(binary):
-            if self._on_done:
-                self._on_done(
-                    None, 0,
-                    "System-audio helper not found. Run './build.sh' in "
-                    "macos/ first (see macos/README.md)."
-                )
-            return
-
-        self._channels = 1
-        self._sample_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
         chunk_bytes = CHUNK * SAMPLE_WIDTH
-
-        proc = None
+        proc = self._sources.popen([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            proc = subprocess.Popen(
-                [binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
             def _watch_stop():
                 self._stop_event.wait()
                 try:
@@ -415,16 +443,15 @@ class AudioRecorder:
                 except Exception:
                     pass
 
-            watcher = threading.Thread(target=_watch_stop, daemon=True)
-            watcher.start()
+            threading.Thread(target=_watch_stop, daemon=True).start()
 
             while True:
                 data = proc.stdout.read(chunk_bytes)
                 if not data:
                     break
-                self._frames.append(data)
+                on_chunk(data)
                 if self._on_level:
-                    self._on_level(level_channel, compute_rms(data))
+                    self._on_level("system", compute_rms(data))
 
             try:
                 proc.wait(timeout=3)
@@ -432,22 +459,35 @@ class AudioRecorder:
                 proc.kill()
                 proc.wait(timeout=2)
 
+            stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
             # -15/-2 = terminated cleanly via SIGTERM/SIGINT (the expected stop path)
             if proc.returncode not in (0, None, -15, -2):
-                stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
                     stderr_output or f"SystemAudioCapture exited with code {proc.returncode}")
+            return stderr_output
+        except BaseException:
+            if proc.poll() is None:
+                proc.kill()
+            raise
 
+    def _record_system_macos(self):
+        """System-audio recording on macOS via the ScreenCaptureKit helper
+        (see _stream_helper())."""
+        binary = self._helper_path_or_report()
+        if binary is None:
+            return
+
+        self._channels = 1
+        self._sample_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
+        try:
+            stderr_output = self._stream_helper(binary, self._frames.append)
             if not self._frames:
-                stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
                     stderr_output or
                     "No audio data received. Has the 'Screen & System Audio "
                     "Recording' permission been granted? "
                     "(System Settings > Privacy & Security)")
         except Exception as e:
-            if proc is not None and proc.poll() is None:
-                proc.kill()
             if self._on_done:
                 self._on_done(None, 0, str(e))
             return
@@ -460,31 +500,23 @@ class AudioRecorder:
             self._on_done(self._output_path, duration, None)
 
     def _record_both_macos(self):
-        """Records the microphone (sounddevice) and system audio
-        (ScreenCaptureKit subprocess, see _record_system_macos())
-        simultaneously and mixes them - macOS equivalent of _record_both() on
-        Windows.
+        """Records the microphone (sounddevice) and system audio (the
+        ScreenCaptureKit helper, see _stream_helper()) simultaneously and
+        mixes them - macOS equivalent of _record_both() on Windows.
 
         The microphone runs on sounddevice's own callback thread, the
-        system-audio side is read in a blocking loop on the current thread
-        (identical to _record_system_macos()); both feed a TrackAssembler,
-        which builds the tracks and the mix after stop.
+        Playback side is read on the current thread; both feed a
+        TrackAssembler, which builds the tracks and the mix after stop.
         """
-        binary = _macos_system_audio_binary_path()
-        if not os.path.isfile(binary):
-            if self._on_done:
-                self._on_done(
-                    None, 0,
-                    "System-audio helper not found. Run './build.sh' in "
-                    "macos/ first (see macos/README.md)."
-                )
+        binary = self._helper_path_or_report()
+        if binary is None:
             return
 
         try:
             if self._device_index is not None:
-                mic_info = sd.query_devices(self._device_index)
+                mic_info = self._sources.sounddevice.query_devices(self._device_index)
             else:
-                mic_info = sd.query_devices(kind="input")
+                mic_info = self._sources.sounddevice.query_devices(kind="input")
         except Exception as e:
             if self._on_done:
                 self._on_done(None, 0, str(e))
@@ -494,7 +526,6 @@ class AudioRecorder:
         mic_rate = int(mic_info["default_samplerate"])
         sys_ch = 1
         sys_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
-        chunk_bytes = CHUNK * SAMPLE_WIDTH
         # The helper streams continuously from its first sample on, so the
         # Microphone's lead while it launches is trimmed (#20) and a slow
         # pipe read isn't padded as a gap.
@@ -515,52 +546,17 @@ class AudioRecorder:
             if self._on_level:
                 self._on_level("mic", compute_rms(data))
 
-        proc = None
         mic_stream = None
         try:
             # ~10 ms blocks: the Microphone's sample count is the Call's time
             # base, see TrackAssembler.
-            mic_stream = sd.InputStream(
+            mic_stream = self._sources.sounddevice.InputStream(
                 samplerate=mic_rate, channels=mic_ch, dtype="int16",
                 device=self._device_index, blocksize=max(1, mic_rate // 100),
                 callback=mic_callback)
             mic_stream.start()
-
-            proc = subprocess.Popen(
-                [binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-            def _watch_stop():
-                self._stop_event.wait()
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-
-            watcher = threading.Thread(target=_watch_stop, daemon=True)
-            watcher.start()
-
-            while True:
-                data = proc.stdout.read(chunk_bytes)
-                if not data:
-                    break
-                assembler.add_chunk(SYSTEM, data)
-                if self._on_level:
-                    self._on_level("system", compute_rms(data))
-
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2)
-
-            # -15/-2 = terminated cleanly via SIGTERM/SIGINT (the expected stop path)
-            if proc.returncode not in (0, None, -15, -2):
-                stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
-                raise RuntimeError(
-                    stderr_output or f"SystemAudioCapture exited with code {proc.returncode}")
+            self._stream_helper(binary, lambda data: assembler.add_chunk(SYSTEM, data))
         except Exception as e:
-            if proc is not None and proc.poll() is None:
-                proc.kill()
             if self._on_done:
                 self._on_done(None, 0, str(e))
             return
@@ -575,7 +571,7 @@ class AudioRecorder:
         self._finish_call(assembler)
 
     def _record_single(self):
-        p = pyaudio.PyAudio()
+        p = self._sources.pyaudio.PyAudio()
         level_channel = "system" if self._source == "system" else "mic"
         try:
             if self._source == "system":
@@ -593,7 +589,7 @@ class AudioRecorder:
                 self._sample_rate = int(info["defaultSampleRate"])
 
             stream = p.open(
-                format=FORMAT,
+                format=self._sources.pyaudio.paInt16,
                 channels=self._channels,
                 rate=self._sample_rate,
                 input=True,
@@ -632,7 +628,7 @@ class AudioRecorder:
 
     def _record_both(self):
         """Records microphone + system audio simultaneously and mixes them."""
-        p = pyaudio.PyAudio()
+        p = self._sources.pyaudio.PyAudio()
         mic_stream = None
         sys_stream = None
         mic_thread = None
@@ -659,7 +655,7 @@ class AudioRecorder:
             assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch)
 
             mic_stream = p.open(
-                format=FORMAT, channels=mic_ch, rate=mic_rate,
+                format=self._sources.pyaudio.paInt16, channels=mic_ch, rate=mic_rate,
                 input=True, input_device_index=mic_idx,
                 # A 64 ms buffer, although it's read from 10 ms on: a 10 ms
                 # one overflowed while the GUI kept the reader thread from
@@ -667,7 +663,7 @@ class AudioRecorder:
                 frames_per_buffer=_chunk_size_for_rate(mic_rate))
 
             sys_stream = p.open(
-                format=FORMAT, channels=sys_ch, rate=sys_rate,
+                format=self._sources.pyaudio.paInt16, channels=sys_ch, rate=sys_rate,
                 input=True, input_device_index=sys_idx,
                 frames_per_buffer=sys_chunk)
 
@@ -838,302 +834,114 @@ def list_devices():
     print()
 
 
-def _level_bar(data: bytes, channels: int) -> str:
-    """Builds a simple volume bar for the console."""
-    samples = np.frombuffer(data, dtype=np.int16)
-    if len(samples) == 0:
-        return ""
-    rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
-    # Normalize to 0-50 characters
+def _bar_chars() -> tuple[str, str]:
+    """Block characters if the console can show them, else ASCII (a cp1252
+    console or a pipe can't encode them)."""
+    try:
+        "█░".encode(sys.stdout.encoding or "ascii")
+        return "█", "░"
+    except (UnicodeEncodeError, LookupError):
+        return "#", "-"
+
+
+def _level_bar(rms: float, chars: tuple[str, str] = ("█", "░")) -> str:
+    """A simple volume bar for the console (0-50 characters)."""
     level = min(int(rms / 500), 50)
-    bar = "█" * level + "░" * (50 - level)
-    return f"\r  Level: |{bar}| {rms:6.0f}"
+    return chars[0] * level + chars[1] * (50 - level)
 
 
-def record_microphone(output_path: str, device_index: int | None = None,
-                      sample_rate: int | None = None, channels: int | None = None):
-    """Records audio from the microphone and saves it as a WAV file.
-
-    Stops on Enter.
-    """
-    if IS_WINDOWS:
-        return _record_microphone_pyaudio(output_path, device_index, sample_rate, channels)
-    return _record_microphone_sounddevice(output_path, device_index, sample_rate, channels or 1)
+def _wait_for_enter():
+    input()
 
 
-def _record_microphone_sounddevice(output_path: str, device_index: int | None = None,
-                                   sample_rate: int | None = None, channels: int = 1):
-    """Microphone recording via sounddevice (macOS/Linux). Stops on ENTER."""
-    if device_index is not None:
-        info = sd.query_devices(device_index)
-        print(f"Microphone: [{device_index}] {info['name']}")
-    else:
-        info = sd.query_devices(kind="input")
-        device_index = None
-        print(f"Default microphone: {info['name']}")
-
-    if sample_rate is None:
-        sample_rate = int(info["default_samplerate"])
-    print(f"  Channels: {channels}, Sample rate: {sample_rate} Hz")
-
-    frames = []
-    stop_event = threading.Event()
-
-    def callback(indata, frame_count, time_info, status):
-        data = indata.tobytes()
-        frames.append(data)
-        print(_level_bar(data, channels), end="", flush=True)
-
-    def wait_for_enter():
-        input()
-        stop_event.set()
-
-    listener = threading.Thread(target=wait_for_enter, daemon=True)
-    listener.start()
-
-    print("Recording... Press ENTER to stop.\n")
-
-    with sd.InputStream(samplerate=sample_rate, channels=channels, dtype="int16",
-                        device=device_index, blocksize=CHUNK, callback=callback):
-        try:
-            while not stop_event.is_set():
-                stop_event.wait(0.05)
-        except KeyboardInterrupt:
-            pass
-
-    print("\n\nRecording stopped.")
-
-    _save_wav(output_path, frames, channels, sample_rate)
-    return output_path
-
-
-def _record_microphone_pyaudio(output_path: str, device_index: int | None = None,
-                               sample_rate: int | None = None, channels: int | None = None):
-    p = pyaudio.PyAudio()
-
-    if device_index is not None:
-        info = p.get_device_info_by_index(device_index)
-        print(f"Microphone: [{device_index}] {info['name']}")
-    else:
-        info = p.get_default_input_device_info()
-        device_index = info["index"]
-        print(f"Default microphone: [{device_index}] {info['name']}")
-
-    if sample_rate is None:
-        sample_rate = int(info["defaultSampleRate"])
-    if channels is None:
-        channels = _mic_channels(info)
-    print(f"  Channels: {channels}, Sample rate: {sample_rate} Hz")
-
-    stream = p.open(
-        format=FORMAT,
-        channels=channels,
-        rate=sample_rate,
-        input=True,
-        input_device_index=device_index,
-        frames_per_buffer=CHUNK,
-    )
-
-    frames = []
-    stop_event = threading.Event()
-
-    def wait_for_enter():
-        input()
-        stop_event.set()
-
-    listener = threading.Thread(target=wait_for_enter, daemon=True)
-    listener.start()
-
-    print("Recording... Press ENTER to stop.\n")
-
-    try:
-        while not stop_event.is_set():
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            frames.append(data)
-            print(_level_bar(data, channels), end="", flush=True)
-    except KeyboardInterrupt:
-        pass
-
-    print("\n\nRecording stopped.")
-
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-
-    _save_wav(output_path, frames, channels, sample_rate)
-    return output_path
-
-
-def record_system_audio(output_path: str, device_index: int | None = None):
-    """Records system audio and saves it as a WAV file. Stops on Enter.
-
-    Windows: WASAPI loopback. macOS: experimental via ScreenCaptureKit (see
-    macos/README.md) - device_index is ignored there, there's no device
-    selection. Linux: not supported.
-    """
-    if IS_MACOS:
-        return _record_system_audio_macos_cli(output_path)
-
-    if not IS_WINDOWS:
-        raise RuntimeError(
-            "System-audio recording isn't supported on this OS yet "
-            "(Windows only, macOS experimentally). Use --source mic."
-        )
-    p = pyaudio.PyAudio()
-
-    try:
-        loopback = _get_loopback_device(p, device_index)
-    except (OSError, RuntimeError) as e:
-        p.terminate()
-        if isinstance(e, RuntimeError):
-            raise
-        raise RuntimeError(
-            "No WASAPI loopback device found. "
-            "Make sure an audio output device is active."
-        ) from e
-
-    channels = loopback["maxInputChannels"]
-    sample_rate = int(loopback["defaultSampleRate"])
-
-    print(f"System audio (loopback): [{loopback['index']}] {loopback['name']}")
-    print(f"  Channels: {channels}, Sample rate: {sample_rate} Hz")
-
-    stream = p.open(
-        format=FORMAT,
-        channels=channels,
-        rate=sample_rate,
-        input=True,
-        input_device_index=loopback["index"],
-        frames_per_buffer=CHUNK,
-    )
-
-    frames = []
-    stop_event = threading.Event()
-
-    def wait_for_enter():
-        input()
-        stop_event.set()
-
-    listener = threading.Thread(target=wait_for_enter, daemon=True)
-    listener.start()
-
-    print("Recording... Press ENTER to stop.\n")
-
-    try:
-        while not stop_event.is_set():
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            frames.append(data)
-            print(_level_bar(data, channels), end="", flush=True)
-    except KeyboardInterrupt:
-        pass
-
-    print("\n\nRecording stopped.")
-
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-
-    _save_wav(output_path, frames, channels, sample_rate)
-    return output_path
-
-
-def _record_system_audio_macos_cli(output_path: str):
-    """CLI variant of the experimental macOS system-audio recording (ENTER stops).
-
-    Uses AudioRecorder._record_system_macos() under the hood (subprocess-based
-    ScreenCaptureKit helper) - see macos/README.md for status.
-    """
-    audio_recorder = AudioRecorder()
-    done_event = threading.Event()
+def _record_from_console(source: str, output_path: str, title: str, sources=None,
+                         wait_for_stop=None, **start_kwargs) -> str:
+    """The command line's recording loop, around the same AudioRecorder the
+    GUI uses (spec #17): start, show the level, wait for ENTER, stop, report.
+    wait_for_stop blocks until the user wants to stop (default: ENTER; tests
+    pass a timer). Raises RuntimeError if the recording failed."""
+    recorder = AudioRecorder(sources)
+    done = threading.Event()
     stop_requested = threading.Event()
     result = {"path": None, "duration": 0, "error": None}
+    levels: dict[str, float] = {}
+    chars = _bar_chars()
+    display = threading.Lock()  # a Call reports levels from two threads
+
+    def on_level(channel, rms):
+        # The display must never stop a recording.
+        try:
+            with display:
+                levels[channel] = rms
+                bars = "  ".join(f"{TRACK_NAMES[ch]} |{_level_bar(v, chars)}| {v:6.0f}"
+                                 for ch, v in sorted(levels.items()))
+                print(f"\r  {bars}", end="", flush=True)
+        except Exception:  # noqa: BLE001
+            pass
 
     def on_done(path, duration, error):
-        result["path"] = path
-        result["duration"] = duration
-        result["error"] = error
-        done_event.set()
+        result.update(path=path, duration=duration, error=error)
+        done.set()
 
-    def wait_for_enter():
-        input()
+    def wait():
+        (wait_for_stop or _wait_for_enter)()
         stop_requested.set()
 
-    print("System audio (macOS, experimental via ScreenCaptureKit)")
-    audio_recorder.start(output_path=output_path, source="system", on_done=on_done)
-
-    listener = threading.Thread(target=wait_for_enter, daemon=True)
-    listener.start()
+    print(title)
+    recorder.start(output_path=output_path, source=source, on_level=on_level,
+                   on_done=on_done, **start_kwargs)
+    threading.Thread(target=wait, daemon=True).start()
 
     print("Recording... Press ENTER to stop.\n")
     try:
-        while not stop_requested.is_set() and not done_event.is_set():
-            done_event.wait(0.1)
+        while not stop_requested.is_set() and not done.is_set():
+            done.wait(0.1)
     except KeyboardInterrupt:
         pass
 
-    if not done_event.is_set():
+    if not done.is_set():
         print("\n\nRecording stopped. Saving...")
-        audio_recorder.stop()
-        if not done_event.wait(timeout=120):
+        recorder.stop()
+        if not done.wait(timeout=120):
             raise RuntimeError("Recording could not be completed.")
 
     if result["error"]:
         raise RuntimeError(result["error"])
-
     return result["path"] or output_path
+
+
+def record_microphone(output_path: str, device_index: int | None = None,
+                      sample_rate: int | None = None, channels: int | None = None,
+                      *, sources=None, wait_for_stop=None):
+    """Records the microphone (In room) and saves it as a WAV file. Stops on
+    Enter. Recorded like the GUI does, in the device's native format;
+    sample_rate and channels are kept for compatibility and ignored."""
+    if sample_rate is not None or channels is not None:
+        print("Note: sample_rate/channels are ignored - the microphone records in its native format.")
+    return _record_from_console("mic", output_path, "In room (Microphone)", sources, wait_for_stop,
+                                device_index=device_index)
+
+
+def record_system_audio(output_path: str, device_index: int | None = None,
+                        *, sources=None, wait_for_stop=None):
+    """Records what the computer plays (Playback only) and saves it as a WAV
+    file. Stops on Enter. Windows: WASAPI loopback (device_index = loopback device, None
+    = default). macOS: experimental via ScreenCaptureKit (see
+    macos/README.md), device_index is ignored. Linux: not supported."""
+    return _record_from_console("system", output_path, "Playback only", sources, wait_for_stop,
+                                device_index=device_index)
 
 
 def record_microphone_and_system(output_path: str,
                                  device_index: int | None = None,
                                  loopback_index: int | None = None,
-                                 setup: str | None = None):
+                                 setup: str | None = None,
+                                 *, sources=None, wait_for_stop=None):
     """Records a Call (microphone + playback audio) and saves the mix as a
     WAV file, plus the separate tracks tagged with the Setup."""
-    recorder = AudioRecorder()
-    done_event = threading.Event()
-    stop_requested = threading.Event()
-    result = {"path": None, "duration": 0, "error": None}
-
-    def on_done(path, duration, error):
-        result["path"] = path
-        result["duration"] = duration
-        result["error"] = error
-        done_event.set()
-
-    def wait_for_enter():
-        input()
-        stop_requested.set()
-
-    print("Microphone + system audio")
-    recorder.start(
-        output_path=output_path,
-        source="both",
-        device_index=device_index,
-        loopback_index=loopback_index,
-        setup=setup,
-        on_done=on_done,
-    )
-
-    listener = threading.Thread(target=wait_for_enter, daemon=True)
-    listener.start()
-
-    print("Recording... Press ENTER to stop.\n")
-    try:
-        while not stop_requested.is_set() and not done_event.is_set():
-            done_event.wait(0.1)
-    except KeyboardInterrupt:
-        pass
-
-    if not done_event.is_set():
-        print("\n\nRecording stopped. Saving...")
-        recorder.stop()
-        if not done_event.wait(timeout=120):
-            raise RuntimeError("Recording could not be completed.")
-
-    if result["error"]:
-        raise RuntimeError(result["error"])
-
-    return result["path"] or output_path
+    return _record_from_console("both", output_path, "Call (Microphone + Playback audio)", sources,
+                                wait_for_stop, device_index=device_index,
+                                loopback_index=loopback_index, setup=setup)
 
 
 def _save_wav(output_path: str, frames: list[bytes], channels: int,
