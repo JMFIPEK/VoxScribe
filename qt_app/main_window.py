@@ -2,11 +2,12 @@
 
 import os
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from qt_app import theme
+from qt_app.title_bar import color_title_bar
 from qt_app.constants import APP_NAME
 from qt_app.controllers import HardwareInfoController, RecorderController, TranscribeController
 from qt_app.pages.record_page import RecordPage
@@ -60,6 +61,9 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.North)
         self.tabs.setIconSize(QSize(18, 18))
+        # Paint the theme's QTabWidget background beside the (centered) tabs,
+        # so the strip has the same color as the title bar above it.
+        self.tabs.setAttribute(Qt.WA_StyledBackground, True)
         self.setCentralWidget(self.tabs)
 
         self.pages = {}
@@ -68,6 +72,12 @@ class MainWindow(QMainWindow):
         self._add_page("settings", SettingsPage(self))
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def showEvent(self, event):  # noqa: N802 - Qt override
+        super().showEvent(event)
+        if not getattr(self, "_title_bar_colored", False):
+            self._title_bar_colored = True
+            color_title_bar(self)
 
     def _add_page(self, key, widget):
         icon_key, label = next((i, lbl) for k, i, lbl in TAB_ITEMS if k == key)

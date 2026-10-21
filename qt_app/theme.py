@@ -268,7 +268,7 @@ QTabWidget::pane {{
     top: -1px;
 }}
 QTabWidget::tab-bar {{
-    left: 8px;
+    alignment: center;
 }}
 QTabBar {{
     background-color: {BG_ALT};
