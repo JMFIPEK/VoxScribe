@@ -328,3 +328,44 @@ def test_openvino_auto_detect_says_when_it_has_to_assume_english(capsys):
 
     assert openvino.detect_chunk_language(model, _FakeProcessor({}), None, "") == "en"
     assert "assuming English" in capsys.readouterr().out
+
+
+def test_openvino_forces_the_first_chunks_language_on_every_later_chunk(tmp_path, monkeypatch):
+    """transcribe_openvino() end to end with fake transformers/optimum: like
+    the real model, generate() returns text without a language token."""
+    import sys
+    import types
+    import numpy as np
+    from voxscribe.transcription.backends import openvino
+
+    calls = []
+
+    class FakeModel:
+        def generate(self, features, **kwargs):
+            calls.append(kwargs.get("language"))
+            return [[0]]
+
+        def detect_language(self, features):
+            return [7]
+
+    class FakeProcessor:
+        tokenizer = _FakeTokenizer({7: "<|de|>"})
+
+        def __call__(self, chunk, sampling_rate, return_tensors):
+            return {"input_features": chunk}
+
+        def batch_decode(self, ids, skip_special_tokens):
+            return ["Das ist ein Baum, genau."]
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(
+        AutoProcessor=types.SimpleNamespace(from_pretrained=lambda d: FakeProcessor())))
+    monkeypatch.setitem(sys.modules, "optimum.intel.openvino", types.SimpleNamespace(
+        OVModelForSpeechSeq2Seq=types.SimpleNamespace(from_pretrained=lambda d, **kw: FakeModel())))
+    (tmp_path / "openvino" / "whisper-medium").mkdir(parents=True)
+    monkeypatch.setattr(openvino, "_get_bundled_models_dir", lambda: str(tmp_path))
+
+    result = openvino.transcribe_openvino("x.wav", None, "GPU", "medium",
+                                          audio=np.zeros(75 * 16000, dtype=np.float32))
+
+    assert result["language"] == "de"
+    assert calls == [None, "de", "de"]  # first chunk unforced, the rest forced to German

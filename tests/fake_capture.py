@@ -50,7 +50,10 @@ class _FakePaStream:
         return self.source.produced(time.monotonic() - self.opened) - self.read_frames
 
     def read(self, n, exception_on_overflow=True):
+        deadline = time.monotonic() + 2.0
         while self.get_read_available() < n:  # a real blocking read waits too
+            if not self.active or time.monotonic() > deadline:
+                raise OSError("fake stream: read() would block (nothing delivered)")
             time.sleep(0.002)
         data = self.source.frames(self.read_frames, n)
         self.read_frames += n

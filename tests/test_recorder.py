@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from voxscribe import recorder as recorder_module
 from voxscribe import tracks
 from voxscribe.recorder import AudioRecorder, CaptureSources
 from tests.fake_capture import FakeHelper, FakePyAudio, FakeSounddevice, FakeSource
@@ -186,7 +187,6 @@ def test_linux_offers_only_the_microphone(tmp_path):
 
 # --- Command-line recording uses the same recorder (#28) ---------------------
 
-from voxscribe import recorder as recorder_module  # noqa: E402
 
 
 def stop_after(seconds):

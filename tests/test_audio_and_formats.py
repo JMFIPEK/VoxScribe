@@ -222,3 +222,31 @@ def test_the_boost_is_limited(tmp_path):
 
     gap = _span_db(mix, pb_spans) - _span_db(mix, mic_spans)
     assert 23 <= gap <= 27  # 45 dB apart, boosted by at most 20 dB
+
+
+def test_rare_local_speech_is_measured_as_speech_not_as_noise(tmp_path):
+    # The local person says one sentence (1 s) in 60 s; the rest of the
+    # Microphone track is room noise 30 dB below it.
+    rng = np.random.default_rng(3)
+    n = 60 * SR
+    mic = rng.standard_normal(n) * 32768 * 10 ** (-74 / 20)
+    mic[30 * SR:31 * SR] = rng.standard_normal(SR) * 32768 * 10 ** (-44 / 20)
+    playback = np.zeros(n)
+    playback[: 50 * SR] = rng.standard_normal(50 * SR) * 32768 * 10 ** (-40 / 20)
+    path = str(tmp_path / "call.wav")
+    sf.write(path, np.clip(0.65 * (mic + playback), -32768, 32767).astype(np.int16), SR)
+    tracks.save_tracks(path, mic, playback, setup="headset")
+
+    # The speech levels are only 4 dB apart, so nothing is boosted - measured
+    # on the noise, the Microphone would look 34 dB quieter.
+    np.testing.assert_array_equal(audio.AudioSource(path).load(), audio.load_audio_universal(path))
+
+
+def test_a_microphone_with_only_room_noise_is_not_boosted(tmp_path):
+    path, _, _ = _call_with_levels(tmp_path, mic_db=-200, playback_db=-22)
+    d, _ = sf.read(tracks.tracks_path_for(path), dtype="float64", always_2d=True)
+    noise = np.random.default_rng(4).standard_normal(len(d)) * 10 ** (-60 / 20) * 32768
+    tracks.save_tracks(path, noise, d[:, 1] * 32768, setup="headset")
+    sf.write(path, np.clip(0.65 * (noise + d[:, 1] * 32768), -32768, 32767).astype(np.int16), SR)
+
+    np.testing.assert_array_equal(audio.AudioSource(path).load(), audio.load_audio_universal(path))

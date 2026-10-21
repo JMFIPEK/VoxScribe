@@ -28,7 +28,7 @@ import numpy as np
 from voxscribe.recording_modes import normalize_device_name as _normalize_device_name
 from voxscribe.recording_modes import suggest_mic_for_loopback  # noqa: F401 (re-export)
 from voxscribe.track_assembler import DropDetector, TrackAssembler
-from voxscribe.tracks import MIC, SYSTEM
+from voxscribe.tracks import MIC, SYSTEM, TRACK_NAMES
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -284,12 +284,14 @@ class CaptureSources:
     pyaudio: Any = None       # module-like: PyAudio(), paInt16 (Windows)
     sounddevice: Any = None   # module-like: query_devices(), InputStream (macOS/Linux)
     popen: Callable = subprocess.Popen  # launches the macOS helper
-    helper_path: Callable[[], str] = None  # path of macos/SystemAudioCapture
+    helper_path: Callable[[], str] | None = None  # path of macos/SystemAudioCapture
 
     def __post_init__(self):
-        if self.pyaudio is None and IS_WINDOWS:
+        # The real libraries for the platform asked for - each is only
+        # importable on its own platform (see the imports above).
+        if self.pyaudio is None and self.platform == "win32" and IS_WINDOWS:
             self.pyaudio = pyaudio
-        if self.sounddevice is None and not IS_WINDOWS:
+        if self.sounddevice is None and self.platform != "win32" and not IS_WINDOWS:
             self.sounddevice = sd
         if self.helper_path is None:
             self.helper_path = _macos_system_audio_binary_path
@@ -503,7 +505,7 @@ class AudioRecorder:
         mixes them - macOS equivalent of _record_both() on Windows.
 
         The microphone runs on sounddevice's own callback thread, the
-        system-audio side is read on the current thread; both feed a
+        Playback side is read on the current thread; both feed a
         TrackAssembler, which builds the tracks and the mix after stop.
         """
         binary = self._helper_path_or_report()
@@ -864,14 +866,16 @@ def _record_from_console(source: str, output_path: str, title: str, sources=None
     result = {"path": None, "duration": 0, "error": None}
     levels: dict[str, float] = {}
     chars = _bar_chars()
+    display = threading.Lock()  # a Call reports levels from two threads
 
     def on_level(channel, rms):
-        # Runs on the recorder's threads: the display must never stop a recording.
+        # The display must never stop a recording.
         try:
-            levels[channel] = rms
-            bars = "  ".join(f"{'Mic' if ch == MIC else 'Playback'} |{_level_bar(v, chars)}|"
-                             for ch, v in sorted(levels.items()))
-            print(f"\r  {bars}", end="", flush=True)
+            with display:
+                levels[channel] = rms
+                bars = "  ".join(f"{TRACK_NAMES[ch]} |{_level_bar(v, chars)}| {v:6.0f}"
+                                 for ch, v in sorted(levels.items()))
+                print(f"\r  {bars}", end="", flush=True)
         except Exception:  # noqa: BLE001
             pass
 
@@ -914,17 +918,17 @@ def record_microphone(output_path: str, device_index: int | None = None,
     sample_rate and channels are kept for compatibility and ignored."""
     if sample_rate is not None or channels is not None:
         print("Note: sample_rate/channels are ignored - the microphone records in its native format.")
-    return _record_from_console("mic", output_path, "Microphone", sources, wait_for_stop,
+    return _record_from_console("mic", output_path, "In room (Microphone)", sources, wait_for_stop,
                                 device_index=device_index)
 
 
 def record_system_audio(output_path: str, device_index: int | None = None,
                         *, sources=None, wait_for_stop=None):
-    """Records system audio (Playback only) and saves it as a WAV file. Stops
-    on Enter. Windows: WASAPI loopback (device_index = loopback device, None
+    """Records what the computer plays (Playback only) and saves it as a WAV
+    file. Stops on Enter. Windows: WASAPI loopback (device_index = loopback device, None
     = default). macOS: experimental via ScreenCaptureKit (see
     macos/README.md), device_index is ignored. Linux: not supported."""
-    return _record_from_console("system", output_path, "System audio", sources, wait_for_stop,
+    return _record_from_console("system", output_path, "Playback only", sources, wait_for_stop,
                                 device_index=device_index)
 
 
@@ -935,7 +939,7 @@ def record_microphone_and_system(output_path: str,
                                  *, sources=None, wait_for_stop=None):
     """Records a Call (microphone + playback audio) and saves the mix as a
     WAV file, plus the separate tracks tagged with the Setup."""
-    return _record_from_console("both", output_path, "Microphone + system audio", sources,
+    return _record_from_console("both", output_path, "Call (Microphone + Playback audio)", sources,
                                 wait_for_stop, device_index=device_index,
                                 loopback_index=loopback_index, setup=setup)
 

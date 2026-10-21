@@ -33,6 +33,8 @@ TRACKS_SUFFIX = ".tracks.flac"
 
 MIC = "mic"
 SYSTEM = "system"
+# How the two tracks are named to the user (GLOSSARY: Microphone, Playback audio).
+TRACK_NAMES = {MIC: "Microphone", SYSTEM: "Playback"}
 
 # Energy analysis frame length (seconds).
 _FRAME_SECONDS = 0.02
@@ -94,18 +96,28 @@ _BALANCE_MAX_GAIN_DB = 20.0  # never boost more, or a near-silent track becomes 
 _SILENT_DB = -80.0       # a track whose speech level is below this has no speech
 
 
+_SPEECH_ABOVE_FLOOR_DB = 15.0  # a frame this far above the track's noise floor is speech
+_MIN_SPEECH_FRAMES = 25        # 0.5 s of speech frames, else the track counts as speechless
+
+
 def speech_level_db(audio: np.ndarray) -> float:
-    """The track's typical speech level in dBFS (-1..1 samples): the 95th
-    percentile of its 20 ms frame levels, so pauses don't pull it down."""
+    """The track's typical speech level in dBFS (-1..1 samples): the median
+    of its speech frames, i.e. 20 ms frames at least _SPEECH_ABOVE_FLOOR_DB
+    above its noise floor (10th percentile). -200 if it has less than
+    _MIN_SPEECH_FRAMES of them - silence, steady noise or a steady signal
+    like music, none of which may be boosted. A percentile of all frames
+    would measure the noise of a rarely speaking person instead."""
     hop = int(_FRAME_SECONDS * SAMPLE_RATE)
     n = len(audio) // hop
     if n == 0:
         return -200.0
     frames = np.asarray(audio[:n * hop], dtype=np.float64).reshape(n, hop)
-    return float(np.percentile(10 * np.log10(np.mean(frames ** 2, axis=1) + 1e-20), 95))
+    db = 10 * np.log10(np.mean(frames ** 2, axis=1) + 1e-20)
+    speech = db[db >= np.percentile(db, 10) + _SPEECH_ABOVE_FLOOR_DB]
+    return float(np.median(speech)) if len(speech) >= _MIN_SPEECH_FRAMES else -200.0
 
 
-def balance(mic: np.ndarray, system: np.ndarray):
+def balance(mic: np.ndarray, system: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray], str, float] | None:
     """(mic, system) with the quieter track boosted towards the louder one's
     speech level, or None if they're already within _BALANCE_MIN_DB (or one
     has no speech at all). The boost is capped at _BALANCE_MAX_GAIN_DB.
@@ -115,9 +127,15 @@ def balance(mic: np.ndarray, system: np.ndarray):
         return None
     gain_db = min(abs(mic_db - sys_db), _BALANCE_MAX_GAIN_DB)
     gain = 10 ** (gain_db / 20)
+
+    def boost(track):
+        # Clipped at full scale: one boosted click would otherwise make mix()
+        # scale the whole mix down and undo most of the balancing.
+        return np.clip(np.asarray(track, dtype=np.float64) * gain, -1.0, 1.0)
+
     if mic_db < sys_db:
-        return (np.asarray(mic, dtype=np.float64) * gain, system), MIC, gain_db
-    return (mic, np.asarray(system, dtype=np.float64) * gain), SYSTEM, gain_db
+        return (boost(mic), system), MIC, gain_db
+    return (mic, boost(system)), SYSTEM, gain_db
 
 
 def load_setup(audio_path: str) -> str | None:

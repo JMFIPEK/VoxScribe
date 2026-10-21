@@ -125,7 +125,7 @@ class AudioSource:
     def _remix(self) -> np.ndarray | None:
         """The new mix of the Call's tracks, or None to use the saved file."""
         from voxscribe.recording_modes import SETUP_LOUDSPEAKER
-        from voxscribe.tracks import MIC, balance, load_setup, mix
+        from voxscribe.tracks import TRACK_NAMES, balance, load_setup, mix
         try:
             if self.tracks() is None:
                 return None
@@ -143,6 +143,6 @@ class AudioSource:
                   "Microphone track and the Playback track.")
         if balanced is not None:
             (mic, system), boosted, gain_db = balanced
-            print(f"     {'Microphone' if boosted == MIC else 'Playback'} track boosted by "
+            print(f"     {TRACK_NAMES[boosted]} track boosted by "
                   f"{gain_db:.0f} dB for transcription (its speech was much quieter).")
         return mix(mic, system, full_scale=32767 / 32768).astype(np.float32)
