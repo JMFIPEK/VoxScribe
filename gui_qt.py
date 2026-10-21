@@ -142,6 +142,10 @@ def main():
     load_dotenv()
 
     from qt_app import theme
+    if sys.platform == "darwin":
+        # Dark system title bar to match the theme (qt_app/title_bar.py
+        # recolors it on Windows).
+        app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
     theme.apply_palette(app)
     app.setStyleSheet(theme.build_stylesheet())
 
