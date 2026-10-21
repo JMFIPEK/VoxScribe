@@ -70,21 +70,8 @@ class TranscribeController(QObject):
     started = Signal()
     finished = Signal(object, object)  # result dict or None, error text or None
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._running = False
-        self.finished.connect(lambda *_: setattr(self, "_running", False))
-
-    @property
-    def is_running(self) -> bool:
-        return self._running
-
-    def _mark_started(self):
-        self._running = True
-        self.started.emit()
-
     def start(self, **kwargs):
-        self._mark_started()
+        self.started.emit()
 
         def _run():
             try:
@@ -107,7 +94,7 @@ class TranscribeController(QObject):
     def start_multi(self, **kwargs):
         """Like start(), but for multiple files (`audio_paths=[...]`) - see
         transcriber.transcribe_multi() for how the results are merged."""
-        self._mark_started()
+        self.started.emit()
 
         def _run():
             try:
@@ -187,7 +174,7 @@ class UpdateController(QObject):
 
     def _run(self):
         from voxscribe import updates
-        result = updates.check()
-        if result.status == "failed":
+        result = updates.check()  # never raises
+        if result.status == updates.FAILED:
             print(f"Update check failed: {result.error}")  # only logged (ADR 0002)
         self.checked.emit(result)

@@ -38,11 +38,15 @@ REM Install a pending Update first (the app left the marker and quit, see
 REM voxscribe/updates.py): check out the new Release, sync, roll back on any
 REM failure. Everything up to "exit /b" is one block, which cmd parses before
 REM running it - the checkout may replace this very file, so the updated
-REM launcher is then started afresh instead of cmd reading on in it.
-if exist "%USERPROFILE%\.voxscribe\update-pending.txt" if exist ".venv\Scripts\python.exe" (
+REM launcher is then started afresh instead of cmd reading on in it. The
+REM marker is deleted here too (in case Python failed before getting to it)
+REM and VOXSCRIBE_UPDATE_RAN stops a second round, so this never loops.
+if not defined VOXSCRIBE_UPDATE_RAN if exist "%USERPROFILE%\.voxscribe\update-pending.txt" if exist ".venv\Scripts\python.exe" (
     echo Installing the VoxScribe Update...
     ".venv\Scripts\python.exe" -m voxscribe.updates apply-pending --uv "%UV%" -- %SYNC_ARGS%
+    del /q "%USERPROFILE%\.voxscribe\update-pending.txt" >nul 2>nul
     endlocal
+    set "VOXSCRIBE_UPDATE_RAN=1"
     call "%~f0" %*
     exit /b
 )

@@ -226,3 +226,15 @@ def test_apply_never_touches_a_development_checkout(remote_and_install, tmp_path
 
     assert not outcome.ok
     assert updates.installed_version(install) == "development"
+
+
+def test_the_launcher_entry_removes_even_an_unusable_marker(tmp_path):
+    # The launcher restarts itself while a marker exists, so a marker that
+    # names no Release must not survive apply-pending.
+    user_dir = tmp_path / "home"
+    user_dir.mkdir()
+    (user_dir / updates.PENDING_FILE).write_text("  \n")
+
+    assert updates.main(["apply-pending"], user_dir=user_dir) == 0
+
+    assert not (user_dir / updates.PENDING_FILE).exists()

@@ -2,7 +2,7 @@
 
 import os
 
-from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
@@ -14,7 +14,7 @@ from qt_app.controllers import (HardwareInfoController, RecorderController, Tran
 from qt_app.pages.record_page import RecordPage
 from qt_app.pages.transcribe_page import TranscribePage
 from qt_app.pages.settings_page import SettingsPage
-from qt_app.widgets.update_notice import UpdateNotice
+from qt_app.widgets.update_notice import UpdateNotice, record_update_check
 
 # icon key (from theme.get_icons(), None = no icon) + label per tab
 TAB_ITEMS = [
@@ -114,13 +114,13 @@ class MainWindow(QMainWindow):
         self.update_controller.start()
 
     def _on_update_checked(self, result):
-        if result.status in ("available", "up_to_date"):
-            from datetime import datetime
-            settings = QSettings("VoxScribe", "VoxScribe")
-            settings.setValue("updates/last_checked", datetime.now().isoformat(timespec="minutes"))
-            settings.setValue("updates/latest", result.latest)
+        from voxscribe import updates
+        if result.status in (updates.AVAILABLE, updates.UP_TO_DATE):
+            record_update_check(result.latest)
         self.pages["settings"].show_update_check(result)
-        if result.status == "available" and not self.update_notice.isVisible():
+        if result.status == updates.AVAILABLE:
+            # Also right after a failed Update: the report stays in front of
+            # the offer, so the user can retry.
             self.update_notice.offer(result.latest)
 
     def _set_busy(self, key, busy):

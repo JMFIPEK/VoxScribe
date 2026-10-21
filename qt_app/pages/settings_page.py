@@ -5,7 +5,7 @@ deliberately not its own tab."""
 import sys
 import threading
 
-from PySide6.QtCore import QSettings, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -166,17 +166,17 @@ class SettingsPage(QWidget):
 
     @staticmethod
     def _last_checked_text(note: str = "") -> str:
-        settings = QSettings("VoxScribe", "VoxScribe")
-        when = settings.value("updates/last_checked")
-        latest = settings.value("updates/latest")
+        from qt_app.widgets.update_notice import last_update_check
+        when, latest = last_update_check()
         text = (f"Last checked for Updates: {str(when).replace('T', ' ')} (newest Release: {latest})"
                 if when else "Last checked for Updates: never")
         return text + (f" - {note}" if note else "")
 
     def show_update_check(self, result):
         """The result of this start's update check (updates.CheckResult)."""
-        note = {"failed": "this start's check failed, see the log",
-                "not_eligible": "this install isn't on a Release, so it gets no Updates"}.get(result.status, "")
+        from voxscribe import updates
+        note = {updates.FAILED: "this start's check failed, see the log",
+                updates.NOT_ELIGIBLE: "this install isn't on a Release, so it gets no Updates"}.get(result.status, "")
         self.update_check_label.setText(self._last_checked_text(note))
 
     def _determine_version(self):
