@@ -20,6 +20,9 @@ import sys
 import wave
 import threading
 import time
+from dataclasses import dataclass
+from typing import Any, Callable
+
 import numpy as np
 
 from voxscribe.recording_modes import normalize_device_name as _normalize_device_name
@@ -271,10 +274,35 @@ def compute_rms(data: bytes) -> float:
     return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
 
 
+@dataclass
+class CaptureSources:
+    """Everything AudioRecorder reaches outside Python through: the audio
+    libraries, the macOS system-audio helper and the platform. Production
+    uses the real ones; tests pass fakes that deliver scripted audio
+    (tests/fake_capture.py), so every Recording mode of every platform can
+    be recorded without devices (spec #17)."""
+    platform: str = sys.platform
+    pyaudio: Any = None       # module-like: PyAudio(), paInt16 (Windows)
+    sounddevice: Any = None   # module-like: query_devices(), InputStream (macOS/Linux)
+    popen: Callable = subprocess.Popen  # launches the macOS helper
+    helper_path: Callable[[], str] = None  # path of macos/SystemAudioCapture
+
+    def __post_init__(self):
+        if self.pyaudio is None and IS_WINDOWS:
+            self.pyaudio = pyaudio
+        if self.sounddevice is None and not IS_WINDOWS:
+            self.sounddevice = sd
+        if self.helper_path is None:
+            self.helper_path = _macos_system_audio_binary_path
+
+
 class AudioRecorder:
     """Reusable audio recorder with callback support for the GUI."""
 
-    def __init__(self):
+    def __init__(self, sources: CaptureSources | None = None):
+        self._sources = sources or CaptureSources()
+        self._windows = self._sources.platform == "win32"
+        self._macos = self._sources.platform == "darwin"
         self._stop_event = threading.Event()
         self._frames = []
         self._thread = None
@@ -293,10 +321,10 @@ class AudioRecorder:
         loopback_index the playback device (None = Windows default; ignored
         on macOS, which captures all playback), and setup ("headset" /
         "loudspeaker", see recording_modes) is stored in the tracks sidecar."""
-        if not IS_WINDOWS and source != "mic":
-            if IS_MACOS and source == "system":
+        if not self._windows and source != "mic":
+            if self._macos and source == "system":
                 pass  # experimentally supported, see _record_system_macos()
-            elif IS_MACOS and source == "both":
+            elif self._macos and source == "both":
                 pass  # experimentally supported, see _record_both_macos()
             else:
                 # System audio (WASAPI loopback) otherwise only exists on Windows.
@@ -330,11 +358,11 @@ class AudioRecorder:
         return self._thread is not None and self._thread.is_alive()
 
     def _record(self):
-        if IS_MACOS and self._source == "system":
+        if self._macos and self._source == "system":
             self._record_system_macos()
-        elif IS_MACOS and self._source == "both":
+        elif self._macos and self._source == "both":
             self._record_both_macos()
-        elif not IS_WINDOWS:
+        elif not self._windows:
             # start() already guarantees source == "mic" on non-Windows
             # (except the macOS system-audio branch above).
             self._record_single_sounddevice()
@@ -348,9 +376,9 @@ class AudioRecorder:
         level_channel = "mic"
         try:
             if self._device_index is not None:
-                info = sd.query_devices(self._device_index)
+                info = self._sources.sounddevice.query_devices(self._device_index)
             else:
-                info = sd.query_devices(kind="input")
+                info = self._sources.sounddevice.query_devices(kind="input")
             self._channels = 1
             self._sample_rate = int(info["default_samplerate"])
 
@@ -360,7 +388,7 @@ class AudioRecorder:
                 if self._on_level:
                     self._on_level(level_channel, compute_rms(data))
 
-            with sd.InputStream(samplerate=self._sample_rate, channels=self._channels,
+            with self._sources.sounddevice.InputStream(samplerate=self._sample_rate, channels=self._channels,
                                  dtype="int16", device=self._device_index,
                                  blocksize=CHUNK, callback=callback):
                 while not self._stop_event.is_set():
@@ -389,7 +417,7 @@ class AudioRecorder:
         read is still active (the original WASAPI bug this pattern avoids).
         """
         level_channel = "system"
-        binary = _macos_system_audio_binary_path()
+        binary = self._sources.helper_path()
         if not os.path.isfile(binary):
             if self._on_done:
                 self._on_done(
@@ -405,7 +433,7 @@ class AudioRecorder:
 
         proc = None
         try:
-            proc = subprocess.Popen(
+            proc = self._sources.popen(
                 [binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
             def _watch_stop():
@@ -470,7 +498,7 @@ class AudioRecorder:
         (identical to _record_system_macos()); both feed a TrackAssembler,
         which builds the tracks and the mix after stop.
         """
-        binary = _macos_system_audio_binary_path()
+        binary = self._sources.helper_path()
         if not os.path.isfile(binary):
             if self._on_done:
                 self._on_done(
@@ -482,9 +510,9 @@ class AudioRecorder:
 
         try:
             if self._device_index is not None:
-                mic_info = sd.query_devices(self._device_index)
+                mic_info = self._sources.sounddevice.query_devices(self._device_index)
             else:
-                mic_info = sd.query_devices(kind="input")
+                mic_info = self._sources.sounddevice.query_devices(kind="input")
         except Exception as e:
             if self._on_done:
                 self._on_done(None, 0, str(e))
@@ -520,13 +548,13 @@ class AudioRecorder:
         try:
             # ~10 ms blocks: the Microphone's sample count is the Call's time
             # base, see TrackAssembler.
-            mic_stream = sd.InputStream(
+            mic_stream = self._sources.sounddevice.InputStream(
                 samplerate=mic_rate, channels=mic_ch, dtype="int16",
                 device=self._device_index, blocksize=max(1, mic_rate // 100),
                 callback=mic_callback)
             mic_stream.start()
 
-            proc = subprocess.Popen(
+            proc = self._sources.popen(
                 [binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
             def _watch_stop():
@@ -575,7 +603,7 @@ class AudioRecorder:
         self._finish_call(assembler)
 
     def _record_single(self):
-        p = pyaudio.PyAudio()
+        p = self._sources.pyaudio.PyAudio()
         level_channel = "system" if self._source == "system" else "mic"
         try:
             if self._source == "system":
@@ -593,7 +621,7 @@ class AudioRecorder:
                 self._sample_rate = int(info["defaultSampleRate"])
 
             stream = p.open(
-                format=FORMAT,
+                format=self._sources.pyaudio.paInt16,
                 channels=self._channels,
                 rate=self._sample_rate,
                 input=True,
@@ -632,7 +660,7 @@ class AudioRecorder:
 
     def _record_both(self):
         """Records microphone + system audio simultaneously and mixes them."""
-        p = pyaudio.PyAudio()
+        p = self._sources.pyaudio.PyAudio()
         mic_stream = None
         sys_stream = None
         mic_thread = None
@@ -659,7 +687,7 @@ class AudioRecorder:
             assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch)
 
             mic_stream = p.open(
-                format=FORMAT, channels=mic_ch, rate=mic_rate,
+                format=self._sources.pyaudio.paInt16, channels=mic_ch, rate=mic_rate,
                 input=True, input_device_index=mic_idx,
                 # A 64 ms buffer, although it's read from 10 ms on: a 10 ms
                 # one overflowed while the GUI kept the reader thread from
@@ -667,7 +695,7 @@ class AudioRecorder:
                 frames_per_buffer=_chunk_size_for_rate(mic_rate))
 
             sys_stream = p.open(
-                format=FORMAT, channels=sys_ch, rate=sys_rate,
+                format=self._sources.pyaudio.paInt16, channels=sys_ch, rate=sys_rate,
                 input=True, input_device_index=sys_idx,
                 frames_per_buffer=sys_chunk)
 
