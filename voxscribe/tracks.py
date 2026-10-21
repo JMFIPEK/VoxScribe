@@ -43,6 +43,9 @@ _SIDE_MARGIN_DB = 6.0
 # loudspeaker echo, laughter) would create spurious extra speakers.
 _SPLIT_MIN_SECONDS = 8.0
 _SPLIT_MIN_FRACTION = 0.10
+# Inside one segment, a run of words on one side shorter than this is not a
+# speaker change (a cough, a short echo, an ambiguous word or two).
+_MIN_RUN_SECONDS = 1.0
 
 
 def tracks_path_for(audio_path: str) -> str:
@@ -128,29 +131,100 @@ def _segment_side(mic_db: np.ndarray, sys_db: np.ndarray, start: float, end: flo
     return None
 
 
+def _word_runs(seg: dict, mic_db: np.ndarray, sys_db: np.ndarray) -> list[tuple[list[dict], str]]:
+    """The segment's words grouped into runs on one side each, [(words,
+    side)], or [] if the words don't show a side change.
+
+    Long segments (Apple SpeechAnalyzer returns 10-20 s) can hold both a
+    local and a remote speaker; classifying the whole segment then gives
+    "ambiguous" and keeps the remote words with the local speaker (#36).
+    Ambiguous words and words without timestamps join the run before them
+    (or after, at the start); runs shorter than _MIN_RUN_SECONDS merge into
+    their neighbour."""
+    words = seg.get("words") or []
+    sides = [_segment_side(mic_db, sys_db, w["start"], w.get("end", w["start"]))
+             if "start" in w else None for w in words]
+    known = [side for side in sides if side]
+    if not known:
+        return []
+    current = known[0]
+    runs: list[list] = []  # [words, side]
+    for w, side in zip(words, sides):
+        current = side or current
+        if runs and runs[-1][1] == current:
+            runs[-1][0].append(w)
+        else:
+            runs.append([[w], current])
+
+    def duration(run_words):
+        timed = [w for w in run_words if "start" in w]
+        return timed[-1].get("end", timed[-1]["start"]) - timed[0]["start"] if timed else 0.0
+
+    while len(runs) > 1:
+        short = next((i for i, (ws, _) in enumerate(runs) if duration(ws) < _MIN_RUN_SECONDS), None)
+        if short is None:
+            break
+        into = short - 1 if short > 0 else 1
+        if into < short:
+            runs[into][0].extend(runs[short][0])
+        else:
+            runs[into][0][:0] = runs[short][0]
+        del runs[short]
+        merged = [runs[0]]  # neighbours that now share a side
+        for run in runs[1:]:
+            if run[1] == merged[-1][1]:
+                merged[-1][0].extend(run[0])
+            else:
+                merged.append(run)
+        runs = merged
+    return [(ws, side) for ws, side in runs] if len(runs) > 1 else []
+
+
+def _piece(seg: dict, words: list[dict], first: bool, last: bool) -> dict:
+    """The part of seg holding words (a cut at a side change)."""
+    timed = [w for w in words if "start" in w]
+    piece = dict(seg)
+    piece["start"] = seg.get("start", 0.0) if first else timed[0]["start"]
+    piece["end"] = seg.get("end", 0.0) if last else timed[-1].get("end", timed[-1]["start"])
+    piece["text"] = " ".join(w.get("word", "").strip() for w in words)
+    piece["words"] = words
+    return piece
+
+
 def split_speakers_by_track(result: dict, mic: np.ndarray, system: np.ndarray) -> dict[str, str]:
     """Splits diarization speakers that appear substantially on both the
     microphone and the system side into two speakers (in place).
 
     Operates on raw diarization labels (call before voice-print relabeling).
     Each speaker keeps its label on the side where it speaks most; its
-    segments on the other side move to a new SPEAKER_NN label. Returns
-    {new_label: original_label} for every split performed.
+    segments on the other side move to a new SPEAKER_NN label. A segment
+    whose words change side is cut at the change, if one of its parts
+    moves; other segments stay as they are. Returns {new_label:
+    original_label} for every split performed.
     """
     segments = result.get("segments", [])
     if not segments:
         return {}
     mic_db, sys_db = _frame_db(mic), _frame_db(system)
 
-    sides = []
+    # Per segment: [(piece, side)]; a single entry with the segment itself
+    # unless its words change side.
+    parts: list[list[tuple[dict, str | None]]] = []
     totals: dict[str, dict[str, float]] = {}
     for seg in segments:
         spk = seg.get("speaker")
-        side = _segment_side(mic_db, sys_db, seg.get("start", 0.0), seg.get("end", 0.0)) if spk else None
-        sides.append(side)
-        if spk and side:
-            dur = max(0.0, seg.get("end", 0.0) - seg.get("start", 0.0))
-            totals.setdefault(spk, {MIC: 0.0, SYSTEM: 0.0})[side] += dur
+        runs = _word_runs(seg, mic_db, sys_db) if spk else []
+        if runs:
+            seg_parts = [(_piece(seg, ws, i == 0, i == len(runs) - 1), side)
+                         for i, (ws, side) in enumerate(runs)]
+        else:
+            side = _segment_side(mic_db, sys_db, seg.get("start", 0.0), seg.get("end", 0.0)) if spk else None
+            seg_parts = [(seg, side)]
+        parts.append(seg_parts)
+        for piece, side in seg_parts:
+            if spk and side:
+                dur = max(0.0, piece.get("end", 0.0) - piece.get("start", 0.0))
+                totals.setdefault(spk, {MIC: 0.0, SYSTEM: 0.0})[side] += dur
 
     existing = {seg.get("speaker") for seg in segments if seg.get("speaker")}
     next_idx = 0
@@ -174,17 +248,25 @@ def split_speakers_by_track(result: dict, mic: np.ndarray, system: np.ndarray) -
     if not move_side:
         return {}
 
+    new_segments = []
     moved_windows: dict[str, list[tuple[float, float, str]]] = {}
-    for seg, side in zip(segments, sides):
+    for seg, seg_parts in zip(segments, parts):
         spk = seg.get("speaker")
-        if spk not in move_side or side != move_side[spk][0]:
+        moves = spk in move_side and any(side == move_side[spk][0] for _, side in seg_parts)
+        if not moves:
+            new_segments.append(seg)
             continue
-        new = move_side[spk][1]
-        seg["speaker"] = new
-        for w in seg.get("words", []) or []:
-            if w.get("speaker") == spk:
-                w["speaker"] = new
-        moved_windows.setdefault(spk, []).append((seg.get("start", 0.0), seg.get("end", 0.0), new))
+        for piece, side in seg_parts:
+            new_segments.append(piece)
+            if side != move_side[spk][0]:
+                continue
+            new = move_side[spk][1]
+            piece["speaker"] = new
+            for w in piece.get("words", []) or []:
+                if w.get("speaker") == spk:
+                    w["speaker"] = new
+            moved_windows.setdefault(spk, []).append((piece.get("start", 0.0), piece.get("end", 0.0), new))
+    result["segments"] = new_segments
 
     # word_segments may hold separate dict copies of the same words.
     for w in result.get("word_segments", []) or []:

@@ -153,3 +153,61 @@ def test_headset_and_pre_setup_sidecars_load_unchanged(tmp_path, setup):
 
     np.testing.assert_array_equal(loaded_mic, raw_mic)
     np.testing.assert_array_equal(loaded_playback, raw_playback)
+
+
+# --- Speaker changes inside long segments (#36) ---------------------------
+
+def _long_seg(start, end, speaker, word_seconds=0.5):
+    """One long segment (as Apple SpeechAnalyzer returns them) with a word
+    every word_seconds."""
+    words = [{"start": t, "end": t + word_seconds * 0.8, "word": f"w{t:g}", "speaker": speaker}
+             for t in np.arange(start, end, word_seconds).tolist()]
+    return {"start": start, "end": end, "text": " ".join(w["word"] for w in words),
+            "speaker": speaker, "words": words}
+
+
+def _alternating_tracks():
+    # Mic loud 0-10s and 20-30s, system loud 10-20s and 30-40s.
+    return _signal([(0, 10), (20, 30)], seed=1), _signal([(10, 20), (30, 40)], seed=2)
+
+
+def test_a_speaker_change_inside_a_long_segment_is_split_at_the_words():
+    mic, system = _alternating_tracks()
+    result = {"segments": [_long_seg(0, 20, "SPEAKER_00"), _long_seg(20, 40, "SPEAKER_00")]}
+    result["word_segments"] = [dict(w) for s in result["segments"] for w in s["words"]]
+
+    split = tracks.split_speakers_by_track(result, mic, system)
+
+    # The system side has slightly more speech (20 s vs 19.8 s), so it keeps
+    # SPEAKER_00 and the microphone parts move.
+    assert split == {"SPEAKER_01": "SPEAKER_00"}
+    segs = result["segments"]
+    assert [(s["start"], s["end"], s["speaker"]) for s in segs] == [
+        (0, 9.9, "SPEAKER_01"), (10.0, 20, "SPEAKER_00"),
+        (20, 29.9, "SPEAKER_01"), (30.0, 40, "SPEAKER_00")]
+    assert segs[1]["text"].startswith("w10 w10.5") and segs[1]["text"].endswith("w19.5")
+    assert all(w["speaker"] == s["speaker"] for s in segs for w in s["words"])
+    assert {w["speaker"] for w in result["word_segments"] if w["start"] >= 30} == {"SPEAKER_00"}
+    assert {w["speaker"] for w in result["word_segments"] if w["start"] < 10} == {"SPEAKER_01"}
+
+
+def test_a_long_segment_whose_speaker_is_not_split_stays_whole():
+    # Both sides inside one segment, but only 4 s on the minority side (< 8 s).
+    mic, system = _signal([(0, 16)], seed=1), _signal([(16, 20)], seed=2)
+    seg = _long_seg(0, 20, "SPEAKER_00")
+    result = {"segments": [seg]}
+
+    assert tracks.split_speakers_by_track(result, mic, system) == {}
+    assert result["segments"] == [seg] and len(seg["words"]) == 40
+
+
+def test_a_short_blip_from_the_other_side_does_not_cut_a_segment():
+    # 0.5 s of system audio inside the local speech is not a speaker change.
+    mic = _signal([(0, 10), (10.5, 20), (20, 30)], seed=1)
+    system = _signal([(10, 10.5), (30, 40)], seed=2)
+    result = {"segments": [_long_seg(0, 30, "SPEAKER_00"), _long_seg(30, 40, "SPEAKER_00")]}
+
+    tracks.split_speakers_by_track(result, mic, system)
+
+    assert [(s["start"], s["end"], s["speaker"]) for s in result["segments"]] == [
+        (0, 30, "SPEAKER_00"), (30, 40, "SPEAKER_01")]
