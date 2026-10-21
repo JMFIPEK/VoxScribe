@@ -32,6 +32,34 @@ SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
 MAX_PLAYBACK_LAG = 0.05
 
 
+# A Microphone that delivered this much (seconds) less than the wall clock
+# says has lost samples. Far above read jitter and the drift between the
+# device clock and the wall clock (tens of ms per hour).
+MAX_UNREPORTED_DROP = 0.2
+
+
+class DropDetector:
+    """Finds Microphone samples lost without a report (PyAudio on Windows
+    drops input overflows silently): compares the samples received with
+    the wall clock since the first read. Only a drop detector - the
+    Microphone's sample count stays the Call's time base."""
+
+    def __init__(self, rate: int, threshold: float = MAX_UNREPORTED_DROP):
+        self._rate = rate
+        self._threshold = threshold
+        self._start: float | None = None
+
+    def missing(self, received: int, now: float) -> int:
+        """Frames lost so far, or 0. received counts every frame added to
+        the track, including silence added for earlier drops; now is
+        time.monotonic() right after a read that emptied the buffer."""
+        if self._start is None:
+            self._start = now - received / self._rate
+            return 0
+        deficit = int(round((now - self._start) * self._rate)) - received
+        return deficit if deficit > self._threshold * self._rate else 0
+
+
 class TrackAssembler:
     """Collects one Call's per-source chunks (int16 PCM bytes, interleaved
     if multi-channel) and assembles the 16kHz tracks and mix from them.
