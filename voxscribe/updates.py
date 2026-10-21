@@ -219,16 +219,43 @@ class ApplyOutcome:
     error: str | None = None
 
 
-def uv_sync(uv: str = "uv", args=()):
-    """The environment sync apply() runs by default: `uv sync [args]` in the
-    install (the Windows launcher passes its Intel Arc arguments)."""
+LOG_FILE = "voxscribe.log"  # the app's log (gui_qt.py), so details end up in one place
+
+
+def _log(message: str, user_dir=None):
+    """Prints and appends to the app's log: the launcher's console window
+    closes right after an Update, so its output would be lost otherwise."""
+    print(message)
+    try:
+        directory = _user_dir(user_dir)
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, LOG_FILE), "a", encoding="utf-8") as f:
+            f.write(message.rstrip() + "\n")
+    except OSError:
+        pass
+
+
+def uv_sync(uv: str = "uv", args=(), user_dir=None):
+    """The environment sync apply() runs by default: `uv sync --locked
+    [args]` in the install (the Windows launcher passes its Intel Arc
+    arguments). --locked: a Release whose uv.lock doesn't match fails and
+    is rolled back, instead of uv rewriting uv.lock - a dirty checkout
+    would never get an Update again."""
     def sync(repo) -> bool:
-        print(f"Update: {uv} sync {' '.join(args)}".rstrip())
+        command = [uv, "sync", "--locked", *args]
+        _log("Update: " + " ".join(command), user_dir)
+        # The install's own .venv, whatever environment launched us.
+        env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         try:
-            return subprocess.run([uv, "sync", *args], cwd=str(repo)).returncode == 0
+            result = subprocess.run(command, cwd=str(repo), env=env,
+                                    capture_output=True, text=True, errors="replace")
         except OSError as e:
-            print(f"Update: could not run uv: {e}")
+            _log(f"Update: could not run uv: {e}", user_dir)
             return False
+        output = (result.stdout + result.stderr).strip()
+        if output:
+            _log(output, user_dir)
+        return result.returncode == 0
     return sync
 
 
@@ -246,8 +273,8 @@ def apply(target: str, repo=None, sync=None, user_dir=None) -> ApplyOutcome:
 
     previous = installed_version(repo)
     outcome = _apply(target, repo, sync, previous)
-    print(f"Update to {target}: {'done' if outcome.ok else 'failed - ' + str(outcome.error)}"
-          f" (installed: {outcome.installed})")
+    _log(f"Update to {target}: {'done' if outcome.ok else 'failed - ' + str(outcome.error)}"
+         f" (installed: {outcome.installed})", user_dir)
     _write_result(outcome, user_dir)
     return outcome
 
@@ -281,7 +308,7 @@ def _safe_sync(sync, repo) -> bool:
     try:
         return bool(sync(repo))
     except Exception as e:  # noqa: BLE001 - any failure means roll back
-        print(f"Update: sync raised {e!r}")
+        _log(f"Update: sync raised {e!r}")
         return False
 
 
@@ -312,7 +339,7 @@ def main(argv=None) -> int:
     uv = rest[rest.index("--uv") + 1] if "--uv" in rest and rest.index("--uv") + 1 < len(rest) else "uv"
     target = pending_update()
     if target:
-        print(f"Installing Update {target}...")
+        _log(f"Installing Update {target}...")
         apply(target, sync=uv_sync(uv, sync_args))
     return 0
 

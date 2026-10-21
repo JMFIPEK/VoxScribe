@@ -26,6 +26,27 @@ if errorlevel 1 (
     goto :done
 )
 
+REM If voxscribe/gpu_setup.py has already switched torch to the Intel Arc
+REM (XPU) build, keep it: a plain sync would swap it back to the CUDA build
+REM from uv.lock, and gpu_setup would then swap it to XPU again right after -
+REM two multi-GB reinstalls for nothing. --inexact keeps the XPU-only extras
+REM (triton-xpu, ...) that aren't in uv.lock. Used by the Update below too.
+set "SYNC_ARGS="
+dir /b /ad ".venv\Lib\site-packages\torch-*+xpu.dist-info" >nul 2>nul && set "SYNC_ARGS=--inexact --no-install-package torch --no-install-package torchaudio --no-install-package torchvision"
+
+REM Install a pending Update first (the app left the marker and quit, see
+REM voxscribe/updates.py): check out the new Release, sync, roll back on any
+REM failure. Everything up to "exit /b" is one block, which cmd parses before
+REM running it - the checkout may replace this very file, so the updated
+REM launcher is then started afresh instead of cmd reading on in it.
+if exist "%USERPROFILE%\.voxscribe\update-pending.txt" if exist ".venv\Scripts\python.exe" (
+    echo Installing the VoxScribe Update...
+    ".venv\Scripts\python.exe" -m voxscribe.updates apply-pending --uv "%UV%" -- %SYNC_ARGS%
+    endlocal
+    call "%~f0" %*
+    exit /b
+)
+
 REM Only sync the venv when it's missing or uv.lock changed since the last
 REM successful sync - not on every start. A plain `uv run` re-syncs every
 REM time, which on an Intel Arc machine reverts torch to the CUDA build pinned
@@ -38,14 +59,6 @@ if not exist "%STAMP%" set "NEED_SYNC=1"
 if "%NEED_SYNC%"=="0" (
     fc /b "uv.lock" "%STAMP%" >nul 2>nul || set "NEED_SYNC=1"
 )
-
-REM If voxscribe/gpu_setup.py has already switched torch to the Intel Arc
-REM (XPU) build, keep it: a plain sync would swap it back to the CUDA build
-REM from uv.lock, and gpu_setup would then swap it to XPU again right after -
-REM two multi-GB reinstalls for nothing. --inexact keeps the XPU-only extras
-REM (triton-xpu, ...) that aren't in uv.lock.
-set "SYNC_ARGS="
-dir /b /ad ".venv\Lib\site-packages\torch-*+xpu.dist-info" >nul 2>nul && set "SYNC_ARGS=--inexact --no-install-package torch --no-install-package torchaudio --no-install-package torchvision"
 
 if "%NEED_SYNC%"=="1" (
     echo Dependencies changed - updating the environment...
