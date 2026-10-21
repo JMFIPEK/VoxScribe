@@ -29,6 +29,8 @@ def app():
 def test_main_window_keeps_its_three_tabs_centered(app, monkeypatch):
     from qt_app import main_window
     monkeypatch.setattr(main_window.HardwareInfoController, "start", lambda self: None)
+    monkeypatch.setattr(main_window.UpdateController, "start", lambda self: None)
+    monkeypatch.setattr("voxscribe.updates.take_update_result", lambda *a: None)
 
     window = main_window.MainWindow()
     window.resize(1000, 700)

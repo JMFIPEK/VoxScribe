@@ -4,15 +4,17 @@ import os
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QMainWindow, QTabWidget
+from PySide6.QtWidgets import QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from qt_app import theme
 from qt_app.title_bar import color_title_bar
 from qt_app.constants import APP_NAME
-from qt_app.controllers import HardwareInfoController, RecorderController, TranscribeController
+from qt_app.controllers import (HardwareInfoController, RecorderController, TranscribeController,
+                                UpdateController)
 from qt_app.pages.record_page import RecordPage
 from qt_app.pages.transcribe_page import TranscribePage
 from qt_app.pages.settings_page import SettingsPage
+from qt_app.widgets.update_notice import UpdateNotice, record_update_check
 
 # icon key (from theme.get_icons(), None = no icon) + label per tab
 TAB_ITEMS = [
@@ -46,6 +48,7 @@ class MainWindow(QMainWindow):
         self.recorder_controller = RecorderController(self)
         self.transcribe_controller = TranscribeController()
         self.hardware_info_controller = HardwareInfoController(self)
+        self.update_controller = UpdateController(self)
 
         self._build_ui()
 
@@ -64,7 +67,26 @@ class MainWindow(QMainWindow):
         # Paint the theme's QTabWidget background beside the (centered) tabs,
         # so the strip has the same color as the title bar above it.
         self.tabs.setAttribute(Qt.WA_StyledBackground, True)
-        self.setCentralWidget(self.tabs)
+
+        self.update_notice = UpdateNotice()
+        self.update_notice.installRequested.connect(self._install_update)
+        central = QWidget()
+        column = QVBoxLayout(central)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        column.addWidget(self.update_notice)
+        column.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
+
+        # The Update button is unavailable while recording or transcribing.
+        # Tracked from the signals: recordingFinished arrives while the
+        # recorder thread may still be winding down.
+        self._busy = {"recording": False, "transcribing": False}
+        for signal, key, busy in ((self.recorder_controller.recordingStarted, "recording", True),
+                                  (self.recorder_controller.recordingFinished, "recording", False),
+                                  (self.transcribe_controller.started, "transcribing", True),
+                                  (self.transcribe_controller.finished, "transcribing", False)):
+            signal.connect(lambda *_, key=key, busy=busy: self._set_busy(key, busy))
 
         self.pages = {}
         self._add_page("record", RecordPage(self))
@@ -78,6 +100,40 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_title_bar_colored", False):
             self._title_bar_colored = True
             color_title_bar(self)
+            self._start_update_check()
+
+    # ----------------------------------------------------------- updates
+    def _start_update_check(self):
+        """After the window is shown: report the Update the launcher just
+        installed (once), then check for a newer Release in the background."""
+        from voxscribe import updates
+        result = updates.take_update_result()
+        if result:
+            self.update_notice.report(result)
+        self.update_controller.checked.connect(self._on_update_checked)
+        self.update_controller.start()
+
+    def _on_update_checked(self, result):
+        from voxscribe import updates
+        if result.status in (updates.AVAILABLE, updates.UP_TO_DATE):
+            record_update_check(result.latest)
+        self.pages["settings"].show_update_check(result)
+        if result.status == updates.AVAILABLE:
+            # Also right after a failed Update: the report stays in front of
+            # the offer, so the user can retry.
+            self.update_notice.offer(result.latest)
+
+    def _set_busy(self, key, busy):
+        self._busy[key] = busy
+        self.update_notice.set_busy(any(self._busy.values()))
+
+    def _install_update(self, release):
+        """Leaves the marker for the launcher and quits; the launcher
+        installs the Update before starting the app again (spec #15)."""
+        from voxscribe import updates
+        updates.request_update(release)
+        print(f"Update {release} requested - quitting for the launcher to install it")
+        self.close()
 
     def _add_page(self, key, widget):
         icon_key, label = next((i, lbl) for k, i, lbl in TAB_ITEMS if k == key)
