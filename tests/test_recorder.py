@@ -182,3 +182,67 @@ def test_linux_offers_only_the_microphone(tmp_path):
                                  on_done=lambda p, d, e: (result.update(error=e), done.set()))
 
     assert done.wait(2) and "isn't supported" in result["error"]
+
+
+# --- Command-line recording uses the same recorder (#28) ---------------------
+
+from voxscribe import recorder as recorder_module  # noqa: E402
+
+
+def stop_after(seconds):
+    """Stands in for "press ENTER": returns after `seconds`."""
+    return lambda: time.sleep(seconds)
+
+
+def test_command_line_microphone_writes_what_the_recorder_writes(tmp_path):
+    out = str(tmp_path / "cli.wav")
+
+    returned = recorder_module.record_microphone(out, sources=windows_sources(),
+                                                 wait_for_stop=stop_after(SECONDS))
+
+    assert returned == out
+    rate, channels, length = wav_info(out)
+    assert (rate, channels) == (48000, 2)  # as test_windows_in_room_...
+    assert_recorded_about(length)
+
+
+def test_command_line_playback_writes_what_the_recorder_writes(tmp_path):
+    out = str(tmp_path / "cli.wav")
+
+    recorder_module.record_system_audio(out, sources=windows_sources(), wait_for_stop=stop_after(SECONDS))
+
+    assert wav_info(out)[:2] == (48000, 2)
+    assert_recorded_about(wav_info(out)[2])
+
+
+def test_command_line_call_writes_what_the_recorder_writes(tmp_path):
+    out = str(tmp_path / "cli.wav")
+
+    recorder_module.record_microphone_and_system(out, setup="headset", sources=windows_sources(),
+                                                 wait_for_stop=stop_after(SECONDS))
+
+    _, _, length = wav_info(out)
+    assert_recorded_about(length)
+    assert_call_files(out, length, "headset")
+
+
+def test_command_line_playback_stops_although_nothing_plays(tmp_path):
+    # The old command-line loop blocked in stream.read() while WASAPI sent
+    # nothing, so ENTER never stopped it.
+    silent = windows_sources(loopback=FakeSource(rate=48000, channels=2, active=[], name="L"))
+    out = str(tmp_path / "cli.wav")
+    finished = threading.Event()
+
+    threading.Thread(target=lambda: (recorder_module.record_system_audio(
+        out, sources=silent, wait_for_stop=stop_after(0.5)), finished.set()), daemon=True).start()
+
+    assert finished.wait(5), "stopping blocked"
+
+
+def test_command_line_macos_paths_use_the_recorder_too(tmp_path, helper_binary):
+    out = str(tmp_path / "cli.wav")
+
+    recorder_module.record_system_audio(out, sources=macos_sources(helper_binary),
+                                        wait_for_stop=stop_after(SECONDS))
+
+    assert wav_info(out)[:2] == (16000, 1)
