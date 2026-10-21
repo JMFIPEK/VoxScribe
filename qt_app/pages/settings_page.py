@@ -5,7 +5,7 @@ deliberately not its own tab."""
 import sys
 import threading
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSettings, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -164,6 +164,21 @@ class SettingsPage(QWidget):
         # hangs) shouldn't delay the window, which is built before it's shown.
         threading.Thread(target=self._determine_version, daemon=True).start()
 
+    @staticmethod
+    def _last_checked_text(note: str = "") -> str:
+        settings = QSettings("VoxScribe", "VoxScribe")
+        when = settings.value("updates/last_checked")
+        latest = settings.value("updates/latest")
+        text = (f"Last checked for Updates: {str(when).replace('T', ' ')} (newest Release: {latest})"
+                if when else "Last checked for Updates: never")
+        return text + (f" - {note}" if note else "")
+
+    def show_update_check(self, result):
+        """The result of this start's update check (updates.CheckResult)."""
+        note = {"failed": "this start's check failed, see the log",
+                "not_eligible": "this install isn't on a Release, so it gets no Updates"}.get(result.status, "")
+        self.update_check_label.setText(self._last_checked_text(note))
+
     def _determine_version(self):
         from voxscribe import updates
         self._version_ready.emit(updates.installed_version())
@@ -287,6 +302,10 @@ class SettingsPage(QWidget):
         # edits, commits past the tag) - see voxscribe/updates.py.
         self.version_label = self._bold("Installed Release: checking...")
         root.addWidget(self.version_label)
+        # When an update check last reached the remote (MainWindow stores it).
+        self.update_check_label = QLabel(self._last_checked_text())
+        self.update_check_label.setProperty("role", "muted")
+        root.addWidget(self.update_check_label)
 
         info_text = QTextEdit()
         info_text.setReadOnly(True)

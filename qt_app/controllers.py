@@ -67,9 +67,25 @@ class TranscribeController(QObject):
     progress/results as Qt signals."""
 
     progressUpdated = Signal(float, str)
+    started = Signal()
     finished = Signal(object, object)  # result dict or None, error text or None
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._running = False
+        self.finished.connect(lambda *_: setattr(self, "_running", False))
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    def _mark_started(self):
+        self._running = True
+        self.started.emit()
+
     def start(self, **kwargs):
+        self._mark_started()
+
         def _run():
             try:
                 # Import deliberately here in the background thread, not at
@@ -91,6 +107,8 @@ class TranscribeController(QObject):
     def start_multi(self, **kwargs):
         """Like start(), but for multiple files (`audio_paths=[...]`) - see
         transcriber.transcribe_multi() for how the results are merged."""
+        self._mark_started()
+
         def _run():
             try:
                 from voxscribe.transcriber import transcribe_multi
@@ -155,3 +173,21 @@ def make_recording_output_path(out_dir: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return os.path.join(out_dir, f"{timestamp}.wav")
+
+
+class UpdateController(QObject):
+    """Checks for a newer Release in a background thread (git ls-remote can
+    take seconds, or hang outside the VPN) and reports the
+    updates.CheckResult as a signal. Runs once per start (spec #15)."""
+
+    checked = Signal(object)
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        from voxscribe import updates
+        result = updates.check()
+        if result.status == "failed":
+            print(f"Update check failed: {result.error}")  # only logged (ADR 0002)
+        self.checked.emit(result)
