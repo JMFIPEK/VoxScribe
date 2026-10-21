@@ -694,6 +694,7 @@ class AudioRecorder:
                 # becomes silence of the same length (#21).
                 drops = DropDetector(mic_rate) if read_all else None
                 received = 0
+                last_level = time.monotonic()
                 while not self._stop_event.is_set():
                     try:
                         available = stream.get_read_available()
@@ -703,6 +704,12 @@ class AudioRecorder:
                         break
 
                     if available < chunk_size:
+                        # Silent loopback sends nothing, which would freeze
+                        # its level meter at the last value: report 0.
+                        now = time.monotonic()
+                        if self._on_level and now - last_level >= 0.05:
+                            self._on_level(source, 0.0)
+                            last_level = now
                         self._stop_event.wait(0.01 if read_all else 0.02)
                         continue
 
@@ -723,6 +730,7 @@ class AudioRecorder:
                             received += lost
                     if self._on_level:
                         self._on_level(source, compute_rms(data))
+                        last_level = time.monotonic()
 
             mic_thread = threading.Thread(
                 target=read_loop, args=(mic_stream, MIC, mic_chunk),
