@@ -19,7 +19,6 @@ import subprocess
 import sys
 import wave
 import threading
-import time
 import numpy as np
 
 from voxscribe.recording_modes import normalize_device_name as _normalize_device_name
@@ -495,9 +494,19 @@ class AudioRecorder:
         sys_ch = 1
         sys_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
         chunk_bytes = CHUNK * SAMPLE_WIDTH
-        assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch)
+        # The helper streams continuously from its first sample on, so the
+        # Microphone's lead while it launches is trimmed (#20).
+        assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch, trim_mic_lead=True)
+        next_adc_time = [0.0]  # where the next mic block should start
 
         def mic_callback(indata, frames, time_info, status):
+            adc_time = time_info.inputBufferAdcTime
+            if status.input_overflow:
+                if next_adc_time[0] and adc_time:
+                    assembler.add_dropped(MIC, round((adc_time - next_adc_time[0]) * mic_rate))
+                else:
+                    print("[WARNING] Microphone input overflow (length unknown).")
+            next_adc_time[0] = adc_time + frames / mic_rate if adc_time else 0.0
             data = indata.tobytes()
             assembler.add_chunk(MIC, data)
             if self._on_level:
@@ -506,9 +515,12 @@ class AudioRecorder:
         proc = None
         mic_stream = None
         try:
+            # ~10 ms blocks: the Microphone's sample count is the Call's time
+            # base, see TrackAssembler.
             mic_stream = sd.InputStream(
                 samplerate=mic_rate, channels=mic_ch, dtype="int16",
-                device=self._device_index, blocksize=CHUNK, callback=mic_callback)
+                device=self._device_index, blocksize=max(1, mic_rate // 100),
+                callback=mic_callback)
             mic_stream.start()
 
             proc = subprocess.Popen(
@@ -633,7 +645,7 @@ class AudioRecorder:
             mic_idx = mic_info["index"]
             mic_rate = int(mic_info["defaultSampleRate"])
             mic_ch = _mic_channels(mic_info)
-            mic_chunk = _chunk_size_for_rate(mic_rate)
+            mic_chunk = max(1, mic_rate // 100)  # ~10 ms, see read_loop
 
             # Set up system audio (loopback)
             loopback = _get_loopback_device(p, self._loopback_index)
@@ -653,8 +665,7 @@ class AudioRecorder:
                 input=True, input_device_index=sys_idx,
                 frames_per_buffer=sys_chunk)
 
-            def read_loop(stream, source, chunk_size,
-                          rate=0, channels=1, fill_gaps=False):
+            def read_loop(stream, source, chunk_size, read_all=False):
                 # WASAPI loopback streams deliver no packets while nothing is
                 # playing on the system - a blocking read() can therefore
                 # hang indefinitely. If you stop and close the stream from
@@ -664,17 +675,11 @@ class AudioRecorder:
                 # read() once enough data is actually available - this keeps
                 # the loop responsive to stop_event at all times.
                 #
-                # The same "no packets during silence" behavior also means
-                # the loopback track would simply skip every silent stretch,
-                # running ahead of the (continuously delivered) microphone
-                # track and desyncing the mix. With fill_gaps, the missing
-                # time is padded with digital silence based on wall-clock
-                # time, keeping a guard so samples merely still in the
-                # driver's buffer aren't double-counted.
-                started = time.monotonic()
-                received = 0  # samples per channel, real + padded
-                guard = int(0.25 * rate)
-                silence_chunk = bytes(chunk_size * channels * SAMPLE_WIDTH)
+                # The silent stretches this leaves in the Playback track are
+                # padded by the TrackAssembler, which follows the
+                # Microphone's sample count. read_all keeps that count fresh:
+                # the Microphone is read as soon as ~10 ms are available,
+                # all of it at once.
                 while not self._stop_event.is_set():
                     try:
                         available = stream.get_read_available()
@@ -684,32 +689,26 @@ class AudioRecorder:
                         break
 
                     if available < chunk_size:
-                        if fill_gaps:
-                            expected = int((time.monotonic() - started) * rate)
-                            while expected - received - guard >= chunk_size:
-                                assembler.add_chunk(source, silence_chunk)
-                                received += chunk_size
-                        self._stop_event.wait(0.02)
+                        self._stop_event.wait(0.01 if read_all else 0.02)
                         continue
 
                     try:
-                        data = stream.read(chunk_size, exception_on_overflow=False)
+                        data = stream.read(available if read_all else chunk_size,
+                                           exception_on_overflow=False)
                     except Exception as e:
                         read_errors.append(e)
                         self._stop_event.set()
                         break
 
                     assembler.add_chunk(source, data)
-                    received += chunk_size
                     if self._on_level:
                         self._on_level(source, compute_rms(data))
 
             mic_thread = threading.Thread(
-                target=read_loop, args=(mic_stream, MIC, mic_chunk),
+                target=read_loop, args=(mic_stream, MIC, mic_chunk, True),
                 daemon=True)
             sys_thread = threading.Thread(
-                target=read_loop,
-                args=(sys_stream, SYSTEM, sys_chunk, sys_rate, sys_ch, True),
+                target=read_loop, args=(sys_stream, SYSTEM, sys_chunk),
                 daemon=True)
             mic_thread.start()
             sys_thread.start()
@@ -745,17 +744,21 @@ class AudioRecorder:
                (sys_thread is None or not sys_thread.is_alive()):
                 p.terminate()
 
-        self._finish_call(assembler)
+        self._finish_call(assembler, require_playback=False)
 
-    def _finish_call(self, assembler: TrackAssembler):
+    def _finish_call(self, assembler: TrackAssembler, require_playback: bool = True):
         """After-recording work shared by both Call paths (_record_both(),
         _record_both_macos()): saves the mix and the tracks sidecar and
-        reports the result via on_done."""
+        reports the result via on_done.
+
+        require_playback=False: Playback that never delivered is a silent
+        track, not an error (WASAPI loopback sends nothing while nothing
+        plays; the macOS helper sending nothing means missing permission)."""
         if not assembler.has_audio(MIC):
             if self._on_done:
                 self._on_done(None, 0, "Microphone produced no audio data.")
             return
-        if not assembler.has_audio(SYSTEM):
+        if require_playback and not assembler.has_audio(SYSTEM):
             if self._on_done:
                 self._on_done(None, 0, "Playback audio produced no audio data.")
             return

@@ -24,11 +24,20 @@ def _chunks(seed, rate, channels, seconds, frames_per_chunk):
     return [data[i:i + step] for i in range(0, len(data), step)]
 
 
-def _record(assembler, mic_chunks, playback_chunks):
-    for chunk in mic_chunks:
-        assembler.add_chunk(tracks.MIC, chunk)
-    for chunk in playback_chunks:
-        assembler.add_chunk(tracks.SYSTEM, chunk)
+def _record(assembler, mic_chunks, playback_chunks, mic_rate, mic_channels,
+            playback_rate, playback_channels):
+    """Feeds both sources' chunks in the order they were captured."""
+    def timed(source, chunks, rate, channels):
+        events, frames = [], 0
+        for chunk in chunks:
+            frames += len(chunk) // (2 * channels)
+            events.append((frames / rate, source, chunk))
+        return events
+
+    for _, source, chunk in sorted(timed(tracks.MIC, mic_chunks, mic_rate, mic_channels)
+                                   + timed(tracks.SYSTEM, playback_chunks, playback_rate,
+                                           playback_channels), key=lambda e: e[0]):
+        assembler.add_chunk(source, chunk)
 
 
 def _sha(data: bytes) -> str:
@@ -53,7 +62,8 @@ def test_windows_like_call_matches_todays_files(tmp_path):
     out = str(tmp_path / "call.wav")
     assembler = TrackAssembler(mic_rate=48000, mic_channels=2,
                                playback_rate=44100, playback_channels=2)
-    _record(assembler, _chunks(1, 48000, 2, 1.0, 3072), _chunks(2, 44100, 2, 0.5, 2822))
+    _record(assembler, _chunks(1, 48000, 2, 1.0, 3072), _chunks(2, 44100, 2, 0.5, 2822),
+            48000, 2, 44100, 2)
 
     mix = assembler.save(out, setup="headset")
 
@@ -73,7 +83,8 @@ def test_macos_like_call_matches_todays_files(tmp_path):
     out = str(tmp_path / "call.wav")
     assembler = TrackAssembler(mic_rate=44100, mic_channels=1,
                                playback_rate=16000, playback_channels=1)
-    _record(assembler, _chunks(3, 44100, 1, 0.5, 1024), _chunks(4, 16000, 1, 1.0, 1024))
+    _record(assembler, _chunks(3, 44100, 1, 0.5, 1024), _chunks(4, 16000, 1, 1.0, 1024),
+            44100, 1, 16000, 1)
 
     mix = assembler.save(out)
 
@@ -131,3 +142,191 @@ def test_has_audio_reports_which_sources_delivered_chunks():
 
     assert assembler.has_audio(tracks.MIC)
     assert not assembler.has_audio(tracks.SYSTEM)
+
+
+# --- Keeping Call tracks in sync (#16) ------------------------------------
+#
+# The events below are fed in the order a real Call delivers them: each
+# chunk at the moment its last sample was captured. Playback that "isn't
+# delivered" for a stretch models WASAPI loopback, which sends no packets
+# while nothing plays.
+
+CLICK = 20000
+
+
+def _clicks_pcm(rate, channels, t0, t1, clicks):
+    """int16 PCM from t0 to t1 (seconds): silence with a 2 ms click at each
+    time in clicks."""
+    n = int(round((t1 - t0) * rate))
+    pcm = np.zeros((n, channels), dtype=np.int16)
+    for t in clicks:
+        start = int(round((t - t0) * rate))
+        if 0 <= start < n:
+            pcm[start:start + int(0.002 * rate)] = CLICK
+    return pcm
+
+
+def _events(source, rate, channels, spans, chunk_seconds, clicks):
+    """(capture time, source, chunk) events for the stretches in spans
+    that the source actually delivers."""
+    events = []
+    frames = int(round(chunk_seconds * rate))
+    for t0, t1 in spans:
+        pcm = _clicks_pcm(rate, channels, t0, t1, clicks)
+        for i in range(0, len(pcm), frames):
+            chunk = pcm[i:i + frames]
+            events.append((t0 + (i + len(chunk)) / rate, source, chunk.tobytes()))
+    return events
+
+
+def _feed(assembler, *event_lists):
+    """Feeds events in capture order; an int instead of a chunk is a report
+    that that many frames were dropped."""
+    for _, source, data in sorted((e for lst in event_lists for e in lst), key=lambda e: e[0]):
+        if isinstance(data, int):
+            assembler.add_dropped(source, data)
+        else:
+            assembler.add_chunk(source, data)
+
+
+def _click_positions(audio_path):
+    """Sample positions (16 kHz) where each track's clicks start."""
+    sidecar = _sidecar(audio_path).astype(np.int32)
+    positions = []
+    for ch in (0, 1):
+        loud = np.flatnonzero(np.abs(sidecar[:, ch]) > CLICK // 4)
+        starts = loud[np.insert(np.diff(loud) > 160, 0, True)] if len(loud) else loud
+        positions.append(starts.tolist())
+    return positions
+
+
+def _assert_aligned(audio_path, expected_times):
+    mic, playback = _click_positions(audio_path)
+    expected = [int(t * 16000) for t in expected_times]
+    assert len(mic) == len(playback) == len(expected), (mic, playback)
+    for m, p, e in zip(mic, playback, expected):
+        assert abs(m - e) <= 160 and abs(p - e) <= 160, (m, p, e)  # within 10 ms
+
+
+def test_playback_after_a_long_silence_stays_at_the_microphones_moment(tmp_path):
+    out = str(tmp_path / "call.wav")
+    clicks = [1.0, 8.0, 9.5]
+    assembler = TrackAssembler(mic_rate=16000, mic_channels=1,
+                               playback_rate=48000, playback_channels=2)
+    mic = _events(tracks.MIC, 16000, 1, [(0, 10)], 0.01, clicks)
+    playback = _events(tracks.SYSTEM, 48000, 2, [(0, 2), (7, 10)], 0.064, clicks)
+
+    _feed(assembler, mic, playback)
+    assembler.save(out)
+
+    _assert_aligned(out, clicks)
+
+
+def test_playback_after_several_short_silences_stays_aligned(tmp_path):
+    out = str(tmp_path / "call.wav")
+    clicks = [0.5, 2.0, 3.5, 5.0, 6.5]
+    assembler = TrackAssembler(mic_rate=48000, mic_channels=1,
+                               playback_rate=48000, playback_channels=2)
+    mic = _events(tracks.MIC, 48000, 1, [(0, 7)], 0.01, clicks)
+    playback = _events(tracks.SYSTEM, 48000, 2,
+                       [(0, 1), (1.5, 2.5), (3, 4), (4.5, 5.5), (6, 7)], 0.064, clicks)
+
+    _feed(assembler, mic, playback)
+    assembler.save(out)
+
+    _assert_aligned(out, clicks)
+
+
+def test_late_starting_playback_lands_at_the_microphones_moment(tmp_path):
+    # WASAPI: the loopback stream is open from the start, but nothing plays
+    # for the first 3 s, so its first packet arrives only then.
+    out = str(tmp_path / "call.wav")
+    clicks = [3.5, 5.0]
+    assembler = TrackAssembler(mic_rate=16000, mic_channels=1,
+                               playback_rate=48000, playback_channels=2)
+    mic = _events(tracks.MIC, 16000, 1, [(0, 6)], 0.01, clicks)
+    playback = _events(tracks.SYSTEM, 48000, 2, [(3, 6)], 0.064, clicks)
+
+    _feed(assembler, mic, playback)
+    assembler.save(out)
+
+    _assert_aligned(out, clicks)
+
+
+def test_different_native_rates_and_stereo_stay_aligned(tmp_path):
+    out = str(tmp_path / "call.wav")
+    clicks = [0.7, 4.2, 7.9]
+    assembler = TrackAssembler(mic_rate=48000, mic_channels=2,
+                               playback_rate=44100, playback_channels=2)
+    mic = _events(tracks.MIC, 48000, 2, [(0, 8.5)], 0.01, clicks)
+    playback = _events(tracks.SYSTEM, 44100, 2, [(0, 1.5), (4, 8.5)], 0.064, clicks)
+
+    _feed(assembler, mic, playback)
+    assembler.save(out)
+
+    _assert_aligned(out, clicks)
+
+
+def test_microphone_lead_before_the_first_playback_sample_is_dropped(tmp_path):
+    # macOS: the microphone runs while the system-audio helper launches; the
+    # helper streams continuously from its first sample on (16 kHz mono).
+    out = str(tmp_path / "call.wav")
+    assembler = TrackAssembler(mic_rate=48000, mic_channels=1,
+                               playback_rate=16000, playback_channels=1,
+                               trim_mic_lead=True)
+    mic = _events(tracks.MIC, 48000, 1, [(0, 3)], 0.01, [1.0, 2.5])
+    playback = _events(tracks.SYSTEM, 16000, 1, [(0.4, 3)], 0.064, [1.0, 2.5])
+
+    _feed(assembler, mic, playback)
+    mix = assembler.save(out)
+
+    _assert_aligned(out, [0.6, 2.1])  # both tracks start at the helper's first sample
+    mix_loud = np.flatnonzero(np.abs(mix.astype(np.int32)) > CLICK // 4)
+    assert abs(int(mix_loud[0]) - int(0.6 * 16000)) <= 160
+
+
+def test_a_dropped_microphone_buffer_leaves_a_gap_and_later_audio_stays_aligned(tmp_path, capsys):
+    out = str(tmp_path / "call.wav")
+    clicks = [1.0, 4.0]
+    assembler = TrackAssembler(mic_rate=48000, mic_channels=1,
+                               playback_rate=48000, playback_channels=2)
+    mic = _events(tracks.MIC, 48000, 1, [(0, 2.0), (2.1, 5)], 0.01, clicks)
+    mic.append((2.1, tracks.MIC, 4800))  # 100 ms lost
+    playback = _events(tracks.SYSTEM, 48000, 2, [(0, 5)], 0.064, clicks)
+
+    _feed(assembler, mic, playback)
+    assembler.save(out)
+
+    _assert_aligned(out, clicks)
+    assert not _sidecar(out)[int(2.0 * 16000) + 16:int(2.1 * 16000) - 16, 0].any()
+    assert "Microphone dropped 100 ms" in capsys.readouterr().out
+
+
+def test_a_dropped_playback_buffer_leaves_a_gap_and_later_audio_stays_aligned(tmp_path, capsys):
+    out = str(tmp_path / "call.wav")
+    clicks = [1.0, 4.0]
+    assembler = TrackAssembler(mic_rate=16000, mic_channels=1,
+                               playback_rate=44100, playback_channels=2)
+    mic = _events(tracks.MIC, 16000, 1, [(0, 5)], 0.01, clicks)
+    playback = _events(tracks.SYSTEM, 44100, 2, [(0, 2.0), (2.1, 5)], 0.064, clicks)
+    playback.append((2.1, tracks.SYSTEM, 4410))  # 100 ms lost
+
+    _feed(assembler, mic, playback)
+    assembler.save(out)
+
+    _assert_aligned(out, clicks)
+    assert "Playback audio dropped 100 ms" in capsys.readouterr().out
+
+
+def test_playback_that_never_delivered_becomes_a_silent_track(tmp_path):
+    # WASAPI: nothing played during the whole Call.
+    out = str(tmp_path / "call.wav")
+    assembler = TrackAssembler(mic_rate=16000, mic_channels=1,
+                               playback_rate=48000, playback_channels=2)
+    _feed(assembler, _events(tracks.MIC, 16000, 1, [(0, 2)], 0.01, [1.0]))
+
+    mix = assembler.save(out)
+
+    assert len(mix) == 32000
+    sidecar = _sidecar(out)
+    assert sidecar.shape == (32000, 2) and not sidecar[:, 1].any()
