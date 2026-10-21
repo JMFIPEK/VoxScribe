@@ -86,6 +86,40 @@ def mix(mic: np.ndarray, system: np.ndarray, full_scale: float) -> np.ndarray:
     return mixed
 
 
+# Balancing the two tracks before they're mixed for transcription (#39): a
+# noise-suppressed or low-gain Microphone can sit 20+ dB below the Playback,
+# and the local speaker then all but vanishes from the transcript.
+_BALANCE_MIN_DB = 12.0   # closer than this: mix as recorded (normal Calls differ by ~10 dB)
+_BALANCE_MAX_GAIN_DB = 20.0  # never boost more, or a near-silent track becomes noise
+_SILENT_DB = -80.0       # a track whose speech level is below this has no speech
+
+
+def speech_level_db(audio: np.ndarray) -> float:
+    """The track's typical speech level in dBFS (-1..1 samples): the 95th
+    percentile of its 20 ms frame levels, so pauses don't pull it down."""
+    hop = int(_FRAME_SECONDS * SAMPLE_RATE)
+    n = len(audio) // hop
+    if n == 0:
+        return -200.0
+    frames = np.asarray(audio[:n * hop], dtype=np.float64).reshape(n, hop)
+    return float(np.percentile(10 * np.log10(np.mean(frames ** 2, axis=1) + 1e-20), 95))
+
+
+def balance(mic: np.ndarray, system: np.ndarray):
+    """(mic, system) with the quieter track boosted towards the louder one's
+    speech level, or None if they're already within _BALANCE_MIN_DB (or one
+    has no speech at all). The boost is capped at _BALANCE_MAX_GAIN_DB.
+    Returns ((mic, system), boosted_track_name, gain_db)."""
+    mic_db, sys_db = speech_level_db(mic), speech_level_db(system)
+    if min(mic_db, sys_db) < _SILENT_DB or abs(mic_db - sys_db) < _BALANCE_MIN_DB:
+        return None
+    gain_db = min(abs(mic_db - sys_db), _BALANCE_MAX_GAIN_DB)
+    gain = 10 ** (gain_db / 20)
+    if mic_db < sys_db:
+        return (np.asarray(mic, dtype=np.float64) * gain, system), MIC, gain_db
+    return (mic, np.asarray(system, dtype=np.float64) * gain), SYSTEM, gain_db
+
+
 def load_setup(audio_path: str) -> str | None:
     """The Setup stored in the recording's sidecar, or None if there's no
     sidecar or it predates the tag."""
