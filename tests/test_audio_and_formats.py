@@ -61,6 +61,7 @@ def test_audio_source_decodes_only_once(tmp_path, monkeypatch):
 # --- Loudspeaker Calls: transcribe the mix without the Echo (#23) ----------
 
 import hashlib  # noqa: E402
+import os  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -126,3 +127,38 @@ def test_the_echo_canceller_runs_once_per_file(tmp_path, monkeypatch):
     source.tracks()
 
     assert len(calls) == 1
+
+
+# --- Backends that read a file (Apple SpeechAnalyzer, #24) -----------------
+
+def test_a_loudspeaker_recording_is_handed_out_as_a_cleaned_temporary_file(tmp_path):
+    path, playback = _loudspeaker_recording(tmp_path)
+    source = audio.AudioSource(path)
+
+    with source.as_file() as file_path:
+        assert file_path != path and os.path.isfile(file_path)
+        cleaned, sr = sf.read(file_path, dtype="float32")
+        assert sr == SR
+        assert _level_db(cleaned - 0.65 * playback) <= _level_db(
+            audio.load_audio_universal(path) - 0.65 * playback) - 15.0
+
+    assert not os.path.exists(file_path)
+
+
+def test_the_temporary_file_is_removed_when_the_backend_fails(tmp_path):
+    path, _ = _loudspeaker_recording(tmp_path, seconds=5.0)
+
+    with pytest.raises(RuntimeError):
+        with audio.AudioSource(path).as_file() as file_path:
+            raise RuntimeError("helper crashed")
+
+    assert not os.path.exists(file_path)
+
+
+@pytest.mark.parametrize("setup", ["headset", None])
+def test_other_recordings_are_handed_out_as_the_original_file(tmp_path, setup):
+    path, _ = _loudspeaker_recording(tmp_path, setup=setup, seconds=5.0)
+
+    with audio.AudioSource(path).as_file() as file_path:
+        assert file_path == path
+    assert os.path.isfile(path)

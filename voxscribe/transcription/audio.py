@@ -1,5 +1,9 @@
 """Audio loading: any audio/video file to 16kHz mono float32, without ffmpeg."""
 
+import os
+import tempfile
+from contextlib import contextmanager
+
 import numpy as np
 import soundfile as sf
 
@@ -76,13 +80,41 @@ class AudioSource:
         self._samples: np.ndarray | None = None
         self._tracks = None
         self._tracks_loaded = False
+        self._cleaned = False  # load() returned the cleaned mix, not the file
 
     def load(self) -> np.ndarray:
         if self._samples is None:
             self._samples = self._cleaned_mix()
+            self._cleaned = self._samples is not None
             if self._samples is None:
                 self._samples = load_audio_universal(self.path)
         return self._samples
+
+    @contextmanager
+    def as_file(self):
+        """A path to the samples load() returns, for Backends that read a
+        file (Apple SpeechAnalyzer): the recording itself, or for a
+        Loudspeaker Call a temporary WAV of the cleaned mix, removed again
+        afterwards (also when the Backend fails)."""
+        from voxscribe.recording_modes import SETUP_LOUDSPEAKER
+        from voxscribe.tracks import load_setup
+        if load_setup(self.path) != SETUP_LOUDSPEAKER:
+            yield self.path
+            return
+        samples = self.load()
+        if not self._cleaned:
+            yield self.path
+            return
+        fd, tmp_path = tempfile.mkstemp(prefix="voxscribe-cleaned-", suffix=".wav")
+        os.close(fd)
+        try:
+            sf.write(tmp_path, samples, SAMPLE_RATE, subtype="PCM_16")
+            yield tmp_path
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
     def tracks(self) -> tuple[np.ndarray, np.ndarray] | None:
         """(mic, system) from the Call's sidecar, the mic without Echo for a
