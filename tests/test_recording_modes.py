@@ -73,3 +73,19 @@ def test_mic_matches_playback():
 
 def test_mic_matches_playback_with_mme_truncated_name():
     assert rm.mic_matches_playback("Mikrofon (Razer BlackShark V2 P", RAZER_OUT)
+
+
+def test_current_device_index_follows_a_renumbered_device():
+    listed = [{"index": 28, "name": JABRA_HEADSET_OUT, "host_api": "Windows WASAPI"}]
+    fresh = [{"index": 31, "name": "Kopfhörer (Jabra Evolve3 75) [Loopback]", "host_api": "Windows WASAPI"},
+             {"index": 35, "name": JABRA_HEADSET_OUT, "host_api": "Windows WASAPI"}]
+    assert rm.current_device_index(listed, fresh, 28) == 35
+
+
+def test_current_device_index_is_none_for_an_unplugged_device():
+    listed = [{"index": 28, "name": JABRA_HEADSET_OUT, "host_api": "Windows WASAPI"}]
+    assert rm.current_device_index(listed, [], 28) is None
+
+
+def test_current_device_index_keeps_an_unlisted_index():
+    assert rm.current_device_index([], [], None) is None

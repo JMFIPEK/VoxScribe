@@ -419,6 +419,22 @@ class RecordPage(QWidget):
     def _start_recording(self):
         mic_index = self._mic_map.get(self.mic_combo.currentText())
         playback_index = self._playback_map.get(self.playback_combo.currentText())
+        # The listed indices go stale as soon as any device is plugged in or
+        # out - re-enumerate and follow the selected devices by name.
+        if sys.platform == "win32":
+            fresh = self.window_.recorder_controller.refresh_devices()
+            mic_index = rm.current_device_index(
+                self._all_devices.get("microphones", []), fresh.get("microphones", []), mic_index)
+            playback_index = rm.current_device_index(
+                self._all_devices.get("loopback", []), fresh.get("loopback", []), playback_index)
+            has_playback = self._mode in (rm.MODE_PLAYBACK, rm.MODE_CALL)
+            has_mic = self._mode in (rm.MODE_CALL, rm.MODE_ROOM)
+            if (has_playback and playback_index is None and self._playback_map) or \
+                    (has_mic and mic_index is None and self._mic_map):
+                self.refresh_devices()
+                self._set_status("The selected device is no longer connected - "
+                                 "the device list has been refreshed, please check it.", theme.DANGER)
+                return
         output_path = make_recording_output_path(self.window_.settings.get("output_dir"))
         rc = self.window_.recorder_controller
         if self._mode == rm.MODE_CALL:

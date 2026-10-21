@@ -116,5 +116,22 @@ def guess_setup(microphones: list[dict], loopback_name: str | None) -> tuple[str
     return SETUP_HEADSET, match
 
 
+def current_device_index(listed: list[dict], fresh: list[dict], index: int | None) -> int | None:
+    """The index the device listed under `index` has in a fresh enumeration.
+
+    PortAudio numbers devices anew on every enumeration, so plugging a device
+    in or out shifts the others' indices (observed: a Jabra Link 390's
+    loopback went from #28 to #35 after a second headset was connected).
+    Matched by name and host API, which get_devices()' deduplication keeps
+    unique. None if the device is gone; `index` itself if it was never
+    listed (e.g. None = system default)."""
+    device = next((d for d in listed if d["index"] == index), None)
+    if device is None:
+        return index
+    match = next((d for d in fresh
+                  if d["name"] == device["name"] and d.get("host_api") == device.get("host_api")), None)
+    return match["index"] if match else None
+
+
 def _is_room_mic(name: str) -> bool:
     return any(hint in normalize_device_name(name) for hint in _ROOM_MIC_HINTS)
