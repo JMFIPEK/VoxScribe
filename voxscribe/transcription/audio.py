@@ -64,13 +64,56 @@ def load_audio_universal(audio_path: str) -> np.ndarray:
 
 class AudioSource:
     """An audio file that is decoded at most once, however many pipeline
-    stages (Backend, alignment, diarization) ask for the samples."""
+    stages (Backend, alignment, diarization, track split) ask for the samples.
+
+    For a Loudspeaker Call the samples are the mix of the cleaned Microphone
+    track and the Playback track (the saved mix holds the Echo, which
+    garbles the transcript); the saved files stay untouched. The tracks are
+    loaded once too, so the echo canceller runs once per file."""
 
     def __init__(self, path: str):
         self.path = path
         self._samples: np.ndarray | None = None
+        self._tracks = None
+        self._tracks_loaded = False
 
     def load(self) -> np.ndarray:
         if self._samples is None:
-            self._samples = load_audio_universal(self.path)
+            self._samples = self._cleaned_mix()
+            if self._samples is None:
+                self._samples = load_audio_universal(self.path)
         return self._samples
+
+    def tracks(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """(mic, system) from the Call's sidecar, the mic without Echo for a
+        Loudspeaker Setup; None without a sidecar (see tracks.load_tracks())."""
+        if not self._tracks_loaded:
+            from voxscribe.tracks import load_tracks
+            self._tracks_loaded = True
+            self._tracks = load_tracks(self.path)
+        return self._tracks
+
+    def _cleaned_mix(self) -> np.ndarray | None:
+        from voxscribe.recording_modes import SETUP_LOUDSPEAKER
+        from voxscribe.tracks import load_setup
+        try:
+            if load_setup(self.path) != SETUP_LOUDSPEAKER or self.tracks() is None:
+                return None
+        except Exception as e:
+            print(f"     [WARNING] Could not load the Call's tracks ({e}) - "
+                  "transcribing the saved mix, Echo included.")
+            return None
+        mic, system = self._tracks
+        print("     Echo removal ran: transcribing the mix of the cleaned "
+              "microphone track and the playback track.")
+        return _mix_tracks(mic, system)
+
+
+def _mix_tracks(mic: np.ndarray, system: np.ndarray) -> np.ndarray:
+    """Both tracks at 0.65, scaled down if they'd clip - the same mix the
+    recorder saves (track_assembler), in the -1..1 range."""
+    mixed = 0.65 * (mic.astype(np.float64) + system.astype(np.float64))
+    peak = float(np.max(np.abs(mixed))) if len(mixed) else 0.0
+    if peak > 32767 / 32768:
+        mixed *= (32767 / 32768) / peak
+    return mixed.astype(np.float32)

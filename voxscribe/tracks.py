@@ -20,6 +20,7 @@ recorder.py and transcriber.py can import it cheaply.
 """
 
 import os
+import time
 
 import numpy as np
 import soundfile as sf
@@ -93,7 +94,10 @@ def load_tracks(audio_path: str) -> tuple[np.ndarray, np.ndarray] | None:
     mic, system = data[:, 0], data[:, 1]
     if load_setup(audio_path) == SETUP_LOUDSPEAKER:
         print("     Loudspeaker Setup: removing the Echo from the microphone track...")
+        t0 = time.monotonic()
         mic = echo.cancel_echo(mic, system)
+        print(f"     Echo removal took {time.monotonic() - t0:.1f}s "
+              f"for {len(mic) / SAMPLE_RATE:.0f}s of audio")
     return mic, system
 
 
