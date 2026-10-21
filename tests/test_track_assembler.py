@@ -273,7 +273,7 @@ def test_microphone_lead_before_the_first_playback_sample_is_dropped(tmp_path):
     out = str(tmp_path / "call.wav")
     assembler = TrackAssembler(mic_rate=48000, mic_channels=1,
                                playback_rate=16000, playback_channels=1,
-                               trim_mic_lead=True)
+                               playback_is_continuous=True)
     mic = _events(tracks.MIC, 48000, 1, [(0, 3)], 0.01, [1.0, 2.5])
     playback = _events(tracks.SYSTEM, 16000, 1, [(0.4, 3)], 0.064, [1.0, 2.5])
 
@@ -330,3 +330,56 @@ def test_playback_that_never_delivered_becomes_a_silent_track(tmp_path):
     assert len(mix) == 32000
     sidecar = _sidecar(out)
     assert sidecar.shape == (32000, 2) and not sidecar[:, 1].any()
+
+
+def test_playback_after_silences_of_a_tenth_of_a_second_stays_aligned(tmp_path):
+    out = str(tmp_path / "call.wav")
+    clicks = [0.5, 1.2, 1.9, 2.6]
+    assembler = TrackAssembler(mic_rate=16000, mic_channels=1,
+                               playback_rate=48000, playback_channels=2)
+    mic = _events(tracks.MIC, 16000, 1, [(0, 3)], 0.01, clicks)
+    playback = _events(tracks.SYSTEM, 48000, 2,
+                       [(0, 1.0), (1.1, 1.7), (1.8, 2.4), (2.5, 3)], 0.064, clicks)
+
+    _feed(assembler, mic, playback)
+    assembler.save(out)
+
+    _assert_aligned(out, clicks)
+
+
+def test_a_late_read_of_buffered_playback_inserts_no_silence(tmp_path):
+    # The Playback reader stalls from 1.5 s to 2.0 s, then reads the backlog
+    # in one go; the driver reports what is still buffered behind each chunk.
+    out = str(tmp_path / "call.wav")
+    clicks = [1.0, 2.5]
+    assembler = TrackAssembler(mic_rate=16000, mic_channels=1,
+                               playback_rate=16000, playback_channels=1)
+    mic = _events(tracks.MIC, 16000, 1, [(0, 3)], 0.01, clicks)
+    playback = _events(tracks.SYSTEM, 16000, 1, [(0, 3)], 0.064, clicks)
+    stalled = [chunk for t, _, chunk in playback if 1.5 < t <= 2.0]
+    on_time = [e for e in playback if not 1.5 < e[0] <= 2.0]
+
+    _feed(assembler, [e for e in mic if e[0] <= 2.0], [e for e in on_time if e[0] <= 2.0])
+    for i, chunk in enumerate(stalled):
+        backlog = sum(len(c) // 2 for c in stalled[i + 1:])
+        assembler.add_chunk(tracks.SYSTEM, chunk, buffered_frames=backlog)
+    _feed(assembler, [e for e in mic if e[0] > 2.0], [e for e in on_time if e[0] > 2.0])
+    assembler.save(out)
+
+    _assert_aligned(out, clicks)
+
+
+def test_a_continuous_playback_source_is_never_padded(tmp_path):
+    # macOS: the helper streams without gaps; a slow pipe read is not one.
+    out = str(tmp_path / "call.wav")
+    assembler = TrackAssembler(mic_rate=16000, mic_channels=1,
+                               playback_rate=16000, playback_channels=1,
+                               playback_is_continuous=True)
+    mic = _events(tracks.MIC, 16000, 1, [(0, 3)], 0.01, [1.0, 2.5])
+    playback = _events(tracks.SYSTEM, 16000, 1, [(0, 3)], 0.064, [1.0, 2.5])
+    late = [(t + 0.4 if 1.5 < t <= 2.0 else t, s, d) for t, s, d in playback]  # stall, then backlog
+
+    _feed(assembler, mic, late)
+    assembler.save(out)
+
+    _assert_aligned(out, [1.0, 2.5])

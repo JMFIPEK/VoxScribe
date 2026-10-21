@@ -42,6 +42,16 @@ def source_for_mode(mode: str) -> str:
     return _SOURCE_BY_MODE[mode]
 
 
+def records_playback(mode: str) -> bool:
+    """Playback only and Call capture what the computer plays."""
+    return mode in (MODE_PLAYBACK, MODE_CALL)
+
+
+def records_mic(mode: str) -> bool:
+    """Call and In room capture the microphone."""
+    return mode in (MODE_CALL, MODE_ROOM)
+
+
 def mode_for_source(source: str) -> str:
     """'both' -> 'call' - for the CLI's deprecated --source alias."""
     return _MODE_BY_SOURCE[source]

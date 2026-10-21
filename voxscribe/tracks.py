@@ -70,6 +70,22 @@ def save_tracks(audio_path: str, mic_audio: np.ndarray, sys_audio: np.ndarray,
     return path
 
 
+def mix(mic: np.ndarray, system: np.ndarray, full_scale: float) -> np.ndarray:
+    """The mono mix of a Call: both tracks at 0.65, the shorter one padded
+    with silence, scaled down if the peak would exceed full_scale (32767
+    for int16 values, 32767/32768 for -1..1). Shared by the recorder's
+    saved mix and the cleaned mix transcribed for Loudspeaker Calls, so
+    the two stay the same mix. Returns float64."""
+    n = max(len(mic), len(system))
+    mixed = np.zeros(n, dtype=np.float64)
+    mixed[:len(mic)] += 0.65 * np.asarray(mic, dtype=np.float64)
+    mixed[:len(system)] += 0.65 * np.asarray(system, dtype=np.float64)
+    peak = float(np.max(np.abs(mixed))) if n else 0.0
+    if peak > full_scale:
+        mixed *= full_scale / peak
+    return mixed
+
+
 def load_setup(audio_path: str) -> str | None:
     """The Setup stored in the recording's sidecar, or None if there's no
     sidecar or it predates the tag."""

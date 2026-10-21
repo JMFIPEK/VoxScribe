@@ -96,11 +96,6 @@ class AudioSource:
         file (Apple SpeechAnalyzer): the recording itself, or for a
         Loudspeaker Call a temporary WAV of the cleaned mix, removed again
         afterwards (also when the Backend fails)."""
-        from voxscribe.recording_modes import SETUP_LOUDSPEAKER
-        from voxscribe.tracks import load_setup
-        if load_setup(self.path) != SETUP_LOUDSPEAKER:
-            yield self.path
-            return
         samples = self.load()
         if not self._cleaned:
             yield self.path
@@ -121,8 +116,8 @@ class AudioSource:
         Loudspeaker Setup; None without a sidecar (see tracks.load_tracks())."""
         if not self._tracks_loaded:
             from voxscribe.tracks import load_tracks
-            self._tracks_loaded = True
             self._tracks = load_tracks(self.path)
+            self._tracks_loaded = True
         return self._tracks
 
     def _cleaned_mix(self) -> np.ndarray | None:
@@ -135,17 +130,8 @@ class AudioSource:
             print(f"     [WARNING] Could not load the Call's tracks ({e}) - "
                   "transcribing the saved mix, Echo included.")
             return None
+        from voxscribe.tracks import mix
         mic, system = self._tracks
         print("     Echo removal ran: transcribing the mix of the cleaned "
-              "microphone track and the playback track.")
-        return _mix_tracks(mic, system)
-
-
-def _mix_tracks(mic: np.ndarray, system: np.ndarray) -> np.ndarray:
-    """Both tracks at 0.65, scaled down if they'd clip - the same mix the
-    recorder saves (track_assembler), in the -1..1 range."""
-    mixed = 0.65 * (mic.astype(np.float64) + system.astype(np.float64))
-    peak = float(np.max(np.abs(mixed))) if len(mixed) else 0.0
-    if peak > 32767 / 32768:
-        mixed *= (32767 / 32768) / peak
-    return mixed.astype(np.float32)
+              "Microphone track and the Playback track.")
+        return mix(mic, system, full_scale=32767 / 32768).astype(np.float32)

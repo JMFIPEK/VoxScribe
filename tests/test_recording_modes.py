@@ -89,3 +89,8 @@ def test_current_device_index_is_none_for_an_unplugged_device():
 
 def test_current_device_index_keeps_an_unlisted_index():
     assert rm.current_device_index([], [], None) is None
+
+
+def test_which_modes_record_playback_and_microphone():
+    assert [rm.records_playback(m) for m in (rm.MODE_PLAYBACK, rm.MODE_CALL, rm.MODE_ROOM)] == [True, True, False]
+    assert [rm.records_mic(m) for m in (rm.MODE_PLAYBACK, rm.MODE_CALL, rm.MODE_ROOM)] == [False, True, True]

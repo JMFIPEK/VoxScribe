@@ -19,16 +19,17 @@ import wave
 
 import numpy as np
 
-from voxscribe.tracks import MIC, SYSTEM, save_tracks
+from voxscribe.tracks import MIC, SYSTEM, mix, save_tracks
 
 OUT_RATE = 16000
 SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
 
 # How far (seconds) Playback may fall behind the Microphone before the gap
-# counts as "nothing arrived" and is padded. Above the normal read jitter
-# (64 ms chunks plus 20 ms polling), so a late read never inserts silence
-# into continuous Playback, which would push the rest of it too late.
-MAX_PLAYBACK_LAG = 0.2
+# counts as "nothing arrived" and is padded. Above the jitter between the
+# two readers (each polls every 10-20 ms); a reader that falls further
+# behind reports its backlog (buffered_frames), so a late read is never
+# mistaken for a gap.
+MAX_PLAYBACK_LAG = 0.05
 
 
 class TrackAssembler:
@@ -42,36 +43,39 @@ class TrackAssembler:
 
     def __init__(self, mic_rate: int, mic_channels: int,
                  playback_rate: int, playback_channels: int,
-                 trim_mic_lead: bool = False):
-        """trim_mic_lead: the Playback source streams continuously from its
-        first sample on (macOS' system-audio helper), so Microphone audio
-        from before that sample is dropped and both tracks start together.
-        Without it (WASAPI loopback, which is silent until something plays),
-        Playback starts with the Microphone and its late first packet is
-        padded like any other gap."""
+                 playback_is_continuous: bool = False):
+        """playback_is_continuous: the Playback source streams without gaps
+        from its first sample on (macOS' system-audio helper). Microphone
+        audio from before that sample is dropped, so both tracks start
+        together, and Playback is never padded (a slow read of the helper's
+        pipe is a backlog, not a gap). Otherwise (WASAPI loopback, which
+        sends nothing while nothing plays) Playback starts with the
+        Microphone and every gap, including a late first packet, is padded."""
         self._format = {MIC: (mic_rate, mic_channels),
                         SYSTEM: (playback_rate, playback_channels)}
         self._chunks: dict[str, list[bytes]] = {MIC: [], SYSTEM: []}
         self._frames = {MIC: 0, SYSTEM: 0}  # per channel, real + padded
-        self._trim_mic_lead = trim_mic_lead
+        self._playback_is_continuous = playback_is_continuous
         self._mic_trim = 0  # Microphone frames before the Playback start
         self._playback_started = False
 
-    def add_chunk(self, source: str, data: bytes):
-        """Appends audio captured from source (MIC or SYSTEM), at the moment
-        its last sample was captured.
+    def add_chunk(self, source: str, data: bytes, buffered_frames: int = 0):
+        """Appends audio captured from source (MIC or SYSTEM), as soon as it
+        was read; buffered_frames is how much more the driver already holds
+        behind it.
 
         The Microphone is the time base: it delivers audio continuously.
         Playback that falls behind it by more than MAX_PLAYBACK_LAG (WASAPI
         loopback sends nothing while nothing plays) is padded with silence
-        first, so the chunk ends where the Microphone track is now."""
+        first, so the chunk ends where the Microphone track is now, minus
+        the backlog still buffered behind it."""
         frames = self._frames_in(source, data)
-        if source == SYSTEM and self._trim_mic_lead and not self._playback_started:
+        if source == SYSTEM and self._playback_is_continuous and not self._playback_started:
             # This chunk's first sample is the Playback start.
             chunk_in_mic_frames = int(frames * self._format[MIC][0] / self._format[SYSTEM][0])
             self._mic_trim = max(0, self._frames[MIC] - chunk_in_mic_frames)
-        if source == SYSTEM:
-            lag = self._mic_position(SYSTEM) - (self._frames[SYSTEM] + frames)
+        if source == SYSTEM and not self._playback_is_continuous:
+            lag = self._mic_position(SYSTEM) - buffered_frames - (self._frames[SYSTEM] + frames)
             if lag > MAX_PLAYBACK_LAG * self._format[SYSTEM][0]:
                 self._append_silence(SYSTEM, lag)
         self._chunks[source].append(data)
@@ -113,7 +117,7 @@ class TrackAssembler:
         16kHz int16 samples."""
         mic_audio = self._track(MIC)
         sys_audio = self._track(SYSTEM)
-        mixed = _mix_sources(mic_audio, sys_audio)
+        mixed = mix(mic_audio, sys_audio, full_scale=32767)
         mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
 
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -150,26 +154,6 @@ def _resample_to_rate(audio: np.ndarray, source_rate: int,
 
     divisor = gcd(target_rate, source_rate)
     return resample_poly(audio, target_rate // divisor, source_rate // divisor)
-
-
-def _pad_to_length(audio: np.ndarray, length: int) -> np.ndarray:
-    if len(audio) >= length:
-        return audio[:length]
-    return np.pad(audio, (0, length - len(audio)), mode="constant")
-
-
-def _mix_sources(mic_audio: np.ndarray, sys_audio: np.ndarray) -> np.ndarray:
-    """Mixes two mono signals already resampled to the same sample rate
-    (microphone + playback, int16 value range as float). Returns the int16
-    value range (neither normalized to -1..1 nor cast to int16)."""
-    out_len = max(len(mic_audio), len(sys_audio))
-    mic_audio = _pad_to_length(mic_audio, out_len)
-    sys_audio = _pad_to_length(sys_audio, out_len)
-    mixed = (mic_audio * 0.65) + (sys_audio * 0.65)
-    peak = np.max(np.abs(mixed)) if len(mixed) else 0
-    if peak > 32767:
-        mixed = mixed * (32767 / peak)
-    return mixed
 
 
 def _save_wav(output_path: str, mixed: np.ndarray):

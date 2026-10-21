@@ -320,8 +320,8 @@ class RecordPage(QWidget):
     def _apply_mode(self):
         """Shows only what the current mode needs: Setup for a Call, the
         playback and/or microphone picker, and the matching level meters."""
-        has_playback = self._mode in (rm.MODE_PLAYBACK, rm.MODE_CALL)
-        has_mic = self._mode in (rm.MODE_CALL, rm.MODE_ROOM)
+        has_playback = rm.records_playback(self._mode)
+        has_mic = rm.records_mic(self._mode)
         is_call = self._mode == rm.MODE_CALL
         self.setup_widget.setVisible(is_call)
         self.setup_hint.setVisible(is_call)
@@ -427,8 +427,8 @@ class RecordPage(QWidget):
                 self._all_devices.get("microphones", []), fresh.get("microphones", []), mic_index)
             playback_index = rm.current_device_index(
                 self._all_devices.get("loopback", []), fresh.get("loopback", []), playback_index)
-            has_playback = self._mode in (rm.MODE_PLAYBACK, rm.MODE_CALL)
-            has_mic = self._mode in (rm.MODE_CALL, rm.MODE_ROOM)
+            has_playback = rm.records_playback(self._mode)
+            has_mic = rm.records_mic(self._mode)
             if (has_playback and playback_index is None and self._playback_map) or \
                     (has_mic and mic_index is None and self._mic_map):
                 self.refresh_devices()
@@ -462,7 +462,7 @@ class RecordPage(QWidget):
         self._mic_peak = 0.0
         self._mic_warning_shown = False
         self._recording_mic_name = self.mic_combo.currentText()
-        self._recording_has_mic = self._mode in (rm.MODE_CALL, rm.MODE_ROOM)
+        self._recording_has_mic = rm.records_mic(self._mode)
         self._timer.start()
 
     def _on_level_updated(self, channel, rms):

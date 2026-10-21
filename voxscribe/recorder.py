@@ -495,8 +495,10 @@ class AudioRecorder:
         sys_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
         chunk_bytes = CHUNK * SAMPLE_WIDTH
         # The helper streams continuously from its first sample on, so the
-        # Microphone's lead while it launches is trimmed (#20).
-        assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch, trim_mic_lead=True)
+        # Microphone's lead while it launches is trimmed (#20) and a slow
+        # pipe read isn't padded as a gap.
+        assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch,
+                                   playback_is_continuous=True)
         next_adc_time = [0.0]  # where the next mic block should start
 
         def mic_callback(indata, frames, time_info, status):
@@ -679,7 +681,8 @@ class AudioRecorder:
                 # padded by the TrackAssembler, which follows the
                 # Microphone's sample count. read_all keeps that count fresh:
                 # the Microphone is read as soon as ~10 ms are available,
-                # all of it at once.
+                # all of it at once. Playback reports what's still buffered
+                # behind each chunk, so a late read isn't taken for a gap.
                 while not self._stop_event.is_set():
                     try:
                         available = stream.get_read_available()
@@ -692,21 +695,21 @@ class AudioRecorder:
                         self._stop_event.wait(0.01 if read_all else 0.02)
                         continue
 
+                    frames = available if read_all else chunk_size
                     try:
-                        data = stream.read(available if read_all else chunk_size,
-                                           exception_on_overflow=False)
+                        data = stream.read(frames, exception_on_overflow=False)
                     except Exception as e:
                         read_errors.append(e)
                         self._stop_event.set()
                         break
 
-                    assembler.add_chunk(source, data)
+                    assembler.add_chunk(source, data, buffered_frames=available - frames)
                     if self._on_level:
                         self._on_level(source, compute_rms(data))
 
             mic_thread = threading.Thread(
-                target=read_loop, args=(mic_stream, MIC, mic_chunk, True),
-                daemon=True)
+                target=read_loop, args=(mic_stream, MIC, mic_chunk),
+                kwargs={"read_all": True}, daemon=True)
             sys_thread = threading.Thread(
                 target=read_loop, args=(sys_stream, SYSTEM, sys_chunk),
                 daemon=True)
