@@ -246,3 +246,32 @@ def test_command_line_macos_paths_use_the_recorder_too(tmp_path, helper_binary):
                                         wait_for_stop=stop_after(SECONDS))
 
     assert wav_info(out)[:2] == (16000, 1)
+
+
+# --- The macOS helper's failure messages (#29) --------------------------------
+
+def test_macos_helper_crash_reports_its_error_output(tmp_path, helper_binary):
+    helper = FakeHelper(exit_code=1, stderr=b"Stream error (possibly missing Screen Recording permission)")
+    _, _, error, _ = record(macos_sources(helper_binary, helper=helper), tmp_path, "system", seconds=0.2)
+
+    assert error == "Stream error (possibly missing Screen Recording permission)"
+
+
+def test_macos_helper_without_audio_asks_for_the_permission(tmp_path, helper_binary):
+    helper = FakeHelper(exit_code=0)
+    _, _, error, _ = record(macos_sources(helper_binary, helper=helper), tmp_path, "system", seconds=0.2)
+
+    assert "Screen & System Audio Recording" in error
+
+
+def test_macos_call_reports_a_helper_crash(tmp_path, helper_binary):
+    helper = FakeHelper(exit_code=1, stderr=b"")
+    _, _, error, _ = record(macos_sources(helper_binary, helper=helper), tmp_path, "both", seconds=0.2)
+
+    assert error == "SystemAudioCapture exited with code 1"
+
+
+def test_macos_call_without_the_helper_reports_how_to_build_it(tmp_path):
+    _, _, error, _ = record(macos_sources(str(tmp_path / "missing")), tmp_path, "both", seconds=0.1)
+
+    assert "build.sh" in error

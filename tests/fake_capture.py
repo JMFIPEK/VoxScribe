@@ -171,23 +171,29 @@ class FakeHelper:
     """Stands in for subprocess.Popen launching macos/SystemAudioCapture:
     streams 16 kHz mono int16 on stdout until terminated (-15, like SIGTERM)."""
 
-    def __init__(self, freq=880.0):
+    def __init__(self, freq=880.0, exit_code=None, stderr=b""):
+        """exit_code: the helper exits right away with this code and no
+        audio (missing permission, a crash); None = it streams until stopped."""
         self.source = FakeSource(rate=16000, channels=1, freq=freq, name="helper")
+        self.exit_code, self.stderr = exit_code, stderr
         self.launched = []
 
     def __call__(self, args, stdout=None, stderr=None):
-        proc = _FakeProc(self.source)
+        proc = _FakeProc(self.source, self.exit_code, self.stderr)
         self.launched.append(proc)
         return proc
 
 
 class _FakeProc:
-    def __init__(self, source):
+    def __init__(self, source, exit_code=None, stderr=b""):
         self.source, self.returncode = source, None
         self._terminated = threading.Event()
         self.stdout = SimpleNamespace(read=self._read)
-        self.stderr = SimpleNamespace(read=lambda: b"")
+        self.stderr = SimpleNamespace(read=lambda: stderr)
         self._opened, self._read_frames = time.monotonic(), 0
+        if exit_code is not None:
+            self.returncode = exit_code
+            self._terminated.set()
 
     def _read(self, n_bytes):
         frames = n_bytes // 2
@@ -200,7 +206,8 @@ class _FakeProc:
         return b""
 
     def terminate(self):
-        self.returncode = -15
+        if self.returncode is None:
+            self.returncode = -15
         self._terminated.set()
 
     def kill(self):

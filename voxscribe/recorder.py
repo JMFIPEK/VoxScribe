@@ -404,37 +404,36 @@ class AudioRecorder:
         if self._on_done:
             self._on_done(self._output_path, duration, None)
 
-    def _record_system_macos(self):
-        """System-audio recording on macOS via a ScreenCaptureKit subprocess.
+    def _helper_path_or_report(self) -> str | None:
+        """The macOS system-audio helper's path, or None after reporting via
+        on_done that it hasn't been built yet."""
+        binary = self._sources.helper_path()
+        if os.path.isfile(binary):
+            return binary
+        if self._on_done:
+            self._on_done(
+                None, 0,
+                "System-audio helper not found. Run './build.sh' in "
+                "macos/ first (see macos/README.md)."
+            )
+        return None
+
+    def _stream_helper(self, binary: str, on_chunk) -> bytes:
+        """Runs the ScreenCaptureKit helper (macos/SystemAudioCapture) until
+        stop() and passes each chunk of its 16kHz mono int16 PCM to on_chunk.
+        Returns its error output. Raises RuntimeError if it exited with an
+        error.
 
         Tested and debugged on real Apple Silicon hardware (see
-        macos/README.md) - the helper (macos/SystemAudioCapture) streams raw
-        16kHz mono int16 PCM bytes to stdout, read here in a blocking loop. A
+        macos/README.md). The helper's stdout is read in a blocking loop; a
         separate watcher thread terminates the subprocess as soon as stop()
         is called - this closes stdout (EOF), so the blocking read() returns
         immediately instead of closing a resource from another thread while a
         read is still active (the original WASAPI bug this pattern avoids).
         """
-        level_channel = "system"
-        binary = self._sources.helper_path()
-        if not os.path.isfile(binary):
-            if self._on_done:
-                self._on_done(
-                    None, 0,
-                    "System-audio helper not found. Run './build.sh' in "
-                    "macos/ first (see macos/README.md)."
-                )
-            return
-
-        self._channels = 1
-        self._sample_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
         chunk_bytes = CHUNK * SAMPLE_WIDTH
-
-        proc = None
+        proc = self._sources.popen([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            proc = self._sources.popen(
-                [binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
             def _watch_stop():
                 self._stop_event.wait()
                 try:
@@ -442,16 +441,15 @@ class AudioRecorder:
                 except Exception:
                     pass
 
-            watcher = threading.Thread(target=_watch_stop, daemon=True)
-            watcher.start()
+            threading.Thread(target=_watch_stop, daemon=True).start()
 
             while True:
                 data = proc.stdout.read(chunk_bytes)
                 if not data:
                     break
-                self._frames.append(data)
+                on_chunk(data)
                 if self._on_level:
-                    self._on_level(level_channel, compute_rms(data))
+                    self._on_level("system", compute_rms(data))
 
             try:
                 proc.wait(timeout=3)
@@ -459,22 +457,35 @@ class AudioRecorder:
                 proc.kill()
                 proc.wait(timeout=2)
 
+            stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
             # -15/-2 = terminated cleanly via SIGTERM/SIGINT (the expected stop path)
             if proc.returncode not in (0, None, -15, -2):
-                stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
                     stderr_output or f"SystemAudioCapture exited with code {proc.returncode}")
+            return stderr_output
+        except BaseException:
+            if proc.poll() is None:
+                proc.kill()
+            raise
 
+    def _record_system_macos(self):
+        """System-audio recording on macOS via the ScreenCaptureKit helper
+        (see _stream_helper())."""
+        binary = self._helper_path_or_report()
+        if binary is None:
+            return
+
+        self._channels = 1
+        self._sample_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
+        try:
+            stderr_output = self._stream_helper(binary, self._frames.append)
             if not self._frames:
-                stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
                     stderr_output or
                     "No audio data received. Has the 'Screen & System Audio "
                     "Recording' permission been granted? "
                     "(System Settings > Privacy & Security)")
         except Exception as e:
-            if proc is not None and proc.poll() is None:
-                proc.kill()
             if self._on_done:
                 self._on_done(None, 0, str(e))
             return
@@ -487,24 +498,16 @@ class AudioRecorder:
             self._on_done(self._output_path, duration, None)
 
     def _record_both_macos(self):
-        """Records the microphone (sounddevice) and system audio
-        (ScreenCaptureKit subprocess, see _record_system_macos())
-        simultaneously and mixes them - macOS equivalent of _record_both() on
-        Windows.
+        """Records the microphone (sounddevice) and system audio (the
+        ScreenCaptureKit helper, see _stream_helper()) simultaneously and
+        mixes them - macOS equivalent of _record_both() on Windows.
 
         The microphone runs on sounddevice's own callback thread, the
-        system-audio side is read in a blocking loop on the current thread
-        (identical to _record_system_macos()); both feed a TrackAssembler,
-        which builds the tracks and the mix after stop.
+        system-audio side is read on the current thread; both feed a
+        TrackAssembler, which builds the tracks and the mix after stop.
         """
-        binary = self._sources.helper_path()
-        if not os.path.isfile(binary):
-            if self._on_done:
-                self._on_done(
-                    None, 0,
-                    "System-audio helper not found. Run './build.sh' in "
-                    "macos/ first (see macos/README.md)."
-                )
+        binary = self._helper_path_or_report()
+        if binary is None:
             return
 
         try:
@@ -521,7 +524,6 @@ class AudioRecorder:
         mic_rate = int(mic_info["default_samplerate"])
         sys_ch = 1
         sys_rate = OUT_RATE  # SystemAudioCapture is fixed at 16kHz/mono
-        chunk_bytes = CHUNK * SAMPLE_WIDTH
         # The helper streams continuously from its first sample on, so the
         # Microphone's lead while it launches is trimmed (#20) and a slow
         # pipe read isn't padded as a gap.
@@ -542,7 +544,6 @@ class AudioRecorder:
             if self._on_level:
                 self._on_level("mic", compute_rms(data))
 
-        proc = None
         mic_stream = None
         try:
             # ~10 ms blocks: the Microphone's sample count is the Call's time
@@ -552,42 +553,8 @@ class AudioRecorder:
                 device=self._device_index, blocksize=max(1, mic_rate // 100),
                 callback=mic_callback)
             mic_stream.start()
-
-            proc = self._sources.popen(
-                [binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-            def _watch_stop():
-                self._stop_event.wait()
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-
-            watcher = threading.Thread(target=_watch_stop, daemon=True)
-            watcher.start()
-
-            while True:
-                data = proc.stdout.read(chunk_bytes)
-                if not data:
-                    break
-                assembler.add_chunk(SYSTEM, data)
-                if self._on_level:
-                    self._on_level("system", compute_rms(data))
-
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2)
-
-            # -15/-2 = terminated cleanly via SIGTERM/SIGINT (the expected stop path)
-            if proc.returncode not in (0, None, -15, -2):
-                stderr_output = (proc.stderr.read() or b"").decode("utf-8", errors="replace").strip()
-                raise RuntimeError(
-                    stderr_output or f"SystemAudioCapture exited with code {proc.returncode}")
+            self._stream_helper(binary, lambda data: assembler.add_chunk(SYSTEM, data))
         except Exception as e:
-            if proc is not None and proc.poll() is None:
-                proc.kill()
             if self._on_done:
                 self._on_done(None, 0, str(e))
             return
