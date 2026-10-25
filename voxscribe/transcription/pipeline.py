@@ -80,21 +80,31 @@ def _step_align(backend: Backend, result: dict, audio, torch_device: str, prog) 
 
 def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_device: str,
                             hf_token: str | None, min_speakers: int | None,
-                            max_speakers: int | None, prog) -> dict:
+                            max_speakers: int | None, prog) -> tuple[dict, str | None]:
     """Step 3 (progress 65-100%): who speaks when - diarization, the
     microphone/system track split, the Stray speaker merge, then voice-print
-    recognition."""
+    recognition. Returns (result, why there are no speakers or None); a
+    failure here keeps the transcript without speakers instead of losing it."""
     if not hf_token:
         print("3/3  Diarization skipped (no HF_TOKEN set)")
         print("     Set HF_TOKEN in .env for speaker recognition")
         prog(1.0, "Done (diarization skipped - no token)")
-        return result
+        return result, "Speaker identification skipped: no HuggingFace token set"
 
     print("3/3  Running speaker diarization...")
     t4 = time.time()
 
-    result, speaker_embeddings = run_diarization(
-        result, audio_source.load(), torch_device, hf_token, min_speakers, max_speakers, prog)
+    try:
+        diarized, speaker_embeddings = run_diarization(
+            result, audio_source.load(), torch_device, hf_token, min_speakers, max_speakers, prog)
+    except Exception as e:  # noqa: BLE001 - the transcript is still worth keeping
+        print(f"     [WARNING] Diarization failed: {e}")
+        for seg in result.get("segments", []):
+            seg.pop("speaker", None)
+            for word in seg.get("words", []):
+                word.pop("speaker", None)
+        return result, f"Speaker identification failed: {e}"
+    result = diarized
     split_speakers = split_by_track(result, audio_source)
     for stray in merge_stray_speakers(result, speaker_embeddings):
         split_speakers.pop(stray, None)
@@ -106,7 +116,7 @@ def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_devic
     speakers = {seg["speaker"] for seg in result.get("segments", []) if "speaker" in seg}
     print(f"     {len(speakers)} speakers detected: {', '.join(sorted(speakers))}")
     prog(0.98, f"Diarization done - {len(speakers)} speakers ({t5 - t4:.0f}s)")
-    return result
+    return result, None if speakers else "No speakers identified"
 
 
 def transcribe(
@@ -229,18 +239,20 @@ def transcribe(
     # Copies: the GUI receives them later, while the next steps edit segments in place.
     emit("aligned", [dict(seg) for seg in result["segments"]])
 
+    speakers_missing = None
     if diarize:
         identifies = bool(hf_token)  # without a token the step only reports it's skipped
         if identifies:
             emit("step", "speaker_identification")
         t_step = time.time()
-        result = _step_identify_speakers(
+        result, speakers_missing = _step_identify_speakers(
             result, audio_source, device, hf_token, min_speakers, max_speakers, prog)
-        if identifies:
+        if identifies and not speakers_missing:
             step_times["speaker_identification"] = time.time() - t_step
             emit("speaker_turns", [dict(seg) for seg in result["segments"]])
     else:
         print("3/3  Diarization disabled")
+        speakers_missing = "Speaker identification is turned off"
 
     total = time.time() - t0
     prog(1.0, f"Done! (total: {total:.0f}s)")
@@ -253,6 +265,9 @@ def transcribe(
     # For the "x realtime" figures (duration / step time).
     result["step_times"] = step_times
     result["total_time"] = total
+    # For the Timeline's note: why it has no Speaker lanes (only when it has none).
+    if speakers_missing:
+        result["speakers_missing"] = speakers_missing
 
     return result
 

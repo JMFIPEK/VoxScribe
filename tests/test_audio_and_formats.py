@@ -58,6 +58,22 @@ def test_audio_source_decodes_only_once(tmp_path, monkeypatch):
     assert calls == [path]
 
 
+def test_probe_duration_reads_the_length_without_decoding(tmp_path, monkeypatch):
+    path = str(tmp_path / "a.wav")
+    sf.write(path, np.zeros(24000, dtype=np.float32), 48000)
+    monkeypatch.setattr(audio, "load_audio_universal", lambda p: pytest.fail("decoded"))
+
+    assert audio.probe_duration(path) == 0.5
+
+
+def test_probe_duration_of_an_unreadable_file_is_none(tmp_path):
+    path = tmp_path / "broken.wav"
+    path.write_bytes(b"not audio")
+
+    assert audio.probe_duration(str(path)) is None
+    assert audio.probe_duration(str(tmp_path / "missing.wav")) is None
+
+
 # --- Loudspeaker Calls: transcribe the mix without the Echo (#23) ----------
 
 import hashlib  # noqa: E402

@@ -34,6 +34,11 @@ class TimelineModel:
     duration: float          # x axis: the recording length in seconds
     lanes: tuple[Lane, ...]
     note: str = ""           # e.g. why there are no Speaker lanes
+    # While the pipeline runs (qt_app/timeline_progress.py); a finished
+    # result leaves them at their defaults:
+    sweep: float | None = None   # plain sweep 0..1 (Backends that don't stream)
+    percent: int | None = None   # overall pipeline percentage
+    soft: bool = False           # segment blocks, before alignment sharpens them
 
 
 def timeline_from_result(result: dict, view: SpeakerView, speech_color: str = "#8e9aaf",
