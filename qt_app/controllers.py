@@ -91,25 +91,6 @@ class TranscribeController(QObject):
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
 
-    def start_multi(self, **kwargs):
-        """Like start(), but for multiple files (`audio_paths=[...]`) - see
-        transcriber.transcribe_multi() for how the results are merged."""
-        self.started.emit()
-
-        def _run():
-            try:
-                from voxscribe.transcriber import transcribe_multi
-                result = transcribe_multi(
-                    on_progress=lambda pct, msg: self.progressUpdated.emit(pct, msg),
-                    **kwargs,
-                )
-                self.finished.emit(result, None)
-            except Exception as e:  # noqa: BLE001 - forwarded to the UI
-                self.finished.emit(None, str(e))
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-
 
 class HardwareInfoController(QObject):
     """Determines the hardware summary/model recommendation/bundled status in
