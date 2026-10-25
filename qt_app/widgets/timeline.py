@@ -4,8 +4,8 @@ Paints a TimelineModel (qt_app/timeline_model.py) and nothing else, so a
 finished result and, later, the pipeline's progress only differ in the
 model they hand to set_timeline()."""
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFontMetrics, QPainter
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from qt_app import theme
@@ -19,9 +19,14 @@ NOTE_HEIGHT = 18
 
 
 class Timeline(QWidget):
+    # Clicked position in seconds, only while seekable (playback, #48).
+    seekRequested = Signal(float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._timeline = TimelineModel(0.0, ())
+        self._playhead = None    # playback position in seconds, None = none drawn
+        self._seekable = False
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMinimumWidth(LABEL_WIDTH + 100)
         self.setFixedHeight(self._height())
@@ -33,6 +38,25 @@ class Timeline(QWidget):
 
     def timeline(self) -> TimelineModel:
         return self._timeline
+
+    # ------------------------------------------------------------ playback
+    def set_playhead(self, seconds: float | None):
+        """Draws the playback position as a line across all lanes."""
+        if seconds != self._playhead:
+            self._playhead = seconds
+            self.update()
+
+    def set_seekable(self, seekable: bool):
+        """Clicks only seek once there is a result to play, never while the
+        transcription runs."""
+        self._seekable = seekable
+        self.setCursor(Qt.PointingHandCursor if seekable else Qt.ArrowCursor)
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt override
+        x = event.position().x()
+        if self._seekable and event.button() == Qt.LeftButton and x >= self._track_left():
+            self.seekRequested.emit(self.seconds_at(x))
+        super().mousePressEvent(event)
 
     # ------------------------------------------------------------ geometry
     def _height(self) -> int:
@@ -79,6 +103,11 @@ class Timeline(QWidget):
             painter.setPen(QColor(lane.color or theme.TEXT_MUTED))
             painter.drawText(label_rect, Qt.AlignVCenter | Qt.AlignRight,
                              metrics.elidedText(lane.label, Qt.ElideRight, int(label_rect.width())))
+
+        if self._playhead is not None and self._timeline.lanes:
+            x = self.x_of(self._playhead)
+            painter.setPen(QPen(QColor(theme.TEXT), 2))
+            painter.drawLine(QPointF(x, PADDING), QPointF(x, self.lane_rect(len(self._timeline.lanes) - 1).bottom()))
 
         if self._timeline.note:
             top = self._height() - PADDING - NOTE_HEIGHT

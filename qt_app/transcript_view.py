@@ -6,6 +6,7 @@ the result on every change (one table row per turn, not one widget, so
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from html import escape
 
@@ -35,6 +36,35 @@ def speaker_turns(segments: list[dict]) -> list[Turn]:
         else:
             turns.append(Turn(speaker, start, end, text))
     return turns
+
+
+def turn_at(turns: list[Turn], seconds: float) -> int | None:
+    """Index of the turn being spoken at `seconds` (playback highlighting).
+    In a pause it is the turn before it, so the highlight doesn't flicker
+    off between turns; None before the first turn. Turns are in time order."""
+    starts = [turn.start for turn in turns]
+    index = bisect_right(starts, seconds) - 1
+    return index if index >= 0 else None
+
+
+def longest_turn(turns: list[Turn], speaker: str) -> Turn | None:
+    """The turn the speaker list's play button plays: the speaker's longest,
+    the earliest of equally long ones. None if the speaker never talks."""
+    own = [turn for turn in turns if turn.speaker == speaker]
+    return max(own, key=lambda turn: turn.end - turn.start, default=None)
+
+
+# transcript_html() gives each turn two table rows: the block, then the gap
+# below it. Clicking and highlighting map between turns and rows with these.
+_ROWS_PER_TURN = 2
+
+
+def row_of_turn(index: int) -> int:
+    return index * _ROWS_PER_TURN
+
+
+def turn_of_row(row: int) -> int:
+    return row // _ROWS_PER_TURN
 
 
 def transcript_html(result: dict, view: SpeakerView) -> str:
