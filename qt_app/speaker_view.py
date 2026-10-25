@@ -69,18 +69,23 @@ class SpeakerView:
         return speakers[:top], speakers[top:]
 
     def voice_prints(self, label: str) -> list:
-        """Embeddings to enroll when `label` is named: those of its
-        Diarization IDs with at least MIN_ENROLL_SECONDS of speech. A
-        shorter voice print is too unreliable and would spoil the profile."""
+        """Embeddings to enroll when `label` is named: those of all its
+        Diarization IDs, if the speaker has at least MIN_ENROLL_SECONDS of
+        speech in total (merged IDs count together). A shorter voice print is
+        too unreliable and would spoil the profile."""
+        return self._voice_prints_of(self._ids_of(label))
+
+    def _voice_prints_of(self, ids: list[str]) -> list:
         embeddings = self._result.get("speaker_embeddings") or {}
-        return [embeddings[raw_id] for raw_id in self._ids_of(label)
-                if self._seconds.get(raw_id, 0.0) >= MIN_ENROLL_SECONDS and raw_id in embeddings]
+        if sum(self._seconds.get(raw_id, 0.0) for raw_id in ids) < MIN_ENROLL_SECONDS:
+            return []
+        return [embeddings[raw_id] for raw_id in ids if raw_id in embeddings]
 
     def enroll_hint(self, label: str) -> str | None:
         """Why naming `label` won't remember its voice, or None if it will."""
         if self.voice_prints(label):
             return None
-        if not any(self._seconds.get(raw_id, 0.0) >= MIN_ENROLL_SECONDS for raw_id in self._ids_of(label)):
+        if sum(self._seconds.get(raw_id, 0.0) for raw_id in self._ids_of(label)) < MIN_ENROLL_SECONDS:
             return f"Not remembered: under {MIN_ENROLL_SECONDS:.0f} s of speech"
         return "Not remembered: no voice print"
 
@@ -117,13 +122,19 @@ class SpeakerView:
 
     def apply_name(self, label: str, new_name: str) -> list[tuple[str, object]]:
         """Names `label` (see rename()) and returns the (profile name,
-        embedding) pairs to enroll: only this speaker's own voice prints
-        (on a merge the other speaker's are already in the profile), and
-        never under a profile name ending in "?"."""
+        embedding) pairs to enroll: this speaker's own voice prints - on a
+        merge the other speaker's are already in the profile, unless it was
+        too short on its own and only the merge reaches MIN_ENROLL_SECONDS -
+        and never under a profile name ending in "?"."""
         new_name = new_name.strip()
         if not new_name or new_name == label:
             return []
-        voice_prints = self.voice_prints(label)
+        own_ids, other_ids = self._ids_of(label), self._ids_of(new_name)
+        voice_prints = []
+        if self._voice_prints_of(own_ids + other_ids):
+            embeddings = self._result.get("speaker_embeddings") or {}
+            enroll_ids = own_ids + ([] if self._voice_prints_of(other_ids) else other_ids)
+            voice_prints = [embeddings[raw_id] for raw_id in enroll_ids if raw_id in embeddings]
         self.rename(label, new_name)
         profile_name = new_name.rstrip("?").strip()
         if not profile_name:

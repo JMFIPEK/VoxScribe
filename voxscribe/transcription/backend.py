@@ -5,6 +5,12 @@ from typing import Callable, Protocol
 
 from voxscribe.transcription.audio import AudioSource
 
+# The pipeline's steps, as named in transcribe()'s on_event ("step", name)
+# and result["step_times"].
+STEP_TRANSCRIPTION = "transcription"
+STEP_ALIGNMENT = "alignment"
+STEP_SPEAKER_IDENTIFICATION = "speaker_identification"
+
 
 class FallbackRequested(Exception):
     """A Backend raises this when its Model ID failed in a way that warrants

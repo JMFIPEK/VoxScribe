@@ -49,3 +49,44 @@ def test_each_match_logs_its_similarity(capsys):
     match_speakers({"SPEAKER_00": _voice(0.65)}, PROFILES)
 
     assert "SPEAKER_00 -> Jonas? (similarity 0.65)" in capsys.readouterr().out
+
+
+def _voice2(jonas: float, anna: float) -> list[float]:
+    """An embedding with these similarities to Jonas [1, 0, 0] and Anna [0, 1, 0]."""
+    return [jonas, anna, math.sqrt(1 - jonas ** 2 - anna ** 2)]
+
+
+TWO_PROFILES = {"Jonas": {"embedding": [1.0, 0.0, 0.0], "samples": 1},
+                "Anna": {"embedding": [0.0, 1.0, 0.0], "samples": 1}}
+
+
+def test_a_speaker_whose_best_name_went_to_a_closer_speaker_gets_no_tentative_match():
+    matches = match_speakers(
+        {"SPEAKER_00": _voice2(0.7, 0.65), "SPEAKER_01": _voice2(0.72, 0.0)}, TWO_PROFILES)
+
+    assert matches.tentative == {"SPEAKER_01": "Jonas"}
+
+
+def test_a_speaker_whose_best_name_is_matched_for_certain_gets_no_tentative_match():
+    matches = match_speakers(
+        {"SPEAKER_00": _voice2(0.7, 0.65), "SPEAKER_01": _voice2(0.9, 0.0)}, TWO_PROFILES)
+
+    assert matches.certain == {"SPEAKER_01": "Jonas"}
+    assert matches.tentative == {}
+
+
+def test_a_speaker_beaten_to_a_certain_name_gets_no_tentative_match_either():
+    matches = match_speakers(
+        {"SPEAKER_00": _voice2(0.78, 0.6), "SPEAKER_01": _voice2(0.95, 0.0)}, TWO_PROFILES)
+
+    assert matches.certain == {"SPEAKER_01": "Jonas"}
+    assert matches.tentative == {}
+
+
+def test_candidates_that_are_not_assigned_are_logged_too(capsys):
+    match_speakers({"SPEAKER_00": _voice2(0.7, 0.65), "SPEAKER_01": _voice2(0.72, 0.0)}, TWO_PROFILES)
+
+    out = capsys.readouterr().out
+    assert "SPEAKER_01 -> Jonas? (similarity 0.72)" in out
+    assert "SPEAKER_00 -> Jonas (similarity 0.70, not assigned)" in out
+    assert "SPEAKER_00 -> Anna (similarity 0.65, not assigned)" in out

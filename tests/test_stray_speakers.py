@@ -27,9 +27,14 @@ class FakeBackend:
     def describe(self, model_id, device):
         return "Device: fake"
 
+    word_segments = None
+
     def transcribe(self, request):
+        words = self.word_segments
+        if words is None:
+            words = [w for s in self.segments for w in s["words"]]
         return {"segments": [dict(s) for s in self.segments], "language": "de",
-                "word_segments": [w for s in self.segments for w in s["words"]]}
+                "word_segments": words}
 
 
 @pytest.fixture
@@ -46,11 +51,15 @@ def run(tmp_path, monkeypatch):
 
     monkeypatch.setattr("voxscribe.speaker_profiles.match_speakers", match_speakers)
 
-    def go(segments):
+    def go(segments, extra_embeddings=(), word_segments=None):
         reg = BackendRegistry()
-        reg.register("fake:", lambda: FakeBackend(segments))
+        backend = FakeBackend(segments)
+        if word_segments is not None:
+            backend.word_segments = word_segments
+        reg.register("fake:", lambda: backend)
         monkeypatch.setattr(pipeline, "default_registry", reg)
         embeddings = {s["speaker"]: [0.1] for s in segments}
+        embeddings.update({spk: [0.2] for spk in extra_embeddings})
         monkeypatch.setattr(pipeline, "run_diarization", lambda result, *a: (
             dict(result, speaker_embeddings=embeddings), embeddings))
         return t.transcribe(path, model_size="fake:1", hf_token="hf_x", device="cpu"), asked
@@ -115,3 +124,26 @@ def test_track_split_speakers_are_unaffected(run):
 
     assert [s["speaker"] for s in result["segments"]] == ["SPEAKER_00", "SPEAKER_02", "SPEAKER_01"]
     assert set(result["speaker_id_map"]) == {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}
+
+
+def test_a_speaker_with_an_embedding_but_no_segment_is_merged_too(run):
+    result, asked = run([
+        _seg(0.0, 10.0, "SPEAKER_00"),
+        _seg(10.5, 20.0, "SPEAKER_01"),
+    ], extra_embeddings=["SPEAKER_02"])
+
+    assert asked == ["SPEAKER_00", "SPEAKER_01"]
+    assert set(result["speaker_id_map"]) == {"SPEAKER_00", "SPEAKER_01"}
+    assert set(result["speaker_embeddings"]) == {"SPEAKER_00", "SPEAKER_01"}
+
+
+def test_a_speaker_only_on_words_is_merged_and_its_words_move(run):
+    segments = [_seg(0.0, 10.0, "SPEAKER_00"), _seg(12.0, 20.0, "SPEAKER_01")]
+    words = [w for s in segments for w in s["words"]]
+    words.insert(1, {"start": 10.2, "end": 10.6, "word": "hm", "speaker": "SPEAKER_02"})
+
+    result, asked = run(segments, extra_embeddings=["SPEAKER_02"], word_segments=words)
+
+    assert asked == ["SPEAKER_00", "SPEAKER_01"]
+    assert [w["speaker"] for w in result["word_segments"]] == ["SPEAKER_00", "SPEAKER_00", "SPEAKER_01"]
+    assert set(result["speaker_id_map"]) == {"SPEAKER_00", "SPEAKER_01"}

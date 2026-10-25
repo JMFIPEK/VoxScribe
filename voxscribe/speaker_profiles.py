@@ -83,11 +83,13 @@ def match_speakers(embeddings: dict, profiles: dict | None = None,
 
     Returns:
         certain: {"SPEAKER_00": "Jonas", ...} for speakers at or above
-        `threshold`. tentative: for the remaining speakers, the best name in
-        [tentative_threshold, threshold), never one already matched for
-        certain. Within each, a name is assigned to at most one speaker (best
-        match wins on conflicts), so two different speakers never
-        accidentally get the same name.
+        `threshold`. tentative: for the remaining speakers, their best name
+        if its similarity is in [tentative_threshold, threshold) and it isn't
+        taken - matched for certain or by a closer speaker; there is no
+        fallback to the next-best name. Within each, a name is assigned to at
+        most one speaker (best match wins on conflicts), so two different
+        speakers never accidentally get the same name. Every candidate at or
+        above tentative_threshold is logged with its similarity.
     """
     if profiles is None:
         profiles = load_profiles()
@@ -109,7 +111,18 @@ def match_speakers(embeddings: dict, profiles: dict | None = None,
 
     used_names: set = set()
     certain = _assign_names([c for c in candidates if c[0] >= threshold], set(), used_names)
-    tentative = _assign_names([c for c in candidates if c[0] < threshold], set(certain), used_names, "?")
+    # A Tentative match only ever offers a speaker's best name: if that one is
+    # taken (matched for certain, or by a closer speaker), there is none.
+    best: dict = {}
+    for sim, spk, name in candidates:
+        if spk not in best or sim > best[spk][0]:
+            best[spk] = (sim, spk, name)
+    tentative = _assign_names([c for c in best.values() if c[0] < threshold],
+                              set(certain), used_names, "?")
+    # Every candidate is logged, for calibrating the thresholds later.
+    for sim, spk, name in sorted(candidates, key=lambda x: x[0], reverse=True):
+        if certain.get(spk) != name and tentative.get(spk) != name:
+            print(f"     Voice print: {spk} -> {name} (similarity {sim:.2f}, not assigned)")
     return SpeakerMatches(certain, tentative)
 
 def enroll_speaker(name: str, embedding, profiles: dict | None = None) -> dict:

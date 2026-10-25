@@ -106,14 +106,24 @@ def test_voice_prints_only_for_speakers_with_ten_seconds_and_an_embedding():
     assert "voice print" in view.enroll_hint("SPEAKER_02")
 
 
-def test_a_merged_speaker_enrolls_only_its_long_enough_parts():
-    result = _result({"SPEAKER_00": 4, "SPEAKER_01": 30},
+def test_the_ten_seconds_count_for_the_whole_speaker_not_each_diarization_id():
+    result = _result({"SPEAKER_00": 6, "SPEAKER_01": 6.5},
                      embeddings={"SPEAKER_00": [0.1], "SPEAKER_01": [0.2]})
     view = SpeakerView(result, PALETTE)
     view.rename("SPEAKER_00", "Anna")
     view.rename("SPEAKER_01", "Anna")
 
-    assert view.voice_prints("Anna") == [[0.2]]
+    assert view.voice_prints("Anna") == [[0.2], [0.1]]
+    assert view.enroll_hint("Anna") is None
+
+
+def test_merging_two_short_speakers_by_name_enrolls_both():
+    result = _result({"SPEAKER_00": 6, "SPEAKER_01": 6.5},
+                     embeddings={"SPEAKER_00": [0.1], "SPEAKER_01": [0.2]})
+    view = SpeakerView(result, PALETTE)
+
+    assert view.apply_name("SPEAKER_01", "Anna") == []
+    assert view.apply_name("SPEAKER_00", "Anna") == [("Anna", [0.1]), ("Anna", [0.2])]
 
 
 def _tentative_result():

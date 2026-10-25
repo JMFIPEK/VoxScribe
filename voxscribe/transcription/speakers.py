@@ -40,13 +40,20 @@ def merge_stray_speakers(result: dict, speaker_embeddings: dict | None) -> dict[
     nearest neighbouring turn in time (previous or next, whichever is
     closer); nothing is deleted. Runs on raw Diarization IDs, after the
     track split and before voice-print matching, so a Stray speaker is never
-    recognized. Merged IDs are removed from `speaker_embeddings` (also
-    result["speaker_embeddings"]).
+    recognized. Every Diarization ID counts: one that has an embedding or a
+    word but wins no segment has 0 s of speech and is merged too. Merged IDs
+    are removed from `speaker_embeddings` (also result["speaker_embeddings"]).
 
-    Returns {stray_id: neighbour_id} for every merged speaker (if its turns
-    went to different neighbours, the last one)."""
+    Returns {stray_id: neighbour_id} for every merged speaker that had
+    segments or words (if they went to different neighbours, the last one)."""
     segments = result.get("segments", [])
+    word_segments = result.get("word_segments", []) or []
     speech: dict[str, float] = {}
+    for spk in [*(speaker_embeddings or {}), *(result.get("speaker_embeddings") or {}),
+                *(w.get("speaker") for w in word_segments),
+                *(w.get("speaker") for seg in segments for w in seg.get("words", []) or [])]:
+        if spk:
+            speech.setdefault(spk, 0.0)
     for seg in segments:
         spk = seg.get("speaker")
         if spk:
@@ -65,30 +72,32 @@ def merge_stray_speakers(result: dict, speaker_embeddings: dict | None) -> dict[
     moved: list[tuple[float, float, str, str]] = []  # (start, end, stray_id, neighbour)
     for seg in segments:
         spk = seg.get("speaker")
-        if spk not in stray:
-            continue
-        target = nearest(seg.get("start", 0.0), seg.get("end", 0.0))
-        seg["speaker"] = target
+        if spk in stray:
+            target = nearest(seg.get("start", 0.0), seg.get("end", 0.0))
+            seg["speaker"] = target
+            merged[spk] = target
+            moved.append((seg.get("start", 0.0), seg.get("end", 0.0), spk, target))
+        # A word labelled with a Stray speaker belongs to the turn around it.
         for w in seg.get("words", []) or []:
-            if w.get("speaker") == spk:
-                w["speaker"] = target
-        merged[spk] = target
-        moved.append((seg.get("start", 0.0), seg.get("end", 0.0), spk, target))
+            if w.get("speaker") in stray and seg.get("speaker"):
+                merged.setdefault(w["speaker"], seg["speaker"])
+                w["speaker"] = seg["speaker"]
 
     # Words outside the segments follow the turn they belong to.
-    for w in result.get("word_segments", []) or []:
+    for w in word_segments:
         spk = w.get("speaker")
         if spk not in stray:
             continue
         mid = (w.get("start", 0.0) + w.get("end", 0.0)) / 2
         w["speaker"] = next((target for a, b, s, target in moved if s == spk and a <= mid <= b),
                             None) or nearest(w.get("start", 0.0), w.get("end", 0.0))
+        merged.setdefault(spk, w["speaker"])
 
     for embeddings in (speaker_embeddings, result.get("speaker_embeddings")):
         for spk in stray:
             (embeddings or {}).pop(spk, None)
     print("     Stray speakers merged: " + ", ".join(
-        f"{spk} ({speech[spk]:.1f}s) -> {target}" for spk, target in sorted(merged.items())))
+        f"{spk} ({speech[spk]:.1f}s) -> {merged.get(spk, '-')}" for spk in sorted(stray)))
     return merged
 
 
@@ -99,7 +108,8 @@ def label_known_speakers(result: dict, speaker_embeddings: dict | None,
 
     Sets result["speaker_id_map"]: raw Diarization ID -> currently displayed
     Speaker label, so the GUI can find the right embedding when the user
-    confirms/corrects a name via the "remember" checkbox.
+    names a speaker (the name saves in place and the voice is enrolled,
+    unless the speaker has under 10 s of speech).
 
     A Tentative match is labelled "<Name>?" and recorded in
     result["tentative_speakers"]: Diarization ID -> name without the "?", so
@@ -112,12 +122,12 @@ def label_known_speakers(result: dict, speaker_embeddings: dict | None,
         try:
             from voxscribe.speaker_profiles import match_speakers
             matches = match_speakers(speaker_embeddings)
-            suggestions = dict(matches.certain)
+            labels = dict(matches.certain)
             tentative = dict(matches.tentative)
         except Exception:
-            suggestions = {}
-        suggestions.update({spk_id: f"{name}?" for spk_id, name in tentative.items()})
-        for spk_id, name in suggestions.items():
+            labels = {}
+        labels.update({spk_id: f"{name}?" for spk_id, name in tentative.items()})
+        for spk_id, name in labels.items():
             speaker_id_map[spk_id] = name
             for seg in result.get("segments", []):
                 if seg.get("speaker") == spk_id:
