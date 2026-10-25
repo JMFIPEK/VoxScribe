@@ -89,15 +89,14 @@ class TranscribeController(QObject):
 
         def _run():
             try:
-                from voxscribe.transcription.audio import probe_duration
-                duration = probe_duration(kwargs.get("audio_path", ""))
-                if duration:
-                    self.durationKnown.emit(duration)
                 # Import deliberately here in the background thread, not at
                 # module top - `transcriber` imports whisperx/torch, which
                 # can cold-take 1-3 minutes; in the GUI thread that would
                 # freeze the UI for the whole time.
-                from voxscribe.transcriber import transcribe
+                from voxscribe.transcriber import probe_duration, transcribe
+                duration = probe_duration(kwargs.get("audio_path", ""))
+                if duration:
+                    self.durationKnown.emit(duration)
                 result = transcribe(
                     on_progress=lambda pct, msg: self.progressUpdated.emit(pct, msg),
                     on_event=self._emit_event,

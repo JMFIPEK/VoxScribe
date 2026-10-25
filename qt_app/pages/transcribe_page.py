@@ -99,7 +99,7 @@ class TranscribePage(QWidget):
         self.file_label = QLabel("No file selected")
         self.file_label.setProperty("role", "muted")
         file_row.addWidget(self.file_label, 1)
-        self.browse_btn = QPushButton("Choose file(s)...")
+        self.browse_btn = QPushButton("Choose file...")
         file_row.addWidget(self.browse_btn)
 
         sep0 = QFrame()
@@ -456,7 +456,7 @@ class TranscribePage(QWidget):
         self.realtime_label.setText(realtime_line(result))
         self.realtime_label.setVisible(bool(self.realtime_label.text()))
         if self._selected_files:
-            self.playback.load(self._selected_files[0], self.timeline.timeline().duration)
+            self.playback.load(self._selected_files[0], result.get("duration") or 0.0)
             self.timeline.set_seekable(True)
 
     # ------------------------------------------------------------- header
@@ -465,7 +465,7 @@ class TranscribePage(QWidget):
         name = os.path.basename(self._selected_files[0]) if self._selected_files else ""
         count = len(self._speaker_view.speakers())
         parts = [name, f"{count} speaker{'s' if count != 1 else ''}",
-                 format_time_short(self.timeline.timeline().duration)]
+                 format_time_short(self._transcription_result.get("duration") or 0.0)]
         self.result_summary.setText("  ·  ".join(p for p in parts if p))
         self.result_summary.setToolTip(self._selected_files[0] if self._selected_files else "")
         self.opts_card.hide()

@@ -71,7 +71,7 @@ def probe_duration(audio_path: str) -> float | None:
     (for the Timeline's x axis while the pipeline runs). None if unknown."""
     try:
         return float(sf.info(audio_path).duration)
-    except Exception:
+    except Exception:  # noqa: BLE001 - not a libsndfile format, try PyAV
         pass
     try:
         import av
@@ -82,7 +82,7 @@ def probe_duration(audio_path: str) -> float | None:
                 return float(stream.duration * stream.time_base)
             if container.duration:
                 return container.duration / av.time_base
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unknown length only delays the Timeline's x axis
         pass
     return None
 

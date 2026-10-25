@@ -4,13 +4,16 @@ transcribe() only orchestrates; each stage is a named step below. Nothing
 here imports torch or whisperx at module load.
 """
 
+import copy
 import os
 import time
 
 from voxscribe.transcription import backends  # noqa: F401  (registers the built-in Backends)
 from voxscribe.transcription.align import align_by_language
 from voxscribe.transcription.audio import SAMPLE_RATE, AudioSource
-from voxscribe.transcription.backend import Backend, FallbackRequested, TranscribeRequest
+from voxscribe.transcription.backend import (
+    STEP_ALIGNMENT, STEP_SPEAKER_IDENTIFICATION, STEP_TRANSCRIPTION, Backend, FallbackRequested,
+    TranscribeRequest)
 from voxscribe.transcription.devices import resolve_device
 from voxscribe.transcription.diarize import run_diarization
 from voxscribe.transcription.model_ids import default_local_model_size
@@ -201,12 +204,14 @@ def transcribe(
             on_progress(pct, msg)
 
     def emit(kind, data):
+        # Deep copies: the GUI thread reads them later, while this thread's
+        # next steps keep editing the segments and their word lists in place.
         if on_event:
-            on_event(kind, data)
+            on_event(kind, copy.deepcopy(data))
 
     step_times = {}
     t0 = time.time()
-    emit("step", "transcription")
+    emit("step", STEP_TRANSCRIPTION)
     audio_source = AudioSource(audio_path)
     request = TranscribeRequest(
         audio_path=audio_path, audio=audio_source, language=language, model_id=model_size,
@@ -228,28 +233,29 @@ def transcribe(
             api_key=api_key, api_base_url=api_base_url, on_event=on_event,
         )
     audio = audio_source.load()
-    step_times["transcription"] = time.time() - t0
+    step_times[STEP_TRANSCRIPTION] = time.time() - t0
 
     if not backend.skips_alignment:
-        emit("step", "alignment")
+        emit("step", STEP_ALIGNMENT)
     t_step = time.time()
     result = _step_align(backend, result, audio, device, prog)
     if not backend.skips_alignment:
-        step_times["alignment"] = time.time() - t_step
-    # Copies: the GUI receives them later, while the next steps edit segments in place.
-    emit("aligned", [dict(seg) for seg in result["segments"]])
+        step_times[STEP_ALIGNMENT] = time.time() - t_step
+    emit("aligned", result["segments"])
 
     speakers_missing = None
     if diarize:
         identifies = bool(hf_token)  # without a token the step only reports it's skipped
         if identifies:
-            emit("step", "speaker_identification")
+            emit("step", STEP_SPEAKER_IDENTIFICATION)
         t_step = time.time()
         result, speakers_missing = _step_identify_speakers(
             result, audio_source, device, hf_token, min_speakers, max_speakers, prog)
+        if identifies:
+            # Timed also when it failed or found nobody: the total includes it.
+            step_times[STEP_SPEAKER_IDENTIFICATION] = time.time() - t_step
         if identifies and not speakers_missing:
-            step_times["speaker_identification"] = time.time() - t_step
-            emit("speaker_turns", [dict(seg) for seg in result["segments"]])
+            emit("speaker_turns", result["segments"])
     else:
         print("3/3  Diarization disabled")
         speakers_missing = "Speaker identification is turned off"

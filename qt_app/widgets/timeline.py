@@ -77,7 +77,7 @@ class Timeline(QWidget):
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt override
         x = event.position().x()
-        if self._seekable and event.button() == Qt.LeftButton and x >= self._track_left():
+        if self._seekable and event.button() == Qt.LeftButton and x >= self._lanes_left():
             self.seekRequested.emit(self.seconds_at(x))
         super().mousePressEvent(event)
 
@@ -87,24 +87,24 @@ class Timeline(QWidget):
         note = NOTE_HEIGHT if self._timeline.note else 0
         return 2 * PADDING + lanes * LANE_HEIGHT + (lanes - 1) * LANE_SPACING + note
 
-    def _track_left(self) -> float:
+    def _lanes_left(self) -> float:
         return LABEL_WIDTH
 
-    def _track_width(self) -> float:
+    def _lanes_width(self) -> float:
         return max(1.0, self.width() - LABEL_WIDTH - PADDING)
 
     def lane_rect(self, index: int) -> QRectF:
-        """Where lane `index` is drawn (the track part, without its label)."""
+        """Where lane `index` is drawn (the part right of its label)."""
         top = PADDING + index * (LANE_HEIGHT + LANE_SPACING)
-        return QRectF(self._track_left(), top, self._track_width(), LANE_HEIGHT)
+        return QRectF(self._lanes_left(), top, self._lanes_width(), LANE_HEIGHT)
 
     def x_of(self, seconds: float) -> float:
         duration = self._timeline.duration or 1.0
-        return self._track_left() + self._track_width() * max(0.0, min(seconds, duration)) / duration
+        return self._lanes_left() + self._lanes_width() * max(0.0, min(seconds, duration)) / duration
 
     def seconds_at(self, x: float) -> float:
         """The position in the recording under widget x (for seeking)."""
-        fraction = (x - self._track_left()) / self._track_width()
+        fraction = (x - self._lanes_left()) / self._lanes_width()
         return max(0.0, min(1.0, fraction)) * self._timeline.duration
 
     # ------------------------------------------------------------ painting
@@ -159,7 +159,7 @@ class Timeline(QWidget):
         if self._timeline.note:
             top = self._height() - PADDING - NOTE_HEIGHT
             painter.setPen(QColor(theme.TEXT_MUTED))
-            painter.drawText(QRectF(self._track_left(), top, self._track_width(), NOTE_HEIGHT),
+            painter.drawText(QRectF(self._lanes_left(), top, self._lanes_width(), NOTE_HEIGHT),
                              Qt.AlignVCenter | Qt.AlignLeft, self._timeline.note)
 
 

@@ -9,7 +9,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 from qt_app.speaker_view import SpeakerView
-from qt_app.timeline_model import SPEECH, Lane, Run, TimelineModel, timeline_from_result
+from qt_app.timeline_model import (
+    SPEECH, Lane, Run, TimelineModel, segment_span, timeline_from_result)
+from voxscribe.transcription.backend import (
+    STEP_ALIGNMENT, STEP_SPEAKER_IDENTIFICATION, STEP_TRANSCRIPTION)
 
 # transcribe()'s progress ranges: transcription covers 0-40% of on_progress.
 TRANSCRIPTION_SHARE = 0.40
@@ -17,9 +20,9 @@ TRANSCRIPTION_SHARE = 0.40
 WORD_GAP = 0.3
 
 STEP_NAMES = {
-    "transcription": "Transcription",
-    "alignment": "Alignment",
-    "speaker_identification": "Speaker identification",
+    STEP_TRANSCRIPTION: "Transcription",
+    STEP_ALIGNMENT: "Alignment",
+    STEP_SPEAKER_IDENTIFICATION: "Speaker identification",
 }
 
 
@@ -27,10 +30,11 @@ class TimelineProgress:
     """One run of the pipeline, fed its events in order; timeline() is what
     to draw right now."""
 
-    def __init__(self, duration: float | None, speech_color: str, palette: list[str] = ()):
+    def __init__(self, duration: float | None, speech_color: str,
+                 palette: list[str] | None = None):
         self._duration = duration or 0.0
         self._speech_color = speech_color
-        self._palette = list(palette) or [speech_color]
+        self._palette = list(palette or []) or [speech_color]
         self._step = None
         self._start_over()
 
@@ -47,7 +51,7 @@ class TimelineProgress:
     def step(self, name: str):
         """A step starts. A second "transcription" means the Provider failed
         and the local fallback starts over: what it streamed is dropped."""
-        if name == "transcription" and self._step is not None:
+        if name == STEP_TRANSCRIPTION and self._step is not None:
             self._start_over()
         self._step = name
 
@@ -56,7 +60,7 @@ class TimelineProgress:
 
     def segments(self, segments: list[dict]):
         """Text segments streamed by the Backend (Providers, Parakeet)."""
-        self._spans.extend(_span(seg) for seg in segments)
+        self._spans.extend(segment_span(seg) for seg in segments)
 
     def aligned(self, segments: list[dict]):
         """The authoritative segments with word timestamps: the lane goes
@@ -86,16 +90,12 @@ class TimelineProgress:
                              sweep=sweep, percent=percent, soft=not self._aligned)
 
 
-def _span(seg: dict) -> tuple[float, float]:
-    return float(seg.get("start", 0.0)), float(seg.get("end", 0.0))
-
-
 def _word_runs(seg: dict) -> list[tuple[float, float]]:
     """A segment's words as runs: words less than WORD_GAP apart join one
     run. Without word timestamps the segment stays one block."""
     words = [w for w in seg.get("words", []) if "start" in w and "end" in w]
     if not words:
-        return [_span(seg)]
+        return [segment_span(seg)]
     runs: list[tuple[float, float]] = []
     for word in words:
         start, end = float(word["start"]), float(word["end"])
