@@ -14,7 +14,7 @@ from voxscribe.paths import get_bundled_models_dir as _get_bundled_models_dir
 from voxscribe.transcription.align import align_by_language as _align_by_language
 from voxscribe.transcription.audio import (
     SAMPLE_RATE, AudioSource, _load_audio_via_container, load_audio_universal,
-    load_audio_without_ffmpeg,
+    load_audio_without_ffmpeg, probe_duration,
 )
 from voxscribe.transcription.backends.apple import detect_apple_language, transcribe_apple
 from voxscribe.transcription.backends.openvino import transcribe_openvino

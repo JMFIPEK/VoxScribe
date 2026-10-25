@@ -50,11 +50,11 @@ def timeline_from_result(result: dict, view: SpeakerView, speech_color: str = "#
     top, others = view.lanes()
 
     if not top:
-        runs = tuple(Run(*_span(seg), speech_color) for seg in segments)
+        runs = tuple(Run(*segment_span(seg), speech_color) for seg in segments)
         return TimelineModel(_duration(result, segments), (Lane(SPEECH, speech_color, runs),), note)
 
     def runs_of(labels):
-        return tuple(Run(*_span(seg), view.color_of(seg["speaker"]))
+        return tuple(Run(*segment_span(seg), view.color_of(seg["speaker"]))
                      for seg in segments if seg.get("speaker") in labels)
 
     lanes = [Lane(s.label, s.color, runs_of({s.label})) for s in top]
@@ -63,7 +63,8 @@ def timeline_from_result(result: dict, view: SpeakerView, speech_color: str = "#
     return TimelineModel(_duration(result, segments), tuple(lanes), note)
 
 
-def _span(seg: dict) -> tuple[float, float]:
+def segment_span(seg: dict) -> tuple[float, float]:
+    """A segment's (start, end) in seconds."""
     return float(seg.get("start", 0.0)), float(seg.get("end", 0.0))
 
 
