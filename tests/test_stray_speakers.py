@@ -7,6 +7,7 @@ import pytest
 import soundfile as sf
 
 from voxscribe import tracks, transcriber as t
+from voxscribe.speaker_profiles import SpeakerMatches
 from voxscribe.transcription import pipeline
 from voxscribe.transcription.registry import BackendRegistry
 
@@ -41,7 +42,7 @@ def run(tmp_path, monkeypatch):
 
     def match_speakers(embeddings):
         asked.extend(embeddings)
-        return {}
+        return SpeakerMatches(certain={}, tentative={})
 
     monkeypatch.setattr("voxscribe.speaker_profiles.match_speakers", match_speakers)
 
