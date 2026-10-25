@@ -114,3 +114,73 @@ def test_a_merged_speaker_enrolls_only_its_long_enough_parts():
     view.rename("SPEAKER_01", "Anna")
 
     assert view.voice_prints("Anna") == [[0.2]]
+
+
+def _tentative_result():
+    """SPEAKER_01 is a Tentative match for Jonas, shown as "Jonas?"."""
+    result = _result({"SPEAKER_00": 20, "SPEAKER_01": 30},
+                     embeddings={"SPEAKER_00": [0.1], "SPEAKER_01": [0.2]})
+    for seg in result["segments"]:
+        if seg["speaker"] == "SPEAKER_01":
+            seg["speaker"] = "Jonas?"
+            for word in seg["words"]:
+                word["speaker"] = "Jonas?"
+    result["speaker_id_map"]["SPEAKER_01"] = "Jonas?"
+    result["tentative_speakers"] = {"SPEAKER_01": "Jonas"}
+    return result
+
+
+def test_a_tentative_match_offers_its_name_for_confirmation():
+    view = SpeakerView(_tentative_result(), PALETTE)
+
+    assert view.tentative_name("Jonas?") == "Jonas"
+    assert view.tentative_name("SPEAKER_00") is None
+
+
+def test_confirming_a_tentative_match_drops_the_question_mark_and_enrolls_the_voice():
+    result = _tentative_result()
+    view = SpeakerView(result, PALETTE)
+
+    enrollments = view.confirm("Jonas?")
+
+    assert enrollments == [("Jonas", [0.2])]
+    assert result["speaker_id_map"]["SPEAKER_01"] == "Jonas"
+    assert [s["speaker"] for s in result["segments"]] == ["SPEAKER_00", "Jonas"]
+    assert result["tentative_speakers"] == {}
+    assert view.tentative_name("Jonas") is None
+
+
+def test_typing_another_name_replaces_a_tentative_match():
+    result = _tentative_result()
+    view = SpeakerView(result, PALETTE)
+
+    enrollments = view.apply_name("Jonas?", "Anna")
+
+    assert enrollments == [("Anna", [0.2])]
+    assert result["speaker_id_map"]["SPEAKER_01"] == "Anna"
+    assert result["tentative_speakers"] == {}
+    assert view.tentative_name("Anna") is None
+
+
+def test_confirming_a_short_tentative_speaker_relabels_but_does_not_enroll():
+    result = _tentative_result()
+    result["segments"][1]["end"] = result["segments"][1]["start"] + 6
+    view = SpeakerView(result, PALETTE)
+
+    assert view.confirm("Jonas?") == []
+    assert result["speaker_id_map"]["SPEAKER_01"] == "Jonas"
+
+
+def test_a_profile_is_never_named_with_a_trailing_question_mark():
+    view = SpeakerView(_result({"SPEAKER_00": 20}, embeddings={"SPEAKER_00": [0.1]}), PALETTE)
+
+    assert view.apply_name("SPEAKER_00", "Maria?") == [("Maria", [0.1])]
+
+
+def test_naming_a_speaker_enrolls_only_its_own_voice_prints_on_a_merge():
+    result = _result({"SPEAKER_00": 20, "SPEAKER_01": 30},
+                     embeddings={"SPEAKER_00": [0.1], "SPEAKER_01": [0.2]})
+    view = SpeakerView(result, PALETTE)
+    view.apply_name("SPEAKER_01", "Anna")
+
+    assert view.apply_name("SPEAKER_00", "Anna") == [("Anna", [0.1])]
