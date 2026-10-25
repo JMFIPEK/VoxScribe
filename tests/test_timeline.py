@@ -141,3 +141,29 @@ def test_widget_paints_the_plain_sweep_up_to_its_fraction(app):
     y = int(widget.lane_rect(0).center().y())
     swept, ahead = QColor(image.pixel(int(widget.x_of(20)), y)), QColor(image.pixel(int(widget.x_of(80)), y))
     assert swept != ahead
+
+
+def test_widget_draws_the_playhead_and_a_click_asks_to_seek_there(app):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor
+    from PySide6.QtTest import QTest
+    from qt_app import theme
+    from qt_app.widgets.timeline import Timeline
+
+    result = _result({"SPEAKER_00": 10, "SPEAKER_01": 30})
+    widget = Timeline()
+    widget.resize(800, widget.height())
+    widget.set_timeline(timeline_from_result(result, SpeakerView(result, PALETTE)))
+    seeks = []
+    widget.seekRequested.connect(seeks.append)
+
+    QTest.mouseClick(widget, Qt.LeftButton, pos=QPointF(widget.x_of(25), 10).toPoint())
+    assert seeks == []  # not before the result is in (set_seekable)
+
+    widget.set_seekable(True)
+    widget.set_playhead(25)
+    image = widget.grab().toImage()
+    assert QColor(image.pixel(int(widget.x_of(25)), int(widget.lane_rect(0).center().y()))) == QColor(theme.TEXT)
+
+    QTest.mouseClick(widget, Qt.LeftButton, pos=QPointF(widget.x_of(30), 10).toPoint())
+    assert seeks == [pytest.approx(30, abs=0.1)]

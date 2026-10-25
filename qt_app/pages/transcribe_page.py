@@ -1,11 +1,12 @@
 """Page "Transcription": pick a file, options, progress, then the result:
 compact header, Timeline, transcript blocks, speaker list (in-place
-renaming), export."""
+renaming), playback, export."""
 
 import os
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -33,7 +34,16 @@ from qt_app.pages.common import card, page_root
 from qt_app.speaker_view import SpeakerView
 from qt_app.timeline_model import timeline_from_result
 from qt_app.timeline_progress import TimelineProgress, realtime_line
-from qt_app.transcript_view import transcript_html, transcript_text
+from qt_app.transcript_view import (
+    longest_turn,
+    row_of_turn,
+    speaker_turns,
+    transcript_html,
+    transcript_text,
+    turn_at,
+    turn_of_row,
+)
+from qt_app.widgets.playback_bar import PlaybackBar
 from qt_app.widgets.speaker_list import SpeakerList
 from qt_app.widgets.timeline import Timeline
 
@@ -48,6 +58,10 @@ class TranscribePage(QWidget):
         self._speaker_view = None
         # What the Timeline shows while the pipeline runs (None otherwise).
         self._progress = None
+        # Turns of the rendered transcript and the one playing (index), for
+        # click-to-play and highlighting.
+        self._turns = []
+        self._playing_turn = None
         self._selected_files = []
         self._model_ids_by_display = {}
         self._hw_recommended_model = None
@@ -179,6 +193,9 @@ class TranscribePage(QWidget):
         # --- Actions ---
         bottom_row = QHBoxLayout()
         root.addLayout(bottom_row)
+        self.playback = PlaybackBar()
+        bottom_row.addWidget(self.playback)
+        bottom_row.addSpacing(12)
         self.save_btn = QPushButton("Save")
         self.save_btn.setEnabled(False)
         bottom_row.addWidget(self.save_btn)
@@ -290,6 +307,12 @@ class TranscribePage(QWidget):
         self.speaker_list.renameRequested.connect(self._rename_speaker)
         self.new_btn.clicked.connect(self._show_settings)
         self.speaker_list.confirmRequested.connect(self._confirm_speaker)
+        self.speaker_list.playRequested.connect(self._play_speaker)
+        self.timeline.seekRequested.connect(self.playback.play_from)
+        self.playback.positionChanged.connect(self._on_playback_position)
+        # Space toggles play/pause in the transcript; a click plays its block.
+        self.transcript_view.installEventFilter(self)
+        self.transcript_view.viewport().installEventFilter(self)
         self.save_btn.clicked.connect(self._save_transcript)
         self.copy_btn.clicked.connect(self._copy_transcript)
 
@@ -358,6 +381,11 @@ class TranscribePage(QWidget):
         self.status_label.setStyleSheet(f"color: {theme.ACCENT};")
         self.status_label.setText("Initializing transcription engine... (can take 1-2 minutes on first run)")
         self.transcript_view.clear()
+        self._turns, self._playing_turn = [], None
+        self.playback.unload()
+        # Loading mode: the Timeline shows progress and can't be clicked.
+        self.timeline.set_seekable(False)
+        self.timeline.set_playhead(None)
         self.speaker_frame.hide()
         self.save_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
@@ -427,6 +455,9 @@ class TranscribePage(QWidget):
         self._show_result_header()
         self.realtime_label.setText(realtime_line(result))
         self.realtime_label.setVisible(bool(self.realtime_label.text()))
+        if self._selected_files:
+            self.playback.load(self._selected_files[0], self.timeline.timeline().duration)
+            self.timeline.set_seekable(True)
 
     # ------------------------------------------------------------- header
     def _show_result_header(self):
@@ -465,6 +496,75 @@ class TranscribePage(QWidget):
         self.timeline.set_timeline(timeline_from_result(result, view, theme.TEXT_MUTED, note))
         self.timeline.show()
         self.transcript_view.setHtml(transcript_html(result, view))
+        self._turns = speaker_turns(result.get("segments", []))
+        # setHtml() built a new document; the highlight went with the old one.
+        playing, self._playing_turn = self._playing_turn, None
+        self._highlight_turn(playing, scroll=False)
+
+    # ----------------------------------------------------------- playback
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt override
+        if (obj is self.transcript_view and event.type() == QEvent.KeyPress
+                and event.key() == Qt.Key_Space and self.playback.is_loaded()):
+            self.playback.toggle()
+            return True
+        if (obj is self.transcript_view.viewport() and event.type() == QEvent.MouseButtonRelease
+                and event.button() == Qt.LeftButton
+                and not self.transcript_view.textCursor().hasSelection()):
+            self._play_block_at(event.position().toPoint())
+        return super().eventFilter(obj, event)
+
+    def _transcript_table(self):
+        frames = self.transcript_view.document().rootFrame().childFrames()
+        return frames[0] if frames else None
+
+    def _play_block_at(self, pos):
+        """A click in the transcript plays the block under it from its start."""
+        table = self._transcript_table()
+        if table is None or not self._turns:
+            return
+        position = self.transcript_view.cursorForPosition(pos).position()
+        # Checked first: QTextTable.cellAt() crashes on a position outside it.
+        if not table.firstPosition() <= position <= table.lastPosition():
+            return
+        cell = table.cellAt(position)
+        if not cell.isValid():
+            return
+        index = turn_of_row(cell.row())
+        if index < len(self._turns):
+            self.playback.play_from(self._turns[index].start)
+
+    def _play_speaker(self, label):
+        turn = longest_turn(self._turns, label)
+        if turn is not None:
+            self.playback.play_from(turn.start, until=turn.end)
+
+    def _on_playback_position(self, seconds):
+        self.timeline.set_playhead(seconds)
+        index = turn_at(self._turns, seconds)
+        if index != self._playing_turn:
+            self._highlight_turn(index, scroll=True)
+
+    def _highlight_turn(self, index, scroll):
+        """Highlights the block of turn `index` (None: none) through the cell
+        backgrounds of its table row; the colour bar keeps its colour."""
+        table = self._transcript_table()
+        if table is None:
+            self._playing_turn = None
+            return
+        for turn, background in ((self._playing_turn, QBrush()),
+                                 (index, QBrush(QColor(theme.SURFACE_ALT)))):
+            if turn is None or row_of_turn(turn) >= table.rows():
+                continue
+            for column in range(1, table.columns()):
+                cell = table.cellAt(row_of_turn(turn), column)
+                fmt = cell.format().toTableCellFormat()
+                fmt.setBackground(background)
+                cell.setFormat(fmt)
+        self._playing_turn = index
+        if scroll and index is not None and row_of_turn(index) < table.rows():
+            cursor = table.cellAt(row_of_turn(index), table.columns() - 1).firstCursorPosition()
+            self.transcript_view.setTextCursor(cursor)
+            self.transcript_view.ensureCursorVisible()
 
     def _copy_transcript(self):
         text = transcript_text(self._transcription_result) if self._transcription_result else ""
