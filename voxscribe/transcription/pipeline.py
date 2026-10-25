@@ -15,7 +15,8 @@ from voxscribe.transcription.devices import resolve_device
 from voxscribe.transcription.diarize import run_diarization
 from voxscribe.transcription.model_ids import default_local_model_size
 from voxscribe.transcription.registry import default_registry
-from voxscribe.transcription.speakers import append_file_result, label_known_speakers, split_by_track
+from voxscribe.transcription.speakers import (
+    append_file_result, label_known_speakers, merge_stray_speakers, split_by_track)
 from voxscribe.paths import get_bundled_models_dir
 
 # Must be set before the first MPS op: pyannote/wav2vec2 use a few ops that
@@ -81,7 +82,8 @@ def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_devic
                             hf_token: str | None, min_speakers: int | None,
                             max_speakers: int | None, prog) -> dict:
     """Step 3 (progress 65-100%): who speaks when - diarization, the
-    microphone/system track split, then voice-print recognition."""
+    microphone/system track split, the Stray speaker merge, then voice-print
+    recognition."""
     if not hf_token:
         print("3/3  Diarization skipped (no HF_TOKEN set)")
         print("     Set HF_TOKEN in .env for speaker recognition")
@@ -94,6 +96,8 @@ def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_devic
     result, speaker_embeddings = run_diarization(
         result, audio_source.load(), torch_device, hf_token, min_speakers, max_speakers, prog)
     split_speakers = split_by_track(result, audio_source)
+    for stray in merge_stray_speakers(result, speaker_embeddings):
+        split_speakers.pop(stray, None)
     label_known_speakers(result, speaker_embeddings, split_speakers)
 
     t5 = time.time()
