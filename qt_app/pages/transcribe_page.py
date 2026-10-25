@@ -281,12 +281,13 @@ class TranscribePage(QWidget):
 
     def _browse_file(self):
         start_dir = self.window_.settings.get("output_dir") or "recordings"
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select audio or video file(s)", start_dir,
+        # One file only; several files are merged by the CLI (`-i` repeated).
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select audio or video file", start_dir,
             "Audio & video (*.wav *.mp3 *.m4a *.flac *.ogg *.mkv *.mp4 *.mov *.webm *.avi);;"
             "All files (*.*)")
-        if paths:
-            self._selected_files = paths
+        if path:
+            self._selected_files = [path]
             self._update_file_display()
 
     def _update_file_display(self):
@@ -294,12 +295,9 @@ class TranscribePage(QWidget):
         if not files:
             self.file_label.setText("No file selected")
             self.file_label.setToolTip("")
-        elif len(files) == 1:
+        else:
             self.file_label.setText(files[0])
             self.file_label.setToolTip(files[0])
-        else:
-            self.file_label.setText(f"{len(files)} files selected (will be merged)")
-            self.file_label.setToolTip("\n".join(files))
         self._on_files_changed()
 
     def _on_files_changed(self):
@@ -358,16 +356,7 @@ class TranscribePage(QWidget):
             device=device,
         )
 
-        # With multiple files: transcribe_multi() (see transcriber.py)
-        # transcribes them in sequence and merges the results into one
-        # continuous transcript (timestamps shifted, per-file speaker label
-        # disambiguation - see its docstring). With exactly one file, still
-        # deliberately the normal single-file path, so behavior/labels stay
-        # unchanged from before this feature existed.
-        if len(files) == 1:
-            self.window_.transcribe_controller.start(audio_path=files[0], **common_kwargs)
-        else:
-            self.window_.transcribe_controller.start_multi(audio_paths=files, **common_kwargs)
+        self.window_.transcribe_controller.start(audio_path=files[0], **common_kwargs)
 
     @staticmethod
     def _parse_int(text):
@@ -455,8 +444,6 @@ class TranscribePage(QWidget):
         formats = [fmt for fmt, cb in self.format_checks.items() if cb.isChecked()] or ["txt"]
         first_file = self._selected_files[0] if self._selected_files else "transcript"
         base = os.path.splitext(first_file)[0]
-        if len(self._selected_files) > 1:
-            base += "_combined"
         saved = save_transcript(self._transcription_result, base, formats=formats)
         if saved:
             self.status_label.show()

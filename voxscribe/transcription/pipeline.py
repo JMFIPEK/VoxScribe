@@ -229,7 +229,7 @@ def transcribe_multi(
 ) -> dict:
     """Transcribes multiple audio/video files in sequence (via `transcribe()`,
     unchanged) and merges the results into one continuous transcript - for the
-    multi-file selection in the Transcription tab (qt_app/pages/transcribe_page.py).
+    CLI's repeated `-i` (`python main.py transcribe -i a.wav -i b.wav`).
 
     Each file's timestamps are shifted by the cumulative duration of the
     preceding files, so the combined transcript has one continuous timeline
