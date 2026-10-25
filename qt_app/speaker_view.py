@@ -99,14 +99,49 @@ class SpeakerView:
         ids = self._ids_of(label)
         return self._colors[ids[0]] if ids else None
 
+    def tentative_name(self, label: str) -> str | None:
+        """The name a Tentative match `label` ("Jonas?") offers for
+        confirmation ("Jonas"), or None if `label` isn't one."""
+        tentative = self._result.get("tentative_speakers") or {}
+        for raw_id in self._ids_of(label):
+            name = tentative.get(raw_id)
+            if name and label == f"{name}?":
+                return name
+        return None
+
+    def confirm(self, label: str) -> list[tuple[str, object]]:
+        """Accepts the Tentative match `label`: "Jonas?" becomes "Jonas" and
+        its voice is enrolled like for a typed name (see apply_name())."""
+        name = self.tentative_name(label)
+        return self.apply_name(label, name) if name else []
+
+    def apply_name(self, label: str, new_name: str) -> list[tuple[str, object]]:
+        """Names `label` (see rename()) and returns the (profile name,
+        embedding) pairs to enroll: only this speaker's own voice prints
+        (on a merge the other speaker's are already in the profile), and
+        never under a profile name ending in "?"."""
+        new_name = new_name.strip()
+        if not new_name or new_name == label:
+            return []
+        voice_prints = self.voice_prints(label)
+        self.rename(label, new_name)
+        profile_name = new_name.rstrip("?").strip()
+        if not profile_name:
+            return []
+        return [(profile_name, embedding) for embedding in voice_prints]
+
     def rename(self, label: str, new_name: str) -> None:
         """Relabels every segment/word of `label` and its speaker_id_map
         entries. A new_name that is already another speaker's label merges
-        the two: both Diarization IDs then map to the same Speaker label."""
+        the two: both Diarization IDs then map to the same Speaker label.
+        A renamed speaker is no Tentative match any more."""
         new_name = new_name.strip()
         if not new_name or new_name == label:
             return
         result = self._result
+        tentative = result.get("tentative_speakers") or {}
+        for raw_id in self._ids_of(label):
+            tentative.pop(raw_id, None)
         for seg in result.get("segments", []):
             if seg.get("speaker") == label:
                 seg["speaker"] = new_name

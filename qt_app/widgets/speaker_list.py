@@ -1,6 +1,7 @@
 """Speaker list on the right of the Transcription tab (spec #40, #45): one
-row per speaker, ranked by share, with in-place renaming. Shows what a
-SpeakerView says; applying a name is left to the page (renameRequested)."""
+row per speaker, ranked by share, with in-place renaming and a check mark
+for a Tentative match (#47). Shows what a SpeakerView says; applying a name
+is left to the page (renameRequested, confirmRequested)."""
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -45,7 +46,7 @@ class _NameEdit(QLineEdit):
 
 
 class _SpeakerRow(QWidget):
-    def __init__(self, speaker, hint, on_rename):
+    def __init__(self, speaker, hint, tentative, on_rename, on_confirm):
         super().__init__()
         self._speaker = speaker
         self._on_rename = on_rename
@@ -64,6 +65,11 @@ class _SpeakerRow(QWidget):
         self._name = QLabel(speaker.label)
         self._name.setStyleSheet(f"color: {speaker.color};")
         self._name.setToolTip(speaker.label)
+        if tentative:
+            font = self._name.font()
+            font.setItalic(True)
+            self._name.setFont(font)
+            self._name.setToolTip(f"Probably {tentative}")
         self._row.addWidget(self._name, 1)
 
         share = QLabel(f"{speaker.share * 100:.0f}%")
@@ -71,6 +77,15 @@ class _SpeakerRow(QWidget):
         self._row.addWidget(share)
 
         # The play button (longest turn) goes here with the playback ticket.
+        self._check = None
+        if tentative:
+            self._check = QToolButton()
+            self._check.setText("✓")
+            self._check.setToolTip(f"Yes, this is {tentative}")
+            self._check.setAutoRaise(True)
+            self._check.clicked.connect(lambda: on_confirm(speaker.label))
+            self._row.addWidget(self._check)
+
         self._pencil = QToolButton()
         self._pencil.setText("✏")
         self._pencil.setToolTip("Rename")
@@ -86,6 +101,8 @@ class _SpeakerRow(QWidget):
     def _start_edit(self):
         self._name.hide()
         self._pencil.hide()
+        if self._check:
+            self._check.hide()
         edit = _NameEdit(self._speaker.label)
         edit.applied.connect(lambda name: self._on_rename(self._speaker.label, name))
         edit.cancelled.connect(lambda: self._end_edit(edit, save))
@@ -107,10 +124,13 @@ class _SpeakerRow(QWidget):
         save.deleteLater()
         self._name.show()
         self._pencil.show()
+        if self._check:
+            self._check.show()
 
 
 class SpeakerList(QWidget):
     renameRequested = Signal(str, str)  # current Speaker label, typed name
+    confirmRequested = Signal(str)      # Speaker label of a Tentative match
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -139,5 +159,7 @@ class SpeakerList(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         for speaker in view.speakers():
-            row = _SpeakerRow(speaker, view.enroll_hint(speaker.label), self.renameRequested.emit)
+            row = _SpeakerRow(speaker, view.enroll_hint(speaker.label),
+                              view.tentative_name(speaker.label),
+                              self.renameRequested.emit, self.confirmRequested.emit)
             self._rows.insertWidget(self._rows.count() - 1, row)

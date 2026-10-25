@@ -265,6 +265,7 @@ class TranscribePage(QWidget):
         if self.model_combo is not None:
             self.model_combo.currentTextChanged.connect(self._update_pipeline_info)
         self.speaker_list.renameRequested.connect(self._rename_speaker)
+        self.speaker_list.confirmRequested.connect(self._confirm_speaker)
         self.save_btn.clicked.connect(self._save_transcript)
         self.copy_btn.clicked.connect(self._copy_transcript)
 
@@ -466,16 +467,23 @@ class TranscribePage(QWidget):
         has no embedding, and re-renders transcript and list right away."""
         name = name.strip()
         if name and name != label:
-            import voxscribe.speaker_profiles as speaker_profiles
-
-            # Only this speaker's own voice prints: on a merge the other
-            # speaker's are already in the profile.
-            voice_prints = self._speaker_view.voice_prints(label)
-            self._speaker_view.rename(label, name)
-            for embedding in voice_prints:
-                speaker_profiles.enroll_speaker(name, embedding)
+            self._enroll(self._speaker_view.apply_name(label, name))
             self._render_transcript()
         self._populate_speaker_list()
+
+    def _confirm_speaker(self, label):
+        """The check mark of a Tentative match: "Jonas?" becomes "Jonas"
+        and the voice is remembered like for a typed name."""
+        self._enroll(self._speaker_view.confirm(label))
+        self._render_transcript()
+        self._populate_speaker_list()
+
+    @staticmethod
+    def _enroll(enrollments):
+        import voxscribe.speaker_profiles as speaker_profiles
+
+        for name, embedding in enrollments:
+            speaker_profiles.enroll_speaker(name, embedding)
 
     def on_page_shown(self):
         self._refresh_model_choices()
