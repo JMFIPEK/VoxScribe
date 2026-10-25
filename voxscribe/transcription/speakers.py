@@ -36,16 +36,24 @@ def label_known_speakers(result: dict, speaker_embeddings: dict | None,
 
     Sets result["speaker_id_map"]: raw Diarization ID -> currently displayed
     Speaker label, so the GUI can find the right embedding when the user
-    confirms/corrects a name via the "remember" checkbox."""
+    confirms/corrects a name via the "remember" checkbox.
+
+    A Tentative match is labelled "<Name>?" and recorded in
+    result["tentative_speakers"]: Diarization ID -> name without the "?", so
+    the GUI can offer to confirm it. Exports write the label as shown."""
     speaker_id_map = {spk: spk for spk in (speaker_embeddings or {})}
     for new_spk in split_speakers:
         speaker_id_map[new_spk] = new_spk
+    tentative: dict[str, str] = {}
     if speaker_embeddings:
         try:
             from voxscribe.speaker_profiles import match_speakers
-            suggestions = match_speakers(speaker_embeddings)
+            matches = match_speakers(speaker_embeddings)
+            suggestions = dict(matches.certain)
+            tentative = dict(matches.tentative)
         except Exception:
             suggestions = {}
+        suggestions.update({spk_id: f"{name}?" for spk_id, name in tentative.items()})
         for spk_id, name in suggestions.items():
             speaker_id_map[spk_id] = name
             for seg in result.get("segments", []):
@@ -55,6 +63,7 @@ def label_known_speakers(result: dict, speaker_embeddings: dict | None,
                 if word.get("speaker") == spk_id:
                     word["speaker"] = name
     result["speaker_id_map"] = speaker_id_map
+    result["tentative_speakers"] = tentative
 
 
 def append_file_result(combined: dict, result: dict, idx: int, n_files: int, offset: float) -> None:
