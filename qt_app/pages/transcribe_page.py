@@ -1,11 +1,11 @@
-"""Page "Transcription": pick file(s), options, progress, result, speaker
-list (in-place renaming), export."""
+"""Page "Transcription": pick a file, options, progress, then the result:
+compact header, Timeline, transcript blocks, speaker list (in-place
+renaming), export."""
 
 import os
 import sys
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -32,7 +32,10 @@ from qt_app.constants import (
 )
 from qt_app.pages.common import card, page_root
 from qt_app.speaker_view import SpeakerView
+from qt_app.timeline_model import timeline_from_result
+from qt_app.transcript_view import transcript_html, transcript_text
 from qt_app.widgets.speaker_list import SpeakerList
+from qt_app.widgets.timeline import Timeline
 
 
 class TranscribePage(QWidget):
@@ -60,8 +63,20 @@ class TranscribePage(QWidget):
         root.addWidget(header)
 
         # --- File + options: one card, since they belong together ---
-        opts_card, opts_layout = card("AUDIO FILE & SETTINGS")
-        root.addWidget(opts_card)
+        self.opts_card, opts_layout = card("AUDIO FILE & SETTINGS")
+        root.addWidget(self.opts_card)
+
+        # Once the result is in, the card above shrinks to this one line, so
+        # the Timeline and transcript get the height.
+        self.result_header, header_layout = card()
+        header_row = QHBoxLayout()
+        header_layout.addLayout(header_row)
+        self.result_summary = QLabel("")
+        header_row.addWidget(self.result_summary, 1)
+        self.new_btn = QPushButton("New transcription")
+        header_row.addWidget(self.new_btn)
+        self.result_header.hide()
+        root.addWidget(self.result_header)
 
         file_row = QHBoxLayout()
         opts_layout.addLayout(file_row)
@@ -128,6 +143,10 @@ class TranscribePage(QWidget):
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.hide()
         root.addWidget(self.status_label)
+
+        self.timeline = Timeline()
+        self.timeline.hide()
+        root.addWidget(self.timeline)
 
         # --- Transcript + speaker list: side by side rather than stacked,
         # so neither has to fight the other for height (previously the
@@ -265,6 +284,7 @@ class TranscribePage(QWidget):
         if self.model_combo is not None:
             self.model_combo.currentTextChanged.connect(self._update_pipeline_info)
         self.speaker_list.renameRequested.connect(self._rename_speaker)
+        self.new_btn.clicked.connect(self._show_settings)
         self.save_btn.clicked.connect(self._save_transcript)
         self.copy_btn.clicked.connect(self._copy_transcript)
 
@@ -330,6 +350,8 @@ class TranscribePage(QWidget):
         self.status_label.setStyleSheet(f"color: {theme.ACCENT};")
         self.status_label.setText("Initializing transcription engine... (can take 1-2 minutes on first run)")
         self.transcript_view.clear()
+        self.timeline.hide()
+        self.speaker_frame.hide()
         self.save_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
 
@@ -391,45 +413,47 @@ class TranscribePage(QWidget):
         self.copy_btn.setEnabled(True)
         self._render_transcript()
         self._populate_speaker_list()
+        self._show_result_header()
+
+    # ------------------------------------------------------------- header
+    def _show_result_header(self):
+        """Shrinks the settings card to: file name · N speakers · length."""
+        name = os.path.basename(self._selected_files[0]) if self._selected_files else ""
+        count = len(self._speaker_view.speakers())
+        parts = [name, f"{count} speaker{'s' if count != 1 else ''}",
+                 format_time_short(self.timeline.timeline().duration)]
+        self.result_summary.setText("  ·  ".join(p for p in parts if p))
+        self.result_summary.setToolTip(self._selected_files[0] if self._selected_files else "")
+        self.opts_card.hide()
+        self.start_btn.hide()
+        self.status_label.hide()
+        self.result_header.show()
+
+    def _show_settings(self):
+        """"New transcription": brings the settings card back; the last
+        result stays visible until the next one starts."""
+        self.result_header.hide()
+        self.opts_card.show()
+        self.start_btn.show()
 
     # ------------------------------------------------------------- render
     def _render_transcript(self):
-        """Rebuilds the transcript text entirely from self._transcription_result.
-        Deliberately no targeted text replacement on rename - the result dict
-        is the single source of truth here, the text field is a pure
-        read-only display."""
+        """Rebuilds Timeline and transcript entirely from
+        self._transcription_result. Deliberately no targeted text replacement
+        on rename - the result dict is the single source of truth here, both
+        are pure read-only displays."""
         result = self._transcription_result
         if not result:
             return
 
-        self.transcript_view.clear()
-        cursor = self.transcript_view.textCursor()
-        default_fmt = QTextCharFormat()
-        default_fmt.setForeground(QColor(theme.TEXT))
-
-        for seg in result.get("segments", []):
-            start = format_time_short(seg.get("start", 0))
-            end = format_time_short(seg.get("end", 0))
-            text = seg.get("text", "").strip()
-            speaker = seg.get("speaker", "")
-
-            cursor.movePosition(QTextCursor.End)
-            cursor.setCharFormat(default_fmt)
-            cursor.insertText(f"[{start} - {end}] ")
-
-            if speaker:
-                color = self._speaker_view.color_of(speaker) or theme.TEXT
-                speaker_fmt = QTextCharFormat()
-                speaker_fmt.setForeground(QColor(color))
-                cursor.setCharFormat(speaker_fmt)
-                cursor.insertText(f"{speaker}: ")
-                cursor.setCharFormat(default_fmt)
-                cursor.insertText(f"{text}\n")
-            else:
-                cursor.insertText(f"{text}\n")
+        view = self._speaker_view
+        note = "" if view.speakers() else "No speakers identified"
+        self.timeline.set_timeline(timeline_from_result(result, view, theme.TEXT_MUTED, note))
+        self.timeline.show()
+        self.transcript_view.setHtml(transcript_html(result, view))
 
     def _copy_transcript(self):
-        text = self.transcript_view.toPlainText().strip()
+        text = transcript_text(self._transcription_result) if self._transcription_result else ""
         if text:
             QApplication.clipboard().setText(text)
             self.status_label.show()
