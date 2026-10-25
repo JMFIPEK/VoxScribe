@@ -33,9 +33,11 @@ DANGER_HOVER = "#e74c3c"
 SUCCESS = "#27ae60"
 SUCCESS_HOVER = "#2ecc71"
 
+# Assigned per Diarization ID in order of speaking time and then kept (see
+# qt_app/speaker_view.py); colours repeat beyond 12 speakers.
 SPEAKER_COLOR_PALETTE = [
-    "#e74c3c", "#3498db", "#2ecc71", "#f1c40f", "#9b59b6",
-    "#1abc9c", "#e67e22", "#00bcd4", "#ff6b9d", "#95a5a6",
+    "#e74c3c", "#3498db", "#2ecc71", "#f1c40f", "#9b59b6", "#1abc9c",
+    "#e67e22", "#00bcd4", "#ff6b9d", "#c0ca33", "#7986cb", "#95a5a6",
 ]
 
 

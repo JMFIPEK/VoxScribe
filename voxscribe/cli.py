@@ -12,6 +12,7 @@ Commands:
     python main.py record --mode call            Call: playback + microphone
                           [--setup headset|loudspeaker]
     python main.py transcribe --input audio.wav  Start transcription
+                          [-i more.wav ...]       several files, one transcript
     python main.py run --mode call               Record + transcribe
 """
 
@@ -122,23 +123,27 @@ def _cli_progress(state):
 
 
 def cmd_transcribe(args):
-    """Transcribes an audio file."""
+    """Transcribes an audio file, or several (`-i` repeated) into one merged
+    transcript, see transcriber.transcribe_multi()."""
     # Must happen before the first torch import, see voxscribe/gpu_setup.py.
     from voxscribe import gpu_setup
     gpu_setup.ensure_correct_torch_backend()
 
-    from voxscribe.transcriber import default_model_size, transcribe, save_transcript
+    from voxscribe.transcriber import (
+        default_model_size, transcribe, transcribe_multi, save_transcript)
 
-    if not os.path.isfile(args.input):
-        print(f"File not found: {args.input}")
-        sys.exit(1)
+    # `cmd_run` sets a single path, the parser a list.
+    inputs = [args.input] if isinstance(args.input, str) else args.input
+    for path in inputs:
+        if not os.path.isfile(path):
+            print(f"File not found: {path}")
+            sys.exit(1)
 
     hf_token = args.hf_token or os.getenv("HF_TOKEN") or None
     language = None if args.language.lower() == "auto" else args.language
     model = args.model or default_model_size()
 
-    result = transcribe(
-        audio_path=args.input,
+    common = dict(
         language=language,
         model_size=model,
         diarize=args.diarize,
@@ -151,11 +156,15 @@ def cmd_transcribe(args):
         api_base_url=args.api_base_url,
         on_progress=_cli_progress({}),
     )
+    if len(inputs) == 1:
+        result = transcribe(audio_path=inputs[0], **common)
+    else:
+        result = transcribe_multi(audio_paths=inputs, **common)
 
-    # Determine output path
+    # Determine output path (several inputs: next to the first one)
     output = args.output
     if not output:
-        base = os.path.splitext(args.input)[0]
+        base = os.path.splitext(inputs[0])[0]
         output = base
 
     formats = [f.strip() for f in args.format.split(",")]
@@ -197,7 +206,10 @@ def main():
 
     # --- transcribe ---
     sub_transcribe = subparsers.add_parser("transcribe", help="Transcribe audio")
-    sub_transcribe.add_argument("--input", "-i", required=True, help="Audio file")
+    sub_transcribe.add_argument(
+        "--input", "-i", required=True, action="append",
+        help="Audio file. Repeat (-i a.wav -i b.wav) for one merged transcript"
+    )
     sub_transcribe.add_argument(
         "--language", "-l", default="auto",
         help="Language (e.g. en, de) or 'auto' for automatic detection. Default: auto"
