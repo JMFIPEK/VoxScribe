@@ -1,5 +1,5 @@
 """Page "Transcription": pick file(s), options, progress, result, speaker
-rename, export."""
+list (in-place renaming), export."""
 
 import os
 import sys
@@ -12,13 +12,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QProgressBar,
-    QScrollArea,
     QSplitter,
     QTextEdit,
-    QVBoxLayout,
     QWidget,
     QApplication,
 )
@@ -34,6 +31,8 @@ from qt_app.constants import (
     format_time_short,
 )
 from qt_app.pages.common import card, page_root
+from qt_app.speaker_view import SpeakerView
+from qt_app.widgets.speaker_list import SpeakerList
 
 
 class TranscribePage(QWidget):
@@ -41,9 +40,9 @@ class TranscribePage(QWidget):
         super().__init__()
         self.window_ = window
         self._transcription_result = None
-        self._speaker_colors = {}
-        self._speaker_entries = {}
-        self._speaker_remember_checks = {}
+        # Colours/ranks/shares of the current result; built once when it
+        # arrives, so a rename never reshuffles the colours.
+        self._speaker_view = None
         self._selected_files = []
         self._model_ids_by_display = {}
         self._hw_recommended_model = None
@@ -130,7 +129,7 @@ class TranscribePage(QWidget):
         self.status_label.hide()
         root.addWidget(self.status_label)
 
-        # --- Transcript + speaker rename: side by side rather than stacked,
+        # --- Transcript + speaker list: side by side rather than stacked,
         # so neither has to fight the other for height (previously the
         # speaker card left the transcript text field almost no visible
         # space once more than 1-2 speakers were detected). Both areas use
@@ -151,24 +150,8 @@ class TranscribePage(QWidget):
         self.content_splitter.setStretchFactor(1, 1)
         self.content_splitter.setSizes([700, 260])
 
-        speaker_header = QHBoxLayout()
-        speaker_outer.addLayout(speaker_header)
-        speaker_title = QLabel("Rename speakers")
-        speaker_title.setStyleSheet("font-weight: 600;")
-        speaker_header.addWidget(speaker_title)
-        speaker_header.addStretch(1)
-        self.apply_names_btn = QPushButton("Apply")
-        speaker_header.addWidget(self.apply_names_btn)
-
-        self.speaker_scroll = QScrollArea()
-        self.speaker_scroll.setWidgetResizable(True)
-        speaker_outer.addWidget(self.speaker_scroll, 1)
-        self.speaker_entries_widget = QWidget()
-        self.speaker_entries_layout = QVBoxLayout(self.speaker_entries_widget)
-        self.speaker_entries_layout.setContentsMargins(0, 0, 0, 0)
-        self.speaker_entries_layout.setSpacing(4)
-        self.speaker_entries_layout.addStretch(1)
-        self.speaker_scroll.setWidget(self.speaker_entries_widget)
+        self.speaker_list = SpeakerList()
+        speaker_outer.addWidget(self.speaker_list, 1)
 
         # --- Actions ---
         bottom_row = QHBoxLayout()
@@ -281,7 +264,7 @@ class TranscribePage(QWidget):
         self.start_btn.clicked.connect(self.start_transcription)
         if self.model_combo is not None:
             self.model_combo.currentTextChanged.connect(self._update_pipeline_info)
-        self.apply_names_btn.clicked.connect(self._apply_speaker_names)
+        self.speaker_list.renameRequested.connect(self._rename_speaker)
         self.save_btn.clicked.connect(self._save_transcript)
         self.copy_btn.clicked.connect(self._copy_transcript)
 
@@ -403,10 +386,11 @@ class TranscribePage(QWidget):
         self.status_label.setStyleSheet(f"color: {theme.SUCCESS};")
         self.status_label.setText("Transcription complete!")
         self._transcription_result = result
+        self._speaker_view = SpeakerView(result, theme.SPEAKER_COLOR_PALETTE)
         self.save_btn.setEnabled(True)
         self.copy_btn.setEnabled(True)
         self._render_transcript()
-        self._populate_speaker_entries()
+        self._populate_speaker_list()
 
     # ------------------------------------------------------------- render
     def _render_transcript(self):
@@ -417,17 +401,6 @@ class TranscribePage(QWidget):
         result = self._transcription_result
         if not result:
             return
-        speaker_id_map = result.get("speaker_id_map") or {}
-        label_to_raw_id = {label: raw_id for raw_id, label in speaker_id_map.items()}
-
-        labels = sorted({
-            seg.get("speaker") for seg in result.get("segments", [])
-            if seg.get("speaker")
-        })
-        self._speaker_colors = {
-            label_to_raw_id.get(label, label): theme.SPEAKER_COLOR_PALETTE[i % len(theme.SPEAKER_COLOR_PALETTE)]
-            for i, label in enumerate(labels)
-        }
 
         self.transcript_view.clear()
         cursor = self.transcript_view.textCursor()
@@ -445,8 +418,7 @@ class TranscribePage(QWidget):
             cursor.insertText(f"[{start} - {end}] ")
 
             if speaker:
-                raw_id = label_to_raw_id.get(speaker, speaker)
-                color = self._speaker_colors.get(raw_id, theme.TEXT)
+                color = self._speaker_view.color_of(speaker) or theme.TEXT
                 speaker_fmt = QTextCharFormat()
                 speaker_fmt.setForeground(QColor(color))
                 cursor.setCharFormat(speaker_fmt)
@@ -467,7 +439,6 @@ class TranscribePage(QWidget):
     def _save_transcript(self):
         if not self._transcription_result:
             return
-        self._apply_speaker_names()
 
         from voxscribe.transcriber import save_transcript
         formats = [fmt for fmt, cb in self.format_checks.items() if cb.isChecked()] or ["txt"]
@@ -479,121 +450,32 @@ class TranscribePage(QWidget):
             self.status_label.setStyleSheet(f"color: {theme.SUCCESS};")
             self.status_label.setText(f"Saved: {', '.join(saved)}")
 
-    # ------------------------------------------------------ speaker rename
-    def _populate_speaker_entries(self):
-        while self.speaker_entries_layout.count() > 1:
-            item = self.speaker_entries_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._speaker_entries = {}
-        self._speaker_remember_checks = {}
-
-        result = self._transcription_result
-        if not result:
+    # -------------------------------------------------------- speaker list
+    def _populate_speaker_list(self):
+        view = self._speaker_view
+        if view is None or not view.speakers():
             self.speaker_frame.hide()
             return
-
-        speaker_id_map = result.get("speaker_id_map")
-        embeddings = result.get("speaker_embeddings") or {}
-
-        if speaker_id_map:
-            rows = sorted(speaker_id_map.items(), key=lambda kv: kv[1])
-        else:
-            labels = sorted({
-                seg.get("speaker") for seg in result.get("segments", [])
-                if seg.get("speaker")
-            })
-            rows = [(label, label) for label in labels]
-
-        if not rows:
-            self.speaker_frame.hide()
-            return
-
-        # Each row: label + "remember" checkbox on top, input field below
-        # (full width) - fits the narrow column next to the transcript this
-        # way (instead of one wide row with label+input+checkbox side by side).
-        for raw_id, current_label in rows:
-            row_widget = QWidget()
-            row_layout = QVBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 6)
-            row_layout.setSpacing(2)
-
-            top_row = QHBoxLayout()
-            row_layout.addLayout(top_row)
-
-            color = self._speaker_colors.get(raw_id, theme.TEXT)
-            lbl = QLabel(current_label)
-            lbl.setStyleSheet(f"color: {color};")
-            top_row.addWidget(lbl)
-            top_row.addStretch(1)
-
-            if raw_id in embeddings:
-                remember_check = QCheckBox("remember")
-                remember_check.setChecked(True)
-                top_row.addWidget(remember_check)
-                self._speaker_remember_checks[raw_id] = remember_check
-
-            entry = QLineEdit()
-            entry.setPlaceholderText("Enter name")
-            if raw_id != current_label:
-                entry.setText(current_label)
-            row_layout.addWidget(entry)
-            self._speaker_entries[raw_id] = entry
-
-            self.speaker_entries_layout.insertWidget(
-                self.speaker_entries_layout.count() - 1, row_widget)
-
+        self.speaker_list.show_view(view)
         self.speaker_frame.show()
 
-    def _get_speaker_mapping(self):
-        mapping = {}
-        for raw_id, entry in self._speaker_entries.items():
-            name = entry.text().strip()
-            if name:
-                mapping[raw_id] = name
-        return mapping
+    def _rename_speaker(self, label, name):
+        """Applies a name typed in the speaker list: relabels the result (a
+        name another speaker already has merges the two, see
+        SpeakerView.rename()), remembers the voice unless it is too short or
+        has no embedding, and re-renders transcript and list right away."""
+        name = name.strip()
+        if name and name != label:
+            import voxscribe.speaker_profiles as speaker_profiles
 
-    def _apply_speaker_names(self):
-        """The single place that applies speaker renames - writes to
-        result['segments']/['word_segments']/['speaker_id_map'] and
-        optionally remembers the voice in speaker_profiles. The full
-        transcript text is then re-rendered (see _render_transcript)."""
-        mapping = self._get_speaker_mapping()
-        if not mapping or not self._transcription_result:
-            return
-
-        import voxscribe.speaker_profiles as speaker_profiles
-
-        result = self._transcription_result
-        speaker_id_map = result.setdefault("speaker_id_map", {})
-        embeddings = result.get("speaker_embeddings") or {}
-
-        for raw_id, new_name in mapping.items():
-            old_label = speaker_id_map.get(raw_id, raw_id)
-            if old_label == new_name:
-                continue
-
-            for seg in result.get("segments", []):
-                if seg.get("speaker") == old_label:
-                    seg["speaker"] = new_name
-                for word in seg.get("words", []) or []:
-                    if word.get("speaker") == old_label:
-                        word["speaker"] = new_name
-            for word in result.get("word_segments", []) or []:
-                if word.get("speaker") == old_label:
-                    word["speaker"] = new_name
-
-            speaker_id_map[raw_id] = new_name
-
-            remember_check = self._speaker_remember_checks.get(raw_id)
-            if remember_check is not None and remember_check.isChecked() and raw_id in embeddings:
-                speaker_profiles.enroll_speaker(new_name, embeddings[raw_id])
-
-        self._render_transcript()
-        self._populate_speaker_entries()
-        self.status_label.show()
-        self.status_label.setStyleSheet(f"color: {theme.SUCCESS};")
-        self.status_label.setText("Speaker names applied!")
+            # Only this speaker's own voice prints: on a merge the other
+            # speaker's are already in the profile.
+            voice_prints = self._speaker_view.voice_prints(label)
+            self._speaker_view.rename(label, name)
+            for embedding in voice_prints:
+                speaker_profiles.enroll_speaker(name, embedding)
+            self._render_transcript()
+        self._populate_speaker_list()
 
     def on_page_shown(self):
         self._refresh_model_choices()
