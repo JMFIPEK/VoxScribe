@@ -1,7 +1,8 @@
 """Speaker list on the right of the Transcription tab (spec #40, #45): one
 row per speaker, ranked by share, with in-place renaming and a check mark
-for a Tentative match (#47). Shows what a SpeakerView says; applying a name
-is left to the page (renameRequested, confirmRequested)."""
+for a Tentative match (#47) and a play button (#48). Shows what a
+SpeakerView says; applying a name and playing are left to the page
+(renameRequested, confirmRequested, playRequested)."""
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -46,7 +47,7 @@ class _NameEdit(QLineEdit):
 
 
 class _SpeakerRow(QWidget):
-    def __init__(self, speaker, hint, tentative, on_rename, on_confirm):
+    def __init__(self, speaker, hint, tentative, on_rename, on_confirm, on_play):
         super().__init__()
         self._speaker = speaker
         self._on_rename = on_rename
@@ -76,7 +77,13 @@ class _SpeakerRow(QWidget):
         share.setProperty("role", "muted")
         self._row.addWidget(share)
 
-        # The play button (longest turn) goes here with the playback ticket.
+        play = QToolButton()
+        play.setText("▶")
+        play.setToolTip("Play this speaker's longest turn")
+        play.setAutoRaise(True)
+        play.clicked.connect(lambda: on_play(speaker.label))
+        self._row.addWidget(play)
+
         self._check = None
         if tentative:
             self._check = QToolButton()
@@ -131,6 +138,7 @@ class _SpeakerRow(QWidget):
 class SpeakerList(QWidget):
     renameRequested = Signal(str, str)  # current Speaker label, typed name
     confirmRequested = Signal(str)      # Speaker label of a Tentative match
+    playRequested = Signal(str)         # Speaker label: play its longest turn
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -161,5 +169,6 @@ class SpeakerList(QWidget):
         for speaker in view.speakers():
             row = _SpeakerRow(speaker, view.enroll_hint(speaker.label),
                               view.tentative_name(speaker.label),
-                              self.renameRequested.emit, self.confirmRequested.emit)
+                              self.renameRequested.emit, self.confirmRequested.emit,
+                              self.playRequested.emit)
             self._rows.insertWidget(self._rows.count() - 1, row)

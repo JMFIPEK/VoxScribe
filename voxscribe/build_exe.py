@@ -53,6 +53,10 @@ def get_hidden_imports():
         "scipy.signal",
         "numpy",
         "PySide6",
+        # Playback in the Transcription tab (qt_app/widgets/playback_bar.py)
+        # imports QtMultimedia lazily; naming it lets PyInstaller's PySide6
+        # hook bundle the multimedia plugins (FFmpeg backend) with it.
+        "PySide6.QtMultimedia",
         "dotenv",
         "psutil",
         "PIL",
