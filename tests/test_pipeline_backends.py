@@ -83,3 +83,64 @@ def test_other_backend_errors_propagate(registry, wav):
 
     with pytest.raises(ValueError, match="boom"):
         t.transcribe(wav, model_size="fake:1", diarize=False, device="cpu")
+
+
+class StreamingBackend(FakeBackend):
+    """Streams two segments as it goes, and needs the alignment step."""
+    skips_alignment = False
+
+    def transcribe(self, request):
+        segments = [{"start": 0.0, "end": 0.4, "text": "hello"},
+                    {"start": 0.5, "end": 0.9, "text": "there"}]
+        for seg in segments:
+            request.on_segments([dict(seg)])
+        return {"segments": segments, "language": "en"}
+
+
+@pytest.fixture
+def fake_models(monkeypatch):
+    """Alignment and speaker identification without any model."""
+    def align(result, audio, device, model_dir, cache_only, progress_callback=None):
+        return dict(result, segments=[dict(s, words=[]) for s in result["segments"]])
+
+    def diarize(result, audio, device, hf_token, min_speakers, max_speakers, prog):
+        segments = [dict(s, speaker=f"SPEAKER_0{i}") for i, s in enumerate(result["segments"])]
+        return dict(result, segments=segments), {}
+
+    monkeypatch.setattr(pipeline, "align_by_language", align)
+    monkeypatch.setattr(pipeline, "run_diarization", diarize)
+    monkeypatch.setattr(pipeline, "split_by_track", lambda result, source: set())
+    monkeypatch.setattr(pipeline, "label_known_speakers", lambda result, emb, split: None)
+
+
+def test_events_arrive_in_step_order(registry, wav, fake_models):
+    registry.register("fake:", StreamingBackend)
+    events = []
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu",
+                          on_event=lambda kind, data: events.append((kind, data)))
+
+    assert [kind if kind != "step" else data for kind, data in events] == [
+        "transcription", "segments", "segments",
+        "alignment", "aligned",
+        "speaker_identification", "speaker_turns",
+    ]
+    assert [seg["text"] for _, segs in events[1:3] for seg in segs] == ["hello", "there"]
+    assert all("words" in seg for seg in events[4][1])
+    assert [seg["speaker"] for seg in events[6][1]] == ["SPEAKER_00", "SPEAKER_01"]
+    assert set(result["step_times"]) == {"transcription", "alignment", "speaker_identification"}
+    assert all(seconds >= 0 for seconds in result["step_times"].values())
+    assert result["total_time"] >= sum(result["step_times"].values())
+
+
+def test_skipped_steps_are_not_announced_or_timed(registry, wav):
+    registry.register("fake:", FakeBackend)  # word timestamps already there, no streaming
+    events = []
+
+    result = t.transcribe(wav, model_size="fake:1", diarize=False, device="cpu",
+                          on_event=lambda kind, data: events.append((kind, data)))
+
+    assert [kind for kind, _ in events] == ["step", "aligned"]
+    assert events[0][1] == "transcription"
+    assert [seg["text"] for seg in events[1][1]] == ["hi"]
+    assert set(result["step_times"]) == {"transcription"}

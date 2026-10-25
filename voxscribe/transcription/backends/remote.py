@@ -166,6 +166,7 @@ def transcribe_remote(
     chunk_seconds: float = REMOTE_CHUNK_SECONDS,
     on_progress=None,
     timeout: float = 1800.0,
+    on_segments=None,
 ) -> dict:
     """Sends audio in chunks to any OpenAI-compatible transcription endpoint.
 
@@ -194,6 +195,9 @@ def transcribe_remote(
     wav2vec2 model per segment (see _align_by_language()).
 
     If `language` is given, it's sent with every chunk, as before.
+
+    `on_segments(segments)` gets each chunk's segments as soon as they arrive
+    (before the language refinement, which may still replace some of them).
 
     Returns a dict in WhisperX format ({"segments": [...], "language": ...})
     that can be fed into alignment and diarization afterward. "language" is
@@ -224,6 +228,8 @@ def transcribe_remote(
                       f"using {REMOTE_TEXT_ONLY_CHUNK_SECONDS:.0f}s chunks")
         chunks.append({"start": offset, "end": end, "segments": segments,
                        "language": own_language})
+        if on_segments and segments:
+            on_segments([dict(seg) for seg in segments])
         if on_progress:
             on_progress(min(end / max(total_samples, 1), 1.0))
         offset = end
@@ -363,7 +369,7 @@ class RemoteBackend:
             return transcribe_remote(
                 audio, request.language, model_name,
                 api_key=resolved_api_key, base_url=resolved_base_url,
-                on_progress=_progress,
+                on_progress=_progress, on_segments=request.on_segments,
             )
         except Exception as e:
             raise FallbackRequested(str(e)) from e

@@ -30,7 +30,7 @@ def test_parakeet_backend_is_registered_and_describes_itself():
 def test_parakeet_backend_maps_progress_into_its_slice(tmp_path, monkeypatch):
     from voxscribe.transcription.backends import parakeet
 
-    def fake(audio, language, model_size, on_progress=None):
+    def fake(audio, language, model_size, on_progress=None, on_segments=None):
         assert len(audio) == 16000 and (language, model_size) == ("de", "parakeet:tdt-0.6b-v3")
         on_progress(0.5)
         return {"segments": [], "language": "de"}
@@ -43,6 +43,37 @@ def test_parakeet_backend_maps_progress_into_its_slice(tmp_path, monkeypatch):
     assert result == {"segments": [], "language": "de"}
     assert events == [(0.0, "Loading audio..."), (0.05, "Loading Parakeet model..."),
                       (0.225, "Transcribing... 50%")]
+
+
+def test_parakeet_backend_streams_each_segment(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    recognized = [types.SimpleNamespace(start=0.0, end=0.4, text=" hallo "),
+                  types.SimpleNamespace(start=0.4, end=0.5, text=""),  # VAD speech, no text
+                  types.SimpleNamespace(start=0.5, end=0.9, text="welt")]
+    streamed = []
+
+    class FakeModel:
+        def with_vad(self, vad, **kw):
+            return self
+
+        def recognize(self, audio, sample_rate):
+            for seg in recognized:
+                yield seg
+                streamed.append("next")  # marks where the following segment starts
+
+    onnx_asr = types.SimpleNamespace(load_model=lambda *a, **kw: FakeModel(),
+                                     load_vad=lambda *a, **kw: object())
+    monkeypatch.setitem(sys.modules, "onnx_asr", onnx_asr)
+    request, _ = _request(tmp_path, "parakeet:tdt-0.6b-v3", language="de",
+                          on_segments=streamed.append)
+
+    result = default_registry.resolve(request.model_id).transcribe(request)
+
+    assert streamed == [[{"start": 0.0, "end": 0.4, "text": "hallo"}], "next", "next",
+                        [{"start": 0.5, "end": 0.9, "text": "welt"}], "next"]
+    assert [s["text"] for s in result["segments"]] == ["hallo", "welt"]
 
 
 def test_openvino_backend_describes_itself():
@@ -204,6 +235,32 @@ def test_transcribe_remote_shifts_chunks_and_tags_the_language(monkeypatch):
     assert [(s["start"], s["language"]) for s in result["segments"]] == [
         (0.0, "de"), (pytest.approx(26.05), "de")]
     assert result["language"] == "de"
+
+
+def test_remote_backend_streams_each_chunk(tmp_path, monkeypatch):
+    from voxscribe.transcription.backends import remote
+
+    monkeypatch.setattr("voxscribe.providers.get_provider", lambda pid: PROVIDER)
+    sent = []
+
+    def fake_chunk(chunk, language, model_name, api_key, base_url, timeout=0):
+        sent.append(len(chunk))
+        return [{"start": 0.0, "end": 1.0, "text": f"chunk {len(sent)}"}], None, True
+
+    monkeypatch.setattr(remote, "_transcribe_chunk_with_backoff", fake_chunk)
+    path = str(tmp_path / "long.wav")
+    sf.write(path, np.zeros(40 * 16000, dtype=np.float32), 16000)
+    streamed = []
+    request = TranscribeRequest(
+        audio_path=path, audio=AudioSource(path), language="de", model_id="server:p1",
+        progress=lambda pct, msg: None,
+        on_segments=lambda segs: streamed.append((len(sent), segs)))
+
+    default_registry.resolve(request.model_id).transcribe(request)
+
+    # Each chunk's segments arrive right after its request, in absolute times.
+    assert [(n, [(s["start"], s["text"]) for s in segs]) for n, segs in streamed] == [
+        (1, [(0.0, "chunk 1")]), (2, [(pytest.approx(26.05), "chunk 2")])]
 
 
 def test_transcribe_remote_requires_an_api_key():
