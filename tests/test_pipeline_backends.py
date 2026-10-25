@@ -144,3 +144,47 @@ def test_skipped_steps_are_not_announced_or_timed(registry, wav):
     assert events[0][1] == "transcription"
     assert [seg["text"] for seg in events[1][1]] == ["hi"]
     assert set(result["step_times"]) == {"transcription"}
+
+
+# --- why there are no speakers (the Timeline's note, #49) --------------------
+
+def test_no_token_says_why_speakers_are_missing(registry, wav, fake_models):
+    registry.register("fake:", FakeBackend)
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token=None, device="cpu")
+
+    assert "token" in result["speakers_missing"].lower()
+
+
+def test_disabled_speaker_identification_says_so(registry, wav):
+    registry.register("fake:", FakeBackend)
+
+    result = t.transcribe(wav, model_size="fake:1", diarize=False, device="cpu")
+
+    assert "off" in result["speakers_missing"].lower()
+
+
+def test_failed_speaker_identification_keeps_the_transcript(registry, wav, fake_models,
+                                                           monkeypatch):
+    registry.register("fake:", FakeBackend)
+
+    def broken(*args):
+        raise RuntimeError("license not accepted")
+
+    monkeypatch.setattr(pipeline, "run_diarization", broken)
+    events = []
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu",
+                          on_event=lambda kind, data: events.append(kind))
+
+    assert [seg["text"] for seg in result["segments"]] == ["hi"]
+    assert "license not accepted" in result["speakers_missing"]
+    assert "speaker_turns" not in events
+
+
+def test_identified_speakers_leave_no_reason(registry, wav, fake_models):
+    registry.register("fake:", FakeBackend)
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu")
+
+    assert "speakers_missing" not in result

@@ -102,6 +102,8 @@ Transcription (voxscribe/transcription/pipeline.py, via the voxscribe/transcribe
 Output: TXT, SRT, JSON
 ```
 
+**Step events (#44, used by the Timeline, #49):** besides `on_progress(pct, msg)`, `transcribe(..., on_event=None)` calls `on_event(kind, data)`: `"step"` (`"transcription"`/`"alignment"`/`"speaker_identification"`; skipped steps aren't announced; a second `"transcription"` = Provider fallback, drop what was streamed), `"segments"` (streamed text segments, Providers/Parakeet only), `"aligned"` (authoritative segments with words, always sent), `"speaker_turns"` (only if speaker identification succeeded). `TranscribeController` re-emits them as `stepStarted`/`segmentsStreamed`/`segmentsAligned`/`speakerTurnsReady`, plus `durationKnown` (file length from the header, `transcription.audio.probe_duration()`, before the run). The result carries `step_times` ({step: seconds}), `total_time`, `duration`, and `speakers_missing` (why there are no speakers: no HF token, turned off, failed - a diarization error no longer fails the transcription). `qt_app/timeline_progress.py` (`TimelineProgress`, pure) turns the events into the `TimelineModel` the Timeline draws while running (plain sweep for non-streaming Backends, soft segment blocks, word runs after alignment, Speaker lanes after the turns) and `realtime_line()` formats the "× realtime" line; the Transcription tab has no `QProgressBar` anymore.
+
 ### Key Design Patterns
 
 - **Sequential model loading**: Models are loaded/unloaded sequentially (Whisper → Alignment → Diarization) to minimize VRAM usage

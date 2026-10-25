@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QProgressBar,
     QSplitter,
     QTextEdit,
     QWidget,
@@ -34,6 +33,7 @@ from qt_app.constants import (
 from qt_app.pages.common import card, page_root
 from qt_app.speaker_view import SpeakerView
 from qt_app.timeline_model import timeline_from_result
+from qt_app.timeline_progress import TimelineProgress, realtime_line
 from qt_app.transcript_view import (
     longest_turn,
     row_of_turn,
@@ -56,6 +56,8 @@ class TranscribePage(QWidget):
         # Colours/ranks/shares of the current result; built once when it
         # arrives, so a rename never reshuffles the colours.
         self._speaker_view = None
+        # What the Timeline shows while the pipeline runs (None otherwise).
+        self._progress = None
         # Turns of the rendered transcript and the one playing (index), for
         # click-to-play and highlighting.
         self._turns = []
@@ -147,20 +149,22 @@ class TranscribePage(QWidget):
         self.start_btn.setEnabled(False)
         root.addWidget(self.start_btn)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 1000)
-        self.progress_bar.hide()
-        root.addWidget(self.progress_bar)
-
         self.status_label = QLabel("")
         self.status_label.setProperty("role", "muted")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.hide()
         root.addWidget(self.status_label)
 
+        # The Timeline is also the loading bar while the pipeline runs.
         self.timeline = Timeline()
         self.timeline.hide()
         root.addWidget(self.timeline)
+
+        # "× realtime" per step and total, under the Timeline.
+        self.realtime_label = QLabel("")
+        self.realtime_label.setProperty("role", "hint")
+        self.realtime_label.hide()
+        root.addWidget(self.realtime_label)
 
         # --- Transcript + speaker list: side by side rather than stacked,
         # so neither has to fight the other for height (previously the
@@ -315,6 +319,11 @@ class TranscribePage(QWidget):
         tc = self.window_.transcribe_controller
         tc.progressUpdated.connect(self._on_progress)
         tc.finished.connect(self._on_finished)
+        tc.durationKnown.connect(lambda seconds: self._feed_progress("set_duration", seconds))
+        tc.stepStarted.connect(lambda step: self._feed_progress("step", step))
+        tc.segmentsStreamed.connect(lambda segs: self._feed_progress("segments", segs))
+        tc.segmentsAligned.connect(lambda segs: self._feed_progress("aligned", segs))
+        tc.speakerTurnsReady.connect(lambda segs: self._feed_progress("speaker_turns", segs))
 
     # --------------------------------------------------------------- file
     def set_audio_file(self, path: str):
@@ -360,25 +369,23 @@ class TranscribePage(QWidget):
             return
 
         self.start_btn.hide()
-        # Indeterminate progress (no min/max) until the first real percentage
-        # comes in - see _on_progress(). Model/engine load time (whisperx/
-        # torch import, model weights) can take 1-3 minutes, especially on
-        # the first run, DURING which there's no progress value yet; without
-        # this indicator the app looks frozen during that time (this import
-        # deliberately runs in TranscribeController's background thread, not
-        # here synchronously - the GUI stays responsive, but without visual
-        # feedback it still looked like a freeze).
-        self.progress_bar.setRange(0, 0)
-        self.progress_bar.show()
+        # The Timeline is the loading bar (qt_app/timeline_progress.py): an
+        # empty grey lane at 0% until the first step reports. Model/engine
+        # load time (whisperx/torch import, model weights) can take 1-3
+        # minutes on the first run, hence the status text below.
+        self._progress = TimelineProgress(None, theme.TEXT_MUTED, theme.SPEAKER_COLOR_PALETTE)
+        self.timeline.set_timeline(self._progress.timeline())
+        self.timeline.show()
+        self.realtime_label.hide()
         self.status_label.show()
         self.status_label.setStyleSheet(f"color: {theme.ACCENT};")
         self.status_label.setText("Initializing transcription engine... (can take 1-2 minutes on first run)")
         self.transcript_view.clear()
         self._turns, self._playing_turn = [], None
         self.playback.unload()
+        # Loading mode: the Timeline shows progress and can't be clicked.
         self.timeline.set_seekable(False)
         self.timeline.set_playhead(None)
-        self.timeline.hide()
         self.speaker_frame.hide()
         self.save_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
@@ -416,19 +423,23 @@ class TranscribePage(QWidget):
             return None
 
     def _on_progress(self, pct, message):
-        if self.progress_bar.maximum() == 0:
-            # First real progress value - switch from the indeterminate
-            # "loading bar" (see start_transcription()) to a normal percentage.
-            self.progress_bar.setRange(0, 1000)
-        self.progress_bar.setValue(int(pct * 1000))
+        self._feed_progress("progress", pct)
         self.status_label.setText(message)
 
+    def _feed_progress(self, event, data):
+        """Hands one pipeline event to the running TimelineProgress and
+        redraws the Timeline from it."""
+        if self._progress is None:
+            return
+        getattr(self._progress, event)(data)
+        self.timeline.set_timeline(self._progress.timeline())
+
     def _on_finished(self, result, error):
-        self.progress_bar.hide()
-        self.progress_bar.setRange(0, 1000)
+        self._progress = None
         self.start_btn.show()
 
         if error:
+            self.timeline.hide()
             self.status_label.setStyleSheet(f"color: {theme.DANGER};")
             self.status_label.setText(f"Error: {error}")
             return
@@ -442,6 +453,8 @@ class TranscribePage(QWidget):
         self._render_transcript()
         self._populate_speaker_list()
         self._show_result_header()
+        self.realtime_label.setText(realtime_line(result))
+        self.realtime_label.setVisible(bool(self.realtime_label.text()))
         if self._selected_files:
             self.playback.load(self._selected_files[0], self.timeline.timeline().duration)
             self.timeline.set_seekable(True)
@@ -478,7 +491,8 @@ class TranscribePage(QWidget):
             return
 
         view = self._speaker_view
-        note = "" if view.speakers() else "No speakers identified"
+        # The pipeline says why there are no speakers (no token, failed, off).
+        note = "" if view.speakers() else result.get("speakers_missing") or "No speakers identified"
         self.timeline.set_timeline(timeline_from_result(result, view, theme.TEXT_MUTED, note))
         self.timeline.show()
         self.transcript_view.setHtml(transcript_html(result, view))
