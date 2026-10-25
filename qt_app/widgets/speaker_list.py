@@ -5,6 +5,7 @@ SpeakerView says; applying a name and playing are left to the page
 (renameRequested, confirmRequested, playRequested)."""
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QSizePolicy
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -66,6 +67,9 @@ class _SpeakerRow(QWidget):
         self._name = QLabel(speaker.label)
         self._name.setStyleSheet(f"color: {speaker.color};")
         self._name.setToolTip(speaker.label)
+        # A long name shrinks with the column instead of widening the list.
+        self._name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._name.setMinimumWidth(40)
         if tentative:
             font = self._name.font()
             font.setItalic(True)
@@ -103,6 +107,7 @@ class _SpeakerRow(QWidget):
         if hint:
             hint_label = QLabel(hint)
             hint_label.setProperty("role", "hint")
+            hint_label.setWordWrap(True)
             outer.addWidget(hint_label)
 
     def _start_edit(self):
@@ -152,6 +157,8 @@ class SpeakerList(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        # Rows always fit the column's width; only the height scrolls.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer.addWidget(scroll, 1)
         rows_widget = QWidget()
         self._rows = QVBoxLayout(rows_widget)

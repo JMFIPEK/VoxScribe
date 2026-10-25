@@ -69,14 +69,11 @@ class TranscribeController(QObject):
     progressUpdated = Signal(float, str)
     started = Signal()
     finished = Signal(object, object)  # result dict or None, error text or None
-    # The pipeline's step events for the Timeline (see transcribe()'s on_event).
+    # The pipeline's step events (see transcribe()'s on_event).
     stepStarted = Signal(str)  # "transcription", "alignment", "speaker_identification"
     segmentsStreamed = Signal(object)  # new text segments, from streaming Backends
     segmentsAligned = Signal(object)  # all segments, with word timestamps
     speakerTurnsReady = Signal(object)  # the final segments with "speaker"
-    # The recording length from the file header, before the pipeline starts
-    # (the Timeline's x axis while it runs); not sent if it can't be read.
-    durationKnown = Signal(float)
 
     _EVENT_SIGNALS = {"step": "stepStarted", "segments": "segmentsStreamed",
                       "aligned": "segmentsAligned", "speaker_turns": "speakerTurnsReady"}
@@ -93,10 +90,7 @@ class TranscribeController(QObject):
                 # module top - `transcriber` imports whisperx/torch, which
                 # can cold-take 1-3 minutes; in the GUI thread that would
                 # freeze the UI for the whole time.
-                from voxscribe.transcriber import probe_duration, transcribe
-                duration = probe_duration(kwargs.get("audio_path", ""))
-                if duration:
-                    self.durationKnown.emit(duration)
+                from voxscribe.transcriber import transcribe
                 result = transcribe(
                     on_progress=lambda pct, msg: self.progressUpdated.emit(pct, msg),
                     on_event=self._emit_event,

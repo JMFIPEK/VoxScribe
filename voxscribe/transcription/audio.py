@@ -66,27 +66,6 @@ def load_audio_universal(audio_path: str) -> np.ndarray:
         return _load_audio_via_container(audio_path)
 
 
-def probe_duration(audio_path: str) -> float | None:
-    """The file's length in seconds from its header, without decoding it
-    (for the Timeline's x axis while the pipeline runs). None if unknown."""
-    try:
-        return float(sf.info(audio_path).duration)
-    except Exception:  # noqa: BLE001 - not a libsndfile format, try PyAV
-        pass
-    try:
-        import av
-
-        with av.open(audio_path) as container:
-            stream = next((s for s in container.streams if s.type == "audio"), None)
-            if stream is not None and stream.duration and stream.time_base:
-                return float(stream.duration * stream.time_base)
-            if container.duration:
-                return container.duration / av.time_base
-    except Exception:  # noqa: BLE001 - an unknown length only delays the Timeline's x axis
-        pass
-    return None
-
-
 class AudioSource:
     """An audio file that is decoded at most once, however many pipeline
     stages (Backend, alignment, diarization, track split) ask for the samples.

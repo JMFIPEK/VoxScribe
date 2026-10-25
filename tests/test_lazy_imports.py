@@ -52,7 +52,7 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "qt_app.constants",
     "qt_app.speaker_view",
     "qt_app.timeline_model",
-    "qt_app.timeline_progress",
+    "qt_app.step_timing",
     "qt_app.transcript_view",
 ])
 def test_cheap_module_stays_light(module):

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QTextEdit,
@@ -33,7 +34,7 @@ from qt_app.constants import (
 from qt_app.pages.common import card, page_root
 from qt_app.speaker_view import SpeakerView
 from qt_app.timeline_model import timeline_from_result
-from qt_app.timeline_progress import TimelineProgress, realtime_line
+from qt_app.step_timing import STEP_NAMES, realtime_line
 from qt_app.transcript_view import (
     longest_turn,
     row_of_turn,
@@ -56,8 +57,8 @@ class TranscribePage(QWidget):
         # Colours/ranks/shares of the current result; built once when it
         # arrives, so a rename never reshuffles the colours.
         self._speaker_view = None
-        # What the Timeline shows while the pipeline runs (None otherwise).
-        self._progress = None
+        # Display name of the running pipeline step, for the status line.
+        self._step = ""
         # Turns of the rendered transcript and the one playing (index), for
         # click-to-play and highlighting.
         self._turns = []
@@ -87,6 +88,11 @@ class TranscribePage(QWidget):
         self.result_header, header_layout = card()
         header_row = QHBoxLayout()
         header_layout.addLayout(header_row)
+        # Play/pause sits in front of the file name, as in the who-said-what
+        # reference - it plays exactly this file.
+        self.playback = PlaybackBar()
+        header_row.addWidget(self.playback)
+        header_row.addSpacing(8)
         self.result_summary = QLabel("")
         header_row.addWidget(self.result_summary, 1)
         self.new_btn = QPushButton("New transcription")
@@ -155,7 +161,15 @@ class TranscribePage(QWidget):
         self.status_label.hide()
         root.addWidget(self.status_label)
 
-        # The Timeline is also the loading bar while the pipeline runs.
+        # While the pipeline runs: a plain progress bar; the step's name and
+        # message go to status_label above.
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.hide()
+        root.addWidget(self.progress_bar)
+
+        # The result's Timeline, under the header.
         self.timeline = Timeline()
         self.timeline.hide()
         root.addWidget(self.timeline)
@@ -176,6 +190,10 @@ class TranscribePage(QWidget):
 
         self.transcript_view = QTextEdit()
         self.transcript_view.setReadOnly(True)
+        # Blocks on the page's own dark background, as in the reference; only
+        # the block that is playing gets a lighter background.
+        self.transcript_view.setStyleSheet(
+            f"QTextEdit {{ background-color: {theme.BG_ALT}; border: 1px solid {theme.SURFACE}; }}")
         self.content_splitter.addWidget(self.transcript_view)
 
         self.speaker_frame, speaker_outer = card()
@@ -193,9 +211,6 @@ class TranscribePage(QWidget):
         # --- Actions ---
         bottom_row = QHBoxLayout()
         root.addLayout(bottom_row)
-        self.playback = PlaybackBar()
-        bottom_row.addWidget(self.playback)
-        bottom_row.addSpacing(12)
         self.save_btn = QPushButton("Save")
         self.save_btn.setEnabled(False)
         bottom_row.addWidget(self.save_btn)
@@ -319,11 +334,7 @@ class TranscribePage(QWidget):
         tc = self.window_.transcribe_controller
         tc.progressUpdated.connect(self._on_progress)
         tc.finished.connect(self._on_finished)
-        tc.durationKnown.connect(lambda seconds: self._feed_progress("set_duration", seconds))
-        tc.stepStarted.connect(lambda step: self._feed_progress("step", step))
-        tc.segmentsStreamed.connect(lambda segs: self._feed_progress("segments", segs))
-        tc.segmentsAligned.connect(lambda segs: self._feed_progress("aligned", segs))
-        tc.speakerTurnsReady.connect(lambda segs: self._feed_progress("speaker_turns", segs))
+        tc.stepStarted.connect(self._on_step)
 
     # --------------------------------------------------------------- file
     def set_audio_file(self, path: str):
@@ -369,13 +380,13 @@ class TranscribePage(QWidget):
             return
 
         self.start_btn.hide()
-        # The Timeline is the loading bar (qt_app/timeline_progress.py): an
-        # empty grey lane at 0% until the first step reports. Model/engine
-        # load time (whisperx/torch import, model weights) can take 1-3
-        # minutes on the first run, hence the status text below.
-        self._progress = TimelineProgress(None, theme.TEXT_MUTED, theme.SPEAKER_COLOR_PALETTE)
-        self.timeline.set_timeline(self._progress.timeline())
-        self.timeline.show()
+        # Indeterminate until the first real percentage: model/engine load
+        # time (whisperx/torch import, model weights) can take 1-3 minutes on
+        # the first run, during which there's no progress value yet.
+        self._step = ""
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+        self.timeline.hide()
         self.realtime_label.hide()
         self.status_label.show()
         self.status_label.setStyleSheet(f"color: {theme.ACCENT};")
@@ -383,7 +394,6 @@ class TranscribePage(QWidget):
         self.transcript_view.clear()
         self._turns, self._playing_turn = [], None
         self.playback.unload()
-        # Loading mode: the Timeline shows progress and can't be clicked.
         self.timeline.set_seekable(False)
         self.timeline.set_playhead(None)
         self.speaker_frame.hide()
@@ -422,24 +432,20 @@ class TranscribePage(QWidget):
         except (TypeError, ValueError):
             return None
 
-    def _on_progress(self, pct, message):
-        self._feed_progress("progress", pct)
-        self.status_label.setText(message)
+    def _on_step(self, step):
+        self._step = STEP_NAMES.get(step, "")
 
-    def _feed_progress(self, event, data):
-        """Hands one pipeline event to the running TimelineProgress and
-        redraws the Timeline from it."""
-        if self._progress is None:
-            return
-        getattr(self._progress, event)(data)
-        self.timeline.set_timeline(self._progress.timeline())
+    def _on_progress(self, pct, message):
+        if self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setValue(int(pct * 1000))
+        self.status_label.setText(f"{self._step}: {message}" if self._step else message)
 
     def _on_finished(self, result, error):
-        self._progress = None
+        self.progress_bar.hide()
         self.start_btn.show()
 
         if error:
-            self.timeline.hide()
             self.status_label.setStyleSheet(f"color: {theme.DANGER};")
             self.status_label.setText(f"Error: {error}")
             return

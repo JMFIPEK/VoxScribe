@@ -2,7 +2,7 @@
 coloured runs in each, as plain data. Pure Python, no Qt, so the lane
 mapping is tested without a display (tests/test_timeline.py) and the
 widget (qt_app/widgets/timeline.py) only paints what it is given - a
-finished result now, the pipeline's progress later."""
+finished result."""
 
 from __future__ import annotations
 
@@ -34,11 +34,6 @@ class TimelineModel:
     duration: float          # x axis: the recording length in seconds
     lanes: tuple[Lane, ...]
     note: str = ""           # e.g. why there are no Speaker lanes
-    # While the pipeline runs (qt_app/timeline_progress.py); a finished
-    # result leaves them at their defaults:
-    sweep: float | None = None   # plain sweep 0..1 (Backends that don't stream)
-    percent: int | None = None   # overall pipeline percentage
-    soft: bool = False           # segment blocks, before alignment sharpens them
 
 
 def timeline_from_result(result: dict, view: SpeakerView, speech_color: str = "#8e9aaf",

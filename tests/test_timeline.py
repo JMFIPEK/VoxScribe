@@ -128,21 +128,6 @@ def test_widget_paints_each_run_in_its_lane(app):
     assert widget.seconds_at(x_at(25)) == pytest.approx(25, abs=0.1)
 
 
-def test_widget_paints_the_plain_sweep_up_to_its_fraction(app):
-    from PySide6.QtGui import QColor
-    from qt_app.timeline_model import SPEECH, Lane, TimelineModel
-    from qt_app.widgets.timeline import Timeline
-
-    widget = Timeline()
-    widget.resize(800, widget.height())
-    widget.set_timeline(TimelineModel(100.0, (Lane(SPEECH, "#888888", ()),), sweep=0.5, percent=20))
-    image = widget.grab().toImage()
-
-    y = int(widget.lane_rect(0).center().y())
-    swept, ahead = QColor(image.pixel(int(widget.x_of(20)), y)), QColor(image.pixel(int(widget.x_of(80)), y))
-    assert swept != ahead
-
-
 def test_widget_draws_the_playhead_and_a_click_asks_to_seek_there(app):
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QColor

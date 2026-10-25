@@ -15,14 +15,15 @@ PROFILES_DIR = os.path.join(os.path.expanduser("~"), ".voxscribe")
 PROFILES_PATH = os.path.join(PROFILES_DIR, "speaker_profiles.json")
 
 # Minimum cosine similarity above which a detected speaker is automatically
-# matched to a known profile. Empirical value for pyannote embeddings; adjust
-# if matches happen too often incorrectly or not at all.
-DEFAULT_MATCH_THRESHOLD = 0.75
+# matched to a known profile. Measured 2026-10-25 on a real Call: the user's
+# own voice came out at 0.71-0.80, the best wrong name at 0.50 - 0.75 made
+# the own voice only a Tentative match ("Jonas?").
+DEFAULT_MATCH_THRESHOLD = 0.65
 
 # Below the match threshold, a speaker whose best similarity is at least this
-# is offered as a Tentative match ("Jonas?") for the user to confirm. Not yet
-# calibrated: every match's similarity is logged for tuning it later.
-DEFAULT_TENTATIVE_THRESHOLD = 0.60
+# is offered as a Tentative match ("Jonas?") for the user to confirm. Every
+# candidate's similarity is logged for tuning both values further.
+DEFAULT_TENTATIVE_THRESHOLD = 0.55
 
 
 def load_profiles() -> dict:
