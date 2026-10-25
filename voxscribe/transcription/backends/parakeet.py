@@ -27,7 +27,7 @@ def _parakeet_local_dirs(variant: str) -> tuple[str | None, str | None]:
 
 
 def transcribe_parakeet(audio: np.ndarray, language: str | None, model_size: str,
-                        on_progress=None) -> dict:
+                        on_progress=None, on_segments=None) -> dict:
     """Transcribes via NVIDIA Parakeet TDT 0.6B v3 (25 European languages,
     including German/English) through `onnx-asr` on ONNX Runtime (CPU).
 
@@ -40,6 +40,8 @@ def transcribe_parakeet(audio: np.ndarray, language: str | None, model_size: str
 
     Parakeet detects the language internally but doesn't report it, so it's
     guessed from the text (_guess_language_from_text()) unless given.
+
+    `on_segments([segment])` is called for each segment as it is recognized.
     """
     import onnx_asr
 
@@ -63,6 +65,8 @@ def transcribe_parakeet(audio: np.ndarray, language: str | None, model_size: str
         text = (seg.text or "").strip()
         if text:
             segments.append({"start": float(seg.start), "end": float(seg.end), "text": text})
+            if on_segments:
+                on_segments([dict(segments[-1])])
         if on_progress and duration > 0:
             on_progress(min(seg.end / duration, 1.0))
 
@@ -87,4 +91,5 @@ class ParakeetBackend:
         def _progress(frac):
             request.progress(0.05 + frac * 0.35, f"Transcribing... {frac * 100:.0f}%")
 
-        return transcribe_parakeet(audio, request.language, request.model_id, on_progress=_progress)
+        return transcribe_parakeet(audio, request.language, request.model_id,
+                                   on_progress=_progress, on_segments=request.on_segments)

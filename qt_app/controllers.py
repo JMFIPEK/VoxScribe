@@ -69,6 +69,17 @@ class TranscribeController(QObject):
     progressUpdated = Signal(float, str)
     started = Signal()
     finished = Signal(object, object)  # result dict or None, error text or None
+    # The pipeline's step events for the Timeline (see transcribe()'s on_event).
+    stepStarted = Signal(str)  # "transcription", "alignment", "speaker_identification"
+    segmentsStreamed = Signal(object)  # new text segments, from streaming Backends
+    segmentsAligned = Signal(object)  # all segments, with word timestamps
+    speakerTurnsReady = Signal(object)  # the final segments with "speaker"
+
+    _EVENT_SIGNALS = {"step": "stepStarted", "segments": "segmentsStreamed",
+                      "aligned": "segmentsAligned", "speaker_turns": "speakerTurnsReady"}
+
+    def _emit_event(self, kind, data):
+        getattr(self, self._EVENT_SIGNALS[kind]).emit(data)
 
     def start(self, **kwargs):
         self.started.emit()
@@ -82,6 +93,7 @@ class TranscribeController(QObject):
                 from voxscribe.transcriber import transcribe
                 result = transcribe(
                     on_progress=lambda pct, msg: self.progressUpdated.emit(pct, msg),
+                    on_event=self._emit_event,
                     **kwargs,
                 )
                 self.finished.emit(result, None)

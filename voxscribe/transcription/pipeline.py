@@ -118,6 +118,7 @@ def transcribe(
     on_progress=None,
     api_key: str | None = None,
     api_base_url: str | None = None,
+    on_event=None,
 ) -> dict:
     """Runs the full WhisperX pipeline.
 
@@ -153,9 +154,23 @@ def transcribe(
             ad-hoc use without a saved provider)
         api_base_url: Override the configured provider's base URL (optional,
             same purpose as api_key)
+        on_event: Optional `on_event(kind, data)` for the Timeline, besides
+            on_progress, in this order:
+            - ("step", name) when a step starts: "transcription", "alignment",
+              "speaker_identification" (skipped steps aren't announced; a
+              second "transcription" means the Provider failed and the local
+              fallback starts over);
+            - ("segments", [segment, ...]) new text segments as the Backend
+              produces them - Providers per chunk, Parakeet per segment;
+              local WhisperX, OpenVINO and Apple only report the percentage;
+            - ("aligned", segments) once segments have word timestamps (also
+              when the Backend already had them and alignment was skipped);
+            - ("speaker_turns", segments) the final segments with "speaker".
 
     Returns:
-        Dict with "segments", "language", and speaker labels if applicable
+        Dict with "segments", "language", and speaker labels if applicable,
+        plus "step_times" ({step name: wall seconds}, model loading included,
+        only steps that ran) and "total_time" (seconds)
     """
     device = resolve_device(device)
     backend = default_registry.resolve(model_size)
@@ -171,12 +186,19 @@ def transcribe(
         if on_progress:
             on_progress(pct, msg)
 
+    def emit(kind, data):
+        if on_event:
+            on_event(kind, data)
+
+    step_times = {}
     t0 = time.time()
+    emit("step", "transcription")
     audio_source = AudioSource(audio_path)
     request = TranscribeRequest(
         audio_path=audio_path, audio=audio_source, language=language, model_id=model_size,
         progress=prog, batch_size=batch_size, device=device,
         api_key=api_key, api_base_url=api_base_url,
+        on_segments=lambda segments: emit("segments", segments),
     )
     try:
         result = _step_transcribe(backend, request, t0)
@@ -189,15 +211,30 @@ def transcribe(
             audio_path, language=language, model_size=fallback_model, diarize=diarize,
             hf_token=hf_token, min_speakers=min_speakers, max_speakers=max_speakers,
             batch_size=batch_size, device=device, on_progress=on_progress,
-            api_key=api_key, api_base_url=api_base_url,
+            api_key=api_key, api_base_url=api_base_url, on_event=on_event,
         )
     audio = audio_source.load()
+    step_times["transcription"] = time.time() - t0
 
+    if not backend.skips_alignment:
+        emit("step", "alignment")
+    t_step = time.time()
     result = _step_align(backend, result, audio, device, prog)
+    if not backend.skips_alignment:
+        step_times["alignment"] = time.time() - t_step
+    # Copies: the GUI receives them later, while the next steps edit segments in place.
+    emit("aligned", [dict(seg) for seg in result["segments"]])
 
     if diarize:
+        identifies = bool(hf_token)  # without a token the step only reports it's skipped
+        if identifies:
+            emit("step", "speaker_identification")
+        t_step = time.time()
         result = _step_identify_speakers(
             result, audio_source, device, hf_token, min_speakers, max_speakers, prog)
+        if identifies:
+            step_times["speaker_identification"] = time.time() - t_step
+            emit("speaker_turns", [dict(seg) for seg in result["segments"]])
     else:
         print("3/3  Diarization disabled")
 
@@ -209,6 +246,9 @@ def transcribe(
     # subsequent files in the combined transcript without decoding the audio
     # file a second time.
     result["duration"] = len(audio) / SAMPLE_RATE
+    # For the "x realtime" figures (duration / step time).
+    result["step_times"] = step_times
+    result["total_time"] = total
 
     return result
 
