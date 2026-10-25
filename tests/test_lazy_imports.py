@@ -50,6 +50,7 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
     "voxscribe.transcription.backends.whisperx_local",
     "voxscribe.transcription.devices",
     "qt_app.constants",
+    "qt_app.speaker_view",
 ])
 def test_cheap_module_stays_light(module):
     assert _heavy_modules_loaded_by(module) == set()
