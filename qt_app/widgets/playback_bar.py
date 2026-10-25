@@ -5,9 +5,10 @@ transcription used. QMediaPlayer + QAudioOutput (QtMultimedia, part of
 PySide6) are only created on the first load(), so building the page stays
 cheap and needs no audio device."""
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QSize, QUrl, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
+from qt_app import icons
 from qt_app.constants import format_time_short
 
 
@@ -24,7 +25,9 @@ class PlaybackBar(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
-        self.play_btn = QPushButton("▶")
+        self.play_btn = QPushButton()
+        self.play_btn.setIcon(icons.play())
+        self.play_btn.setIconSize(QSize(16, 16))
         self.play_btn.setToolTip("Play / pause (Space)")
         self.play_btn.setFixedWidth(40)
         self.play_btn.setEnabled(False)
@@ -100,7 +103,7 @@ class PlaybackBar(QWidget):
     def _on_state(self, state):
         from PySide6.QtMultimedia import QMediaPlayer
 
-        self.play_btn.setText("⏸" if state == QMediaPlayer.PlayingState else "▶")
+        self.play_btn.setIcon(icons.pause() if state == QMediaPlayer.PlayingState else icons.play())
 
     def _show_position(self, seconds):
         self.position_label.setText(

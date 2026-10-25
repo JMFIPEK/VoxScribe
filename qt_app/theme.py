@@ -298,6 +298,19 @@ QTabBar::tab:selected {{
     border-bottom: 3px solid {ACCENT};
 }}
 
+QToolButton {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px;
+}}
+QToolButton:hover {{
+    background-color: {SURFACE_ALT};
+}}
+QToolButton:pressed {{
+    background-color: {BORDER};
+}}
+
 QPushButton {{
     background-color: {SURFACE_ALT};
     border: 1px solid {BORDER};

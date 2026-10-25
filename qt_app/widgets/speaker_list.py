@@ -4,18 +4,31 @@ for a Tentative match (#47) and a play button (#48). Shows what a
 SpeakerView says; applying a name and playing are left to the page
 (renameRequested, confirmRequested, playRequested)."""
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QSizePolicy
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QScrollArea,
-    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
+
+from qt_app import icons
+
+ICON_SIZE = QSize(14, 14)
+
+
+def _tool_button(icon, tooltip):
+    button = QToolButton()
+    button.setIcon(icon)
+    button.setIconSize(ICON_SIZE)
+    button.setToolTip(tooltip)
+    button.setAutoRaise(True)
+    button.setCursor(Qt.PointingHandCursor)
+    return button
 
 
 class _NameEdit(QLineEdit):
@@ -81,26 +94,17 @@ class _SpeakerRow(QWidget):
         share.setProperty("role", "muted")
         self._row.addWidget(share)
 
-        play = QToolButton()
-        play.setText("▶")
-        play.setToolTip("Play this speaker's longest turn")
-        play.setAutoRaise(True)
+        play = _tool_button(icons.play(speaker.color), "Play this speaker's longest turn")
         play.clicked.connect(lambda: on_play(speaker.label))
         self._row.addWidget(play)
 
         self._check = None
         if tentative:
-            self._check = QToolButton()
-            self._check.setText("✓")
-            self._check.setToolTip(f"Yes, this is {tentative}")
-            self._check.setAutoRaise(True)
+            self._check = _tool_button(icons.check(), f"Yes, this is {tentative}")
             self._check.clicked.connect(lambda: on_confirm(speaker.label))
             self._row.addWidget(self._check)
 
-        self._pencil = QToolButton()
-        self._pencil.setText("✏")
-        self._pencil.setToolTip("Rename")
-        self._pencil.setAutoRaise(True)
+        self._pencil = _tool_button(icons.pencil(), "Rename")
         self._pencil.clicked.connect(self._start_edit)
         self._row.addWidget(self._pencil)
 
@@ -120,10 +124,7 @@ class _SpeakerRow(QWidget):
         edit.cancelled.connect(lambda: self._end_edit(edit, save))
         # No focus for the save icon: clicking it must not count as focus
         # loss first, or the name would be applied twice.
-        save = QToolButton()
-        save.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        save.setToolTip("Save name")
-        save.setAutoRaise(True)
+        save = _tool_button(icons.check(), "Save name")
         save.setFocusPolicy(Qt.NoFocus)
         save.clicked.connect(edit.apply)
         self._row.insertWidget(1, edit, 1)
