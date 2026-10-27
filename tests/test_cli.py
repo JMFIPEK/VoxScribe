@@ -1,10 +1,13 @@
-"""`python main.py transcribe`: one or several input files (#43).
+"""`python main.py transcribe`: one or several input files (#43); `record`
+and `run`: the recording's file name (#51).
 
 The Backends are replaced by a fake `transcribe()` per file; everything from
-there on (multi-file merge, saving the transcript) runs for real.
+there on (multi-file merge, saving the transcript) runs for real. The
+recorder is replaced by one that only writes an empty file.
 """
 
 import json
+import re
 import sys
 
 import pytest
@@ -83,3 +86,61 @@ def test_a_missing_input_stops_before_transcribing(transcribed, tmp_path, monkey
         run_cli("transcribe", "-i", one, "-i", str(tmp_path / "missing.wav"),
                 monkeypatch=monkeypatch)
     assert calls == []
+
+
+# --- record/run: Recording title (#51) ---
+
+@pytest.fixture
+def recorded(monkeypatch, tmp_path):
+    """The recorder replaced by one that writes an empty file and notes its
+    path; run from tmp_path, so recordings/ lands there."""
+    from voxscribe import recorder
+    paths = []
+
+    def fake(output, **_kwargs):
+        paths.append(output)
+        open(output, "wb").close()
+        return output
+
+    for name in ("record_microphone", "record_system_audio", "record_microphone_and_system"):
+        monkeypatch.setattr(recorder, name, fake)
+    monkeypatch.chdir(tmp_path)
+    return paths
+
+
+def test_a_call_with_a_name_is_saved_under_that_title(recorded, monkeypatch):
+    run_cli("record", "--mode", "call", "--setup", "headset", "--name", "ASAM WG",
+            monkeypatch=monkeypatch)
+
+    [path] = recorded
+    assert re.fullmatch(r"recordings[\\/]\d{6}_\d{4}_ASAM_WG\.wav", path)
+
+
+def test_without_a_name_the_recording_is_named_after_its_mode(recorded, monkeypatch):
+    run_cli("record", "--mode", "room", monkeypatch=monkeypatch)
+    run_cli("record", "--mode", "room", monkeypatch=monkeypatch)
+
+    assert re.fullmatch(r"recordings[\\/]\d{6}_\d{4}_Room\.wav", recorded[0])
+    # Same minute (or the next one, should the clock just turn over).
+    assert recorded[1] != recorded[0]
+
+
+def test_an_explicit_output_wins_over_the_name(recorded, monkeypatch, capsys):
+    run_cli("record", "--mode", "playback", "--name", "ASAM WG", "-o", "mine.wav",
+            monkeypatch=monkeypatch)
+
+    assert recorded == ["mine.wav"]
+    assert "--name 'ASAM WG' is ignored" in capsys.readouterr().out
+
+
+def test_run_records_under_the_name_and_transcribes_next_to_it(recorded, transcribed, tmp_path, monkeypatch):
+    _add, calls = transcribed
+    # The recording isn't known to `transcribed` in advance.
+    monkeypatch.setattr(t, "transcribe",
+                        lambda **kw: calls.append(kw["audio_path"]) or _file_result("hi", 2.0))
+
+    run_cli("run", "--mode", "room", "--name", "Standup", monkeypatch=monkeypatch)
+
+    [path] = recorded
+    assert calls == [path]
+    assert (tmp_path / path).with_suffix(".txt").is_file()
