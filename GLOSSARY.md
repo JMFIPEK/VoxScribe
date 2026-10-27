@@ -16,7 +16,11 @@ _Avoid_: Mic input, outgoing audio, incoming audio
 
 **Recording mode**:
 What a recording captures: Playback only (Playback audio alone), Call (Playback audio and Microphone audio as separate tracks), or In room (Microphone audio alone).
-_Avoid_: Source, input
+_Avoid_: Source, input, Listen only
+
+**Recording title**:
+The short text at the end of a recording's file name, such as ASAM WG; without one given, it is named after its Recording mode: Playback, Meeting (a Call) or Room.
+_Avoid_: Meeting name, recording name, label
 
 **Setup**:
 How a Call is heard and spoken: Headset (headphones and their own microphone, so the two tracks stay clean) or Loudspeaker (speakers and a room microphone, so the remote voices also reach the microphone).

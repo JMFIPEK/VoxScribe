@@ -11,6 +11,7 @@ Commands:
     python main.py record --mode playback        Playback only (Teams/Zoom audio)
     python main.py record --mode call            Call: playback + microphone
                           [--setup headset|loudspeaker]
+                          [--name "ASAM WG"]      recordings/YYMMDD_HHMM_ASAM_WG.wav
     python main.py transcribe --input audio.wav  Start transcription
                           [-i more.wav ...]       several files, one transcript
     python main.py run --mode call               Record + transcribe
@@ -40,15 +41,18 @@ def cmd_record(args):
         record_system_audio,
     )
 
-    output = args.output
-    if not output:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        os.makedirs("recordings", exist_ok=True)
-        output = f"recordings/{timestamp}.wav"
-
     from voxscribe import recording_modes as rm
+    from voxscribe import recording_names
 
     mode = rm.mode_for_source(args.source) if args.source else args.mode
+    output = args.output
+    if output:
+        if args.name:
+            print(f"--output given, --name {args.name!r} is ignored")
+    else:
+        os.makedirs("recordings", exist_ok=True)
+        output = recording_names.recording_path("recordings", args.name, mode, datetime.now())
+
     if mode == rm.MODE_ROOM:
         record_microphone(output, device_index=args.device)
     elif mode == rm.MODE_PLAYBACK:
@@ -98,6 +102,12 @@ def _add_mode_arguments(parser):
     parser.add_argument(
         "--playback-device", type=int, default=None,
         help="Playback (loopback) device index, default: Windows default output"
+    )
+    parser.add_argument(
+        "--name", default=None,
+        help=("Recording title, the end of the file name "
+              "(recordings/YYMMDD_HHMM_<title>.wav); default: Playback, Meeting "
+              "or Room after the mode. Ignored with --output")
     )
     # Deprecated alias from before Recording modes: mic/system/both.
     parser.add_argument("--source", choices=["mic", "system", "both"], default=None,

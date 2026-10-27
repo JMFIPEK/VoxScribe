@@ -42,9 +42,10 @@ def macos_sources(helper_binary, mic=None, helper=None):
                           popen=helper or FakeHelper(freq=880), helper_path=lambda: helper_binary)
 
 
-def record(sources, tmp_path, source, setup=None, seconds=SECONDS, **start_kwargs):
+def record(sources, tmp_path, source, setup=None, seconds=SECONDS, stop_path=None, **start_kwargs):
     """Records for `seconds` and returns what on_done reported plus the
-    level callbacks seen: (path, duration, error, levels)."""
+    level callbacks seen: (path, duration, error, levels). `stop_path` is
+    handed to stop() as the path decided at Stop."""
     done, result, levels = threading.Event(), {}, []
     recorder = AudioRecorder(sources)
     recorder.start(str(tmp_path / "rec.wav"), source=source, setup=setup,
@@ -52,7 +53,7 @@ def record(sources, tmp_path, source, setup=None, seconds=SECONDS, **start_kwarg
                    on_done=lambda p, d, e: (result.update(path=p, duration=d, error=e), done.set()),
                    **start_kwargs)
     time.sleep(seconds)
-    recorder.stop()
+    recorder.stop(stop_path)
     assert done.wait(10), "on_done never came"
     return result["path"], result["duration"], result["error"], levels
 
@@ -183,6 +184,17 @@ def test_linux_offers_only_the_microphone(tmp_path):
                                  on_done=lambda p, d, e: (result.update(error=e), done.set()))
 
     assert done.wait(2) and "isn't supported" in result["error"]
+
+
+@pytest.mark.parametrize("source", ["mic", "system", "both"])
+def test_the_path_given_at_stop_is_where_the_recording_is_saved(tmp_path, source):
+    # The Record page names the file at Stop, from the Recording title then (#53).
+    final = str(tmp_path / "named" / "261027_1430_ASAM_WG.wav")
+    path, _, error, _ = record(windows_sources(), tmp_path, source, setup="headset", stop_path=final)
+
+    assert error is None and path == final and os.path.isfile(final)
+    assert not os.path.exists(tmp_path / "rec.wav")
+    assert os.path.isfile(tracks.tracks_path_for(final)) == (source == "both")
 
 
 # --- Command-line recording uses the same recorder (#28) ---------------------

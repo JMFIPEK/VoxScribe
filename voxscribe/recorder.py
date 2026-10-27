@@ -348,8 +348,12 @@ class AudioRecorder:
         self._thread = threading.Thread(target=self._record, daemon=True)
         self._thread.start()
 
-    def stop(self):
-        """Stops recording."""
+    def stop(self, output_path: str | None = None):
+        """Stops recording. The files are only written now, so `output_path`
+        can still replace the one given to start() - the Record page names
+        the recording at Stop."""
+        if output_path:
+            self._output_path = output_path
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=3)

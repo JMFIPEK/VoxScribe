@@ -7,9 +7,11 @@ Playback only, Call (both, as separate tracks) and In room (microphone only);
 a Call's Setup is Headset or Loudspeaker.
 """
 
+import functools
 import json
 import sys
 import time
+from datetime import datetime
 
 from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QIcon
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -28,15 +31,15 @@ from PySide6.QtWidgets import (
 )
 
 from qt_app import theme
-from qt_app.controllers import make_recording_output_path
 from qt_app.pages.common import card, page_root
 from qt_app.widgets.level_meter import LevelMeter
 from voxscribe import recording_modes as rm
+from voxscribe import recording_names
 
 CHANNEL_LABELS = {"system": "Playback", "mic": "Microphone"}
 
 MODE_LABELS = {
-    rm.MODE_PLAYBACK: "Listen only\nWhat the computer plays",
+    rm.MODE_PLAYBACK: "Playback only\nWhat the computer plays",
     rm.MODE_CALL: "Call\nPlayback + your microphone",
     rm.MODE_ROOM: "In room\nMicrophone only",
 }
@@ -174,6 +177,14 @@ class RecordPage(QWidget):
         device_card, device_layout = card("DEVICES")
         root.addWidget(device_card)
 
+        # Pickers on the left, the icon-only refresh button in its own column
+        # beside every visible picker row - no row of its own, and both
+        # pickers of a Call keep the same width.
+        devices_row = QHBoxLayout()
+        device_layout.addLayout(devices_row)
+        pickers = QVBoxLayout()
+        devices_row.addLayout(pickers, 1)
+
         self.playback_row = QWidget()
         self.playback_row.setProperty("role", "row")
         playback_row = QHBoxLayout(self.playback_row)
@@ -183,7 +194,7 @@ class RecordPage(QWidget):
         playback_row.addWidget(lbl)
         self.playback_combo = QComboBox()
         playback_row.addWidget(self.playback_combo, 1)
-        device_layout.addWidget(self.playback_row)
+        pickers.addWidget(self.playback_row)
 
         self.mic_row = QWidget()
         self.mic_row.setProperty("role", "row")
@@ -194,18 +205,21 @@ class RecordPage(QWidget):
         mic_row.addWidget(lbl)
         self.mic_combo = QComboBox()
         mic_row.addWidget(self.mic_combo, 1)
-        device_layout.addWidget(self.mic_row)
+        pickers.addWidget(self.mic_row)
 
-        refresh_row = QHBoxLayout()
+        self.refresh_btn = QPushButton()
+        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.refresh_btn.setToolTip("Refresh devices")
+        # As tall as the visible picker rows together (two in a Call), as
+        # narrow as its icon.
+        self.refresh_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        devices_row.addWidget(self.refresh_btn)
+
         self.device_warning = QLabel("")
         self.device_warning.setWordWrap(True)
         self.device_warning.setStyleSheet(f"color: {theme.DANGER};")
         self.device_warning.hide()
-        refresh_row.addWidget(self.device_warning, 1)
-        self.refresh_btn = QPushButton(" Refresh devices")
-        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        refresh_row.addWidget(self.refresh_btn, 0, Qt.AlignRight)
-        device_layout.addLayout(refresh_row)
+        device_layout.addWidget(self.device_warning)
 
         # --- Level + timer ---
         meter_card, meter_layout = card("LEVEL")
@@ -236,6 +250,15 @@ class RecordPage(QWidget):
         self.timer_label.setMinimumWidth(110)
         self.timer_label.setStyleSheet("font-size: 28px; font-weight: 700;")
         meters_and_timer.addWidget(self.timer_label)
+
+        # --- Recording title: editable while recording, the file is named at Stop ---
+        title_row = QHBoxLayout()
+        lbl = QLabel("Title:")
+        lbl.setFixedWidth(80)
+        title_row.addWidget(lbl)
+        self.title_edit = QLineEdit()
+        title_row.addWidget(self.title_edit, 1)
+        root.addLayout(title_row)
 
         # --- Start/stop ---
         self.record_btn = QPushButton("  Start recording")
@@ -323,6 +346,7 @@ class RecordPage(QWidget):
         has_playback = rm.records_playback(self._mode)
         has_mic = rm.records_mic(self._mode)
         is_call = self._mode == rm.MODE_CALL
+        self.title_edit.setPlaceholderText(recording_names.default_title(self._mode))
         self.setup_widget.setVisible(is_call)
         self.setup_hint.setVisible(is_call)
         self.playback_row.setVisible(has_playback)
@@ -435,15 +459,24 @@ class RecordPage(QWidget):
                 self._set_status("The selected device is no longer connected - "
                                  "the device list has been refreshed, please check it.", theme.DANGER)
                 return
-        output_path = make_recording_output_path(self.window_.settings.get("output_dir"))
+        # Where the recording is saved: the folder, mode and minute of Start,
+        # the Recording title at Stop - the recorder controller asks then.
+        path_for_title = functools.partial(
+            recording_names.recording_path,
+            self.window_.settings.get("output_dir") or "recordings",
+            mode=self._mode, started=datetime.now())
+
+        def path_at_stop():
+            return path_for_title(self.title_edit.text())
+
         rc = self.window_.recorder_controller
         if self._mode == rm.MODE_CALL:
-            rc.start(output_path, rm.source_for_mode(self._mode), mic_index,
+            rc.start(path_at_stop, rm.source_for_mode(self._mode), mic_index,
                      loopback_index=playback_index, setup=self._setup)
         elif self._mode == rm.MODE_PLAYBACK:
-            rc.start(output_path, rm.source_for_mode(self._mode), playback_index)
+            rc.start(path_at_stop, rm.source_for_mode(self._mode), playback_index)
         else:
-            rc.start(output_path, rm.source_for_mode(self._mode), mic_index)
+            rc.start(path_at_stop, rm.source_for_mode(self._mode), mic_index)
 
     def _set_controls_enabled(self, enabled):
         for btn in (*self.mode_buttons.values(), *self.setup_buttons.values()):
@@ -492,6 +525,8 @@ class RecordPage(QWidget):
         for meter in self._meters.values():
             meter.reset()
         self.record_btn.setEnabled(False)
+        # The file was named at Stop - a title typed now would be lost.
+        self.title_edit.setEnabled(False)
         self.record_btn.setText("  Saving recording...")
         self.saving_bar.show()
         self._set_status(
@@ -505,6 +540,9 @@ class RecordPage(QWidget):
         self.record_btn.setText("  Start recording")
         self.record_btn.setIcon(QIcon(theme.get_icons()["record"]))
         self._set_controls_enabled(True)
+        # The next recording mustn't get this one's title by accident.
+        self.title_edit.clear()
+        self.title_edit.setEnabled(True)
         self.timer_label.setText("00:00")
         for meter in self._meters.values():
             meter.reset()

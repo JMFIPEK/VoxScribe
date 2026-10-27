@@ -29,6 +29,7 @@ def _heavy_modules_loaded_by(module: str) -> set[str]:
 @pytest.mark.parametrize("module", [
     "voxscribe.paths",
     "voxscribe.providers",
+    "voxscribe.recording_names",
     "voxscribe.tracks",
     "voxscribe.echo",
     "voxscribe.speaker_profiles",

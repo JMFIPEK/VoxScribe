@@ -36,6 +36,9 @@ python main.py record --mode playback
 # Record a call: playback + microphone, Setup stored with the recording
 python main.py record --mode call --setup headset
 
+# Recording title: recordings/YYMMDD_HHMM_ASAM_WG.wav (default: _Meeting/_Playback/_Room)
+python main.py record --mode call --name "ASAM WG"
+
 # Transcribe an audio file
 python main.py transcribe -i recordings/audio.wav
 
@@ -77,6 +80,7 @@ python release.py 1.1.0
 | `voxscribe/gpu_setup.py` | Windows-only: detects a CUDA/XPU mismatch between the installed `torch` build and the actual GPU present, and automatically reinstalls the correct build (see Key Design Patterns below) |
 | `voxscribe/paths.py` | Stdlib-only base/`bundled_models/` path helpers, so cheap callers don't need to import more than they must |
 | `voxscribe/recording_modes.py` | Stdlib-only Recording modes (`playback`/`call`/`room`, mapped to the recorder's `system`/`both`/`mic` sources) and Call Setups (`headset`/`loudspeaker`), plus the device-name heuristics (`physical_device_key`, `suggest_mic_for_loopback`, `guess_setup`) shared by the Record page and the CLI |
+| `voxscribe/recording_names.py` | Stdlib-only recording file names `YYMMDD_HHMM_<Recording title>.wav` (time = Start pressed): `clean_title()` (whitespace runs → `_`, drops `\ / : * ? " < > |` and control characters, keeps umlauts/case, ≤60 chars, no trailing `_`/`.`; nothing left → mode default), `default_title()` (`Playback`/`Meeting`/`Room`), `recording_stem()`, `recording_path()` (`_2`, `_3`, ... while the stem's `.wav` **or** `.tracks.flac` exists). Used by the CLI (`record`/`run --name`; `-o` wins, `--name` then ignored with a note) and the Record page: a `Title:` line above Start (placeholder = the mode's default, editable while recording, locked while saving, emptied after every recording). Files are only written at Stop, so the page names them then: `RecorderController.start()` takes a path callback (`path_at_stop`), asks it again at stop (GUI thread) and hands the result to `AudioRecorder.stop(output_path)` |
 | `voxscribe/track_assembler.py` | Track assembler for a Call: both Call recording paths (`_record_both()`, `_record_both_macos()`) feed it each source's raw chunks; after stop it downmixes, resamples to 16kHz, pads the shorter track, mixes and saves the mono `.wav` plus the `.tracks.flac` sidecar. No device code, tested with synthetic chunks (`tests/test_track_assembler.py`) |
 | `voxscribe/tracks.py` | Separate mic/system track sidecar (`<name>.tracks.flac`) for "microphone + system" recordings, and the track-based speaker split applied after diarization (numpy-only, imported by both recorder and transcriber) |
 | `voxscribe/echo.py` | Echo cancellation for Loudspeaker Calls (`cancel_echo(mic, playback)`, ADR 0003): block-wise delay estimate, linear least-squares canceller, then WebRTC AEC3 via `livekit` (imported only inside the function) |
