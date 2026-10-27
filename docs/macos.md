@@ -54,10 +54,22 @@ This builds a small launcher app with the VoxScribe icon that starts the GUI
 from this repo in place (the counterpart of `VoxScribe.bat` on Windows). Open
 it from Spotlight or Launchpad, then right-click its Dock icon > Options >
 Keep in Dock. It re-syncs the environment when `uv.lock` changes and builds
-the Swift helpers if they are missing; output goes to
+the Swift helpers if they are missing or their source changed; output goes to
 `~/.voxscribe/voxscribe.log`.
 
 - The repo path is baked in - re-run `macos/make-app.sh` if you move the repo.
+- **Updates**: on an install that sits on a Release tag, the app offers newer
+  Releases (see docs/adr/0002-*). "Install and relaunch" / "Install and quit"
+  leave `~/.voxscribe/update-pending.txt`, reopen VoxScribe.app and quit; the
+  launcher waits for the old app to exit, runs
+  `python -m voxscribe.updates apply-pending` (check out the tag,
+  `uv sync --locked`, back to the previous Release if anything fails), then
+  starts the app, which shows the result once. Without the app (e.g. started
+  with `python gui_qt.py`), the Update is installed the next time you open
+  VoxScribe.app. The launcher script is `macos/launcher.sh`, copied into the
+  app by `make-app.sh`, so an Update never changes it - re-run
+  `macos/make-app.sh` after an Update that changes `macos/launcher.sh` (and
+  once now, if your VoxScribe.app predates this).
 - macOS attributes the microphone and "Screen & System Audio Recording"
   permissions to **VoxScribe** (not Terminal) when started this way, so grant
   them once for the app on first use.
