@@ -10,7 +10,7 @@ on the GUI thread - that's the only reason no manual locking is needed.
 
 import os
 import threading
-from datetime import datetime
+from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Signal
 
@@ -25,9 +25,9 @@ class RecorderController(QObject):
     recordingStopping = Signal()  # stop requested, WAV is being mixed/saved
     recordingFinished = Signal(object, object, object)  # path, duration, error
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, recorder: AudioRecorder | None = None):
         super().__init__(parent)
-        self._recorder = AudioRecorder()
+        self._recorder = recorder or AudioRecorder()
 
     @property
     def is_recording(self) -> bool:
@@ -36,10 +36,14 @@ class RecorderController(QObject):
     def refresh_devices(self):
         return get_devices()
 
-    def start(self, output_path: str, source: str, device_index,
+    def start(self, output_path: Callable[[], str], source: str, device_index,
               loopback_index=None, setup=None):
+        """`output_path` is asked again at stop (on the GUI thread), since the
+        files are only written then: the Record page names the recording
+        from the Recording title at Stop."""
+        self._output_path = output_path
         self._recorder.start(
-            output_path=output_path,
+            output_path=output_path(),
             source=source,
             device_index=device_index,
             loopback_index=loopback_index,
@@ -55,11 +59,12 @@ class RecorderController(QObject):
         recording was - recordingFinished fires once that's done. By default
         AudioRecorder.stop()'s join runs in a helper thread so the GUI stays
         responsive; `wait=True` blocks instead (used on window close)."""
+        output_path = self._output_path()
         if wait:
-            self._recorder.stop()
+            self._recorder.stop(output_path)
             return
         self.recordingStopping.emit()
-        threading.Thread(target=self._recorder.stop, daemon=True).start()
+        threading.Thread(target=self._recorder.stop, args=(output_path,), daemon=True).start()
 
 
 class TranscribeController(QObject):
@@ -146,13 +151,6 @@ class HardwareInfoController(QObject):
             transcriber.prewarm_diarization()
         except Exception:  # noqa: BLE001
             pass
-
-
-def make_recording_output_path(out_dir: str) -> str:
-    out_dir = out_dir or "recordings"
-    os.makedirs(out_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return os.path.join(out_dir, f"{timestamp}.wav")
 
 
 class UpdateController(QObject):
