@@ -24,8 +24,9 @@ cd "$REPO" || exit 1
 # failure - the same module and steps as VoxScribe.bat. This script lives in
 # the bundle, not the repo, so the checkout can't change it while it runs.
 # The marker is deleted here too, in case Python failed before getting to it.
+# Its progress goes to the log already (updates._log); stdout would double it.
 if [ -f "$PENDING" ] && [ -x .venv/bin/python ]; then
-    .venv/bin/python -m voxscribe.updates apply-pending --uv "$UV" >>"$LOG" 2>&1
+    .venv/bin/python -m voxscribe.updates apply-pending --uv "$UV" >/dev/null 2>>"$LOG"
     rm -f "$PENDING"
 fi
 
