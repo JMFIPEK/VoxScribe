@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -238,3 +239,86 @@ def test_the_launcher_entry_removes_even_an_unusable_marker(tmp_path):
     assert updates.main(["apply-pending"], user_dir=user_dir) == 0
 
     assert not (user_dir / updates.PENDING_FILE).exists()
+
+
+class FakePopen:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, args, **kwargs):
+        self.calls.append((args, kwargs))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="VoxScribe.bat is the Windows launcher")
+@pytest.mark.parametrize("relaunch", [True, False])
+def test_the_app_hands_the_update_to_the_launcher(tmp_path, relaunch):
+    (tmp_path / "VoxScribe.bat").write_text("@echo off\n")
+    popen = FakePopen()
+
+    assert updates.start_launcher(relaunch, [11, 22], repo=tmp_path, popen=popen)
+
+    [(args, kwargs)] = popen.calls
+    assert args == ["cmd.exe", "/c", str(tmp_path / "VoxScribe.bat")]
+    assert kwargs["cwd"] == str(tmp_path)
+    assert kwargs["env"]["VOXSCRIBE_WAIT_PIDS"] == "11 22"
+    assert ("VOXSCRIBE_NO_START" in kwargs["env"]) is not relaunch
+    # Its own console shows the install's progress; the app is gone by then.
+    assert kwargs["creationflags"] & subprocess.CREATE_NEW_CONSOLE
+
+
+def test_without_a_launcher_the_update_waits_for_the_next_start(tmp_path):
+    popen = FakePopen()
+
+    assert not updates.start_launcher(True, [11], repo=tmp_path, popen=popen)
+    assert popen.calls == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="VoxScribe.bat is the Windows launcher")
+def test_an_app_started_after_an_update_can_still_hand_over_the_next_one(tmp_path, monkeypatch):
+    # The launcher sets these for itself; the app it started inherits them.
+    monkeypatch.setenv("VOXSCRIBE_UPDATE_RAN", "1")
+    monkeypatch.setenv("VOXSCRIBE_NO_START", "1")
+    (tmp_path / "VoxScribe.bat").write_text("@echo off\n")
+    popen = FakePopen()
+
+    updates.start_launcher(True, [11], repo=tmp_path, popen=popen)
+
+    [(_args, kwargs)] = popen.calls
+    assert "VOXSCRIBE_UPDATE_RAN" not in kwargs["env"]
+    assert "VOXSCRIBE_NO_START" not in kwargs["env"]
+
+
+def sleeper(seconds):
+    return subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"])
+
+
+def test_the_launcher_installs_only_after_the_app_has_exited(tmp_path, monkeypatch):
+    # The quitting app still holds files in .venv that the sync replaces.
+    user_dir = tmp_path / "home"
+    updates.request_update("v1.1.1", user_dir=user_dir)
+    app = sleeper(1.5)
+    monkeypatch.setenv("VOXSCRIBE_WAIT_PIDS", str(app.pid))
+    applied_while_app_ran = []
+    monkeypatch.setattr(updates, "apply",
+                        lambda target, **kw: applied_while_app_ran.append(app.poll() is None))
+
+    assert updates.main(["apply-pending"], user_dir=user_dir) == 0
+
+    assert applied_while_app_ran == [False]
+
+
+def test_the_launcher_does_not_wait_forever_for_a_hanging_app(tmp_path, monkeypatch):
+    user_dir = tmp_path / "home"
+    updates.request_update("v1.1.1", user_dir=user_dir)
+    app = sleeper(60)
+    monkeypatch.setenv("VOXSCRIBE_WAIT_PIDS", str(app.pid))
+    monkeypatch.setattr(updates, "WAIT_FOR_APP_SECONDS", 0.5)
+    applied = []
+    monkeypatch.setattr(updates, "apply", lambda target, **kw: applied.append(target))
+    try:
+        updates.main(["apply-pending"], user_dir=user_dir)
+    finally:
+        app.kill()
+
+    # Goes ahead; a sync that still finds locked files rolls back as usual.
+    assert applied == ["v1.1.1"]

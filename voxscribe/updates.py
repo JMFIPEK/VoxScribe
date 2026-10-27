@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 
 from voxscribe.paths import get_base_dir
@@ -197,6 +198,70 @@ def request_update(tag: str, user_dir=None) -> str:
     return path
 
 
+LAUNCHER = "VoxScribe.bat"
+# Read by apply-pending (processes to outlive) and VoxScribe.bat (stay closed).
+WAIT_PIDS_ENV = "VOXSCRIBE_WAIT_PIDS"
+NO_START_ENV = "VOXSCRIBE_NO_START"
+
+
+def start_launcher(relaunch: bool, wait_pids, repo=None, popen=subprocess.Popen) -> bool:
+    """Starts the launcher, which installs the marker's Update once the
+    processes in wait_pids (the quitting app) have exited, then starts the
+    app again only if relaunch. False if there is no launcher to start: the
+    Update then waits for the next start (#55)."""
+    base = _base(repo)
+    launcher = os.path.join(base, LAUNCHER)
+    if sys.platform != "win32" or not os.path.isfile(launcher):
+        return False
+    env = dict(os.environ, **{WAIT_PIDS_ENV: " ".join(str(pid) for pid in wait_pids)})
+    # An app the launcher started after an Update inherited the launcher's
+    # own flags; passed on, they would skip this install or the restart.
+    env.pop("VOXSCRIBE_UPDATE_RAN", None)
+    env.pop(NO_START_ENV, None)
+    if not relaunch:
+        env[NO_START_ENV] = "1"
+    # Its own console shows the install's progress after the app is gone.
+    popen(["cmd.exe", "/c", launcher], cwd=str(base), env=env,
+          creationflags=subprocess.CREATE_NEW_CONSOLE)
+    return True
+
+
+WAIT_FOR_APP_SECONDS = 60
+
+
+def wait_for_exit(pids, timeout: float):
+    """Waits until every process in pids has exited, at most timeout seconds
+    in all; returns the pids still running."""
+    deadline = time.monotonic() + timeout
+    running = []
+    for pid in pids:
+        if not _wait_for_pid(pid, max(0.0, deadline - time.monotonic())):
+            running.append(pid)
+    return running
+
+
+def _wait_for_pid(pid: int, timeout: float) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return True  # gone already
+        try:
+            return kernel32.WaitForSingleObject(handle, int(timeout * 1000)) == 0  # WAIT_OBJECT_0
+        finally:
+            kernel32.CloseHandle(handle)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
 def pending_update(user_dir=None) -> str | None:
     """The Release a marker asks for, or None."""
     try:
@@ -354,6 +419,13 @@ def main(argv=None, user_dir=None) -> int:
     except OSError:
         pass
     if target:
+        # Started by the quitting app (start_launcher), which still holds
+        # files in .venv that the sync replaces.
+        pids = [int(pid) for pid in os.environ.get(WAIT_PIDS_ENV, "").split() if pid.isdigit()]
+        still_running = wait_for_exit(pids, WAIT_FOR_APP_SECONDS)
+        if still_running:
+            _log(f"Update: the app (pid {', '.join(map(str, still_running))}) is still "
+                 f"running after {WAIT_FOR_APP_SECONDS}s - installing anyway", user_dir)
         _log(f"Installing Update {target}...", user_dir)
         apply(target, sync=uv_sync(args.uv, sync_args, user_dir), user_dir=user_dir)
     return 0
