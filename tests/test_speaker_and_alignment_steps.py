@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from voxscribe import tracks
+from voxscribe.speaker_profiles import SpeakerMatches
 from voxscribe.transcription import align, diarize, speakers
 from voxscribe.transcription.audio import AudioSource
 
@@ -112,7 +113,7 @@ def test_run_diarization_labels_words_and_reports_progress(monkeypatch):
 
 def test_label_known_speakers_renames_recognized_speakers(monkeypatch):
     monkeypatch.setattr("voxscribe.speaker_profiles.match_speakers",
-                        lambda embeddings: {"SPEAKER_01": "Alice"})
+                        lambda embeddings: SpeakerMatches({"SPEAKER_01": "Alice"}, {}))
     result = {
         "segments": [{"speaker": "SPEAKER_00"}, {"speaker": "SPEAKER_01"}],
         "word_segments": [{"speaker": "SPEAKER_01"}],
@@ -127,6 +128,22 @@ def test_label_known_speakers_renames_recognized_speakers(monkeypatch):
         "SPEAKER_00": "SPEAKER_00", "SPEAKER_01": "Alice", "SPEAKER_02": "SPEAKER_02"}
 
 
+def test_label_known_speakers_marks_a_tentative_match(monkeypatch):
+    monkeypatch.setattr("voxscribe.speaker_profiles.match_speakers",
+                        lambda embeddings: SpeakerMatches({"SPEAKER_00": "Alice"}, {"SPEAKER_01": "Jonas"}))
+    result = {
+        "segments": [{"speaker": "SPEAKER_00"}, {"speaker": "SPEAKER_01"}],
+        "word_segments": [{"speaker": "SPEAKER_01"}],
+    }
+
+    speakers.label_known_speakers(result, {"SPEAKER_00": [0.1], "SPEAKER_01": [0.2]}, split_speakers={})
+
+    assert [s["speaker"] for s in result["segments"]] == ["Alice", "Jonas?"]
+    assert result["word_segments"][0]["speaker"] == "Jonas?"
+    assert result["speaker_id_map"] == {"SPEAKER_00": "Alice", "SPEAKER_01": "Jonas?"}
+    assert result["tentative_speakers"] == {"SPEAKER_01": "Jonas"}
+
+
 def test_label_known_speakers_survives_a_broken_profile_store(monkeypatch):
     def boom(embeddings):
         raise OSError("profiles unreadable")
@@ -137,6 +154,7 @@ def test_label_known_speakers_survives_a_broken_profile_store(monkeypatch):
     speakers.label_known_speakers(result, {"SPEAKER_00": [0.1]}, split_speakers={})
 
     assert result["speaker_id_map"] == {"SPEAKER_00": "SPEAKER_00"}
+    assert result["tentative_speakers"] == {}
 
 
 def test_split_by_track_without_sidecar_changes_nothing(tmp_path):

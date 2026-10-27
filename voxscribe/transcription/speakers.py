@@ -1,6 +1,12 @@
-"""Speaker handling after diarization: track split, voice-print labels, multi-file merge."""
+"""Speaker handling after diarization: track split, Stray speaker merge,
+voice-print labels, multi-file merge."""
 
 from voxscribe.transcription.audio import AudioSource
+
+# A Diarization ID with less speech than this in total is a Stray speaker
+# (GLOSSARY.md). An absolute limit, not a share: 2% of a 1-hour meeting
+# (72 s) would merge a real person who only says "yes, agreed".
+STRAY_SPEAKER_MAX_SECONDS = 3.0
 
 
 def split_by_track(result: dict, audio: AudioSource) -> dict[str, str]:
@@ -29,6 +35,72 @@ def split_by_track(result: dict, audio: AudioSource) -> dict[str, str]:
         return {}
 
 
+def merge_stray_speakers(result: dict, speaker_embeddings: dict | None) -> dict[str, str]:
+    """Gives every Stray speaker's segments and words to the speaker of the
+    nearest neighbouring turn in time (previous or next, whichever is
+    closer); nothing is deleted. Runs on raw Diarization IDs, after the
+    track split and before voice-print matching, so a Stray speaker is never
+    recognized. Every Diarization ID counts: one that has an embedding or a
+    word but wins no segment has 0 s of speech and is merged too. Merged IDs
+    are removed from `speaker_embeddings` (also result["speaker_embeddings"]).
+
+    Returns {stray_id: neighbour_id} for every merged speaker that had
+    segments or words (if they went to different neighbours, the last one)."""
+    segments = result.get("segments", [])
+    word_segments = result.get("word_segments", []) or []
+    speech: dict[str, float] = {}
+    for spk in [*(speaker_embeddings or {}), *(result.get("speaker_embeddings") or {}),
+                *(w.get("speaker") for w in word_segments),
+                *(w.get("speaker") for seg in segments for w in seg.get("words", []) or [])]:
+        if spk:
+            speech.setdefault(spk, 0.0)
+    for seg in segments:
+        spk = seg.get("speaker")
+        if spk:
+            speech[spk] = speech.get(spk, 0.0) + max(0.0, seg.get("end", 0.0) - seg.get("start", 0.0))
+    stray = {spk for spk, secs in speech.items() if secs < STRAY_SPEAKER_MAX_SECONDS}
+    kept = [seg for seg in segments if seg.get("speaker") and seg["speaker"] not in stray]
+    if not stray or not kept:
+        return {}
+
+    def nearest(start: float, end: float) -> str:
+        def gap(seg):
+            return max(seg.get("start", 0.0) - end, start - seg.get("end", 0.0), 0.0)
+        return min(kept, key=gap)["speaker"]
+
+    merged: dict[str, str] = {}
+    moved: list[tuple[float, float, str, str]] = []  # (start, end, stray_id, neighbour)
+    for seg in segments:
+        spk = seg.get("speaker")
+        if spk in stray:
+            target = nearest(seg.get("start", 0.0), seg.get("end", 0.0))
+            seg["speaker"] = target
+            merged[spk] = target
+            moved.append((seg.get("start", 0.0), seg.get("end", 0.0), spk, target))
+        # A word labelled with a Stray speaker belongs to the turn around it.
+        for w in seg.get("words", []) or []:
+            if w.get("speaker") in stray and seg.get("speaker"):
+                merged.setdefault(w["speaker"], seg["speaker"])
+                w["speaker"] = seg["speaker"]
+
+    # Words outside the segments follow the turn they belong to.
+    for w in word_segments:
+        spk = w.get("speaker")
+        if spk not in stray:
+            continue
+        mid = (w.get("start", 0.0) + w.get("end", 0.0)) / 2
+        w["speaker"] = next((target for a, b, s, target in moved if s == spk and a <= mid <= b),
+                            None) or nearest(w.get("start", 0.0), w.get("end", 0.0))
+        merged.setdefault(spk, w["speaker"])
+
+    for embeddings in (speaker_embeddings, result.get("speaker_embeddings")):
+        for spk in stray:
+            (embeddings or {}).pop(spk, None)
+    print("     Stray speakers merged: " + ", ".join(
+        f"{spk} ({speech[spk]:.1f}s) -> {merged.get(spk, '-')}" for spk in sorted(stray)))
+    return merged
+
+
 def label_known_speakers(result: dict, speaker_embeddings: dict | None,
                          split_speakers: dict[str, str]) -> None:
     """Automatically recognizes known speakers (voice prints) and labels
@@ -36,17 +108,26 @@ def label_known_speakers(result: dict, speaker_embeddings: dict | None,
 
     Sets result["speaker_id_map"]: raw Diarization ID -> currently displayed
     Speaker label, so the GUI can find the right embedding when the user
-    confirms/corrects a name via the "remember" checkbox."""
+    names a speaker (the name saves in place and the voice is enrolled,
+    unless the speaker has under 10 s of speech).
+
+    A Tentative match is labelled "<Name>?" and recorded in
+    result["tentative_speakers"]: Diarization ID -> name without the "?", so
+    the GUI can offer to confirm it. Exports write the label as shown."""
     speaker_id_map = {spk: spk for spk in (speaker_embeddings or {})}
     for new_spk in split_speakers:
         speaker_id_map[new_spk] = new_spk
+    tentative: dict[str, str] = {}
     if speaker_embeddings:
         try:
             from voxscribe.speaker_profiles import match_speakers
-            suggestions = match_speakers(speaker_embeddings)
+            matches = match_speakers(speaker_embeddings)
+            labels = dict(matches.certain)
+            tentative = dict(matches.tentative)
         except Exception:
-            suggestions = {}
-        for spk_id, name in suggestions.items():
+            labels = {}
+        labels.update({spk_id: f"{name}?" for spk_id, name in tentative.items()})
+        for spk_id, name in labels.items():
             speaker_id_map[spk_id] = name
             for seg in result.get("segments", []):
                 if seg.get("speaker") == spk_id:
@@ -55,6 +136,7 @@ def label_known_speakers(result: dict, speaker_embeddings: dict | None,
                 if word.get("speaker") == spk_id:
                     word["speaker"] = name
     result["speaker_id_map"] = speaker_id_map
+    result["tentative_speakers"] = tentative
 
 
 def append_file_result(combined: dict, result: dict, idx: int, n_files: int, offset: float) -> None:

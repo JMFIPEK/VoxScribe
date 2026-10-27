@@ -1,24 +1,22 @@
-"""Page "Transcription": pick file(s), options, progress, result, speaker
-rename, export."""
+"""Page "Transcription": pick a file, options, progress, then the result:
+compact header, Timeline, transcript blocks, speaker list (in-place
+renaming), playback, export."""
 
 import os
 import sys
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QPushButton,
     QProgressBar,
-    QScrollArea,
+    QPushButton,
     QSplitter,
     QTextEdit,
-    QVBoxLayout,
     QWidget,
     QApplication,
 )
@@ -34,6 +32,21 @@ from qt_app.constants import (
     format_time_short,
 )
 from qt_app.pages.common import card, page_root
+from qt_app.speaker_view import SpeakerView
+from qt_app.timeline_model import timeline_from_result
+from qt_app.step_timing import STEP_NAMES, realtime_line
+from qt_app.transcript_view import (
+    longest_turn,
+    row_of_turn,
+    speaker_turns,
+    transcript_html,
+    transcript_text,
+    turn_at,
+    turn_of_row,
+)
+from qt_app.widgets.playback_bar import PlaybackBar
+from qt_app.widgets.speaker_list import SpeakerList
+from qt_app.widgets.timeline import Timeline
 
 
 class TranscribePage(QWidget):
@@ -41,9 +54,15 @@ class TranscribePage(QWidget):
         super().__init__()
         self.window_ = window
         self._transcription_result = None
-        self._speaker_colors = {}
-        self._speaker_entries = {}
-        self._speaker_remember_checks = {}
+        # Colours/ranks/shares of the current result; built once when it
+        # arrives, so a rename never reshuffles the colours.
+        self._speaker_view = None
+        # Display name of the running pipeline step, for the status line.
+        self._step = ""
+        # Turns of the rendered transcript and the one playing (index), for
+        # click-to-play and highlighting.
+        self._turns = []
+        self._playing_turn = None
         self._selected_files = []
         self._model_ids_by_display = {}
         self._hw_recommended_model = None
@@ -61,15 +80,32 @@ class TranscribePage(QWidget):
         root.addWidget(header)
 
         # --- File + options: one card, since they belong together ---
-        opts_card, opts_layout = card("AUDIO FILE & SETTINGS")
-        root.addWidget(opts_card)
+        self.opts_card, opts_layout = card("AUDIO FILE & SETTINGS")
+        root.addWidget(self.opts_card)
+
+        # Once the result is in, the card above shrinks to this one line, so
+        # the Timeline and transcript get the height.
+        self.result_header, header_layout = card()
+        header_row = QHBoxLayout()
+        header_layout.addLayout(header_row)
+        # Play/pause sits in front of the file name, as in the who-said-what
+        # reference - it plays exactly this file.
+        self.playback = PlaybackBar()
+        header_row.addWidget(self.playback)
+        header_row.addSpacing(8)
+        self.result_summary = QLabel("")
+        header_row.addWidget(self.result_summary, 1)
+        self.new_btn = QPushButton("New transcription")
+        header_row.addWidget(self.new_btn)
+        self.result_header.hide()
+        root.addWidget(self.result_header)
 
         file_row = QHBoxLayout()
         opts_layout.addLayout(file_row)
         self.file_label = QLabel("No file selected")
         self.file_label.setProperty("role", "muted")
         file_row.addWidget(self.file_label, 1)
-        self.browse_btn = QPushButton("Choose file(s)...")
+        self.browse_btn = QPushButton("Choose file...")
         file_row.addWidget(self.browse_btn)
 
         sep0 = QFrame()
@@ -119,18 +155,32 @@ class TranscribePage(QWidget):
         self.start_btn.setEnabled(False)
         root.addWidget(self.start_btn)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 1000)
-        self.progress_bar.hide()
-        root.addWidget(self.progress_bar)
-
         self.status_label = QLabel("")
         self.status_label.setProperty("role", "muted")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.hide()
         root.addWidget(self.status_label)
 
-        # --- Transcript + speaker rename: side by side rather than stacked,
+        # While the pipeline runs: a plain progress bar; the step's name and
+        # message go to status_label above.
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.hide()
+        root.addWidget(self.progress_bar)
+
+        # The result's Timeline, under the header.
+        self.timeline = Timeline()
+        self.timeline.hide()
+        root.addWidget(self.timeline)
+
+        # "× realtime" per step and total, under the Timeline.
+        self.realtime_label = QLabel("")
+        self.realtime_label.setProperty("role", "hint")
+        self.realtime_label.hide()
+        root.addWidget(self.realtime_label)
+
+        # --- Transcript + speaker list: side by side rather than stacked,
         # so neither has to fight the other for height (previously the
         # speaker card left the transcript text field almost no visible
         # space once more than 1-2 speakers were detected). Both areas use
@@ -140,6 +190,10 @@ class TranscribePage(QWidget):
 
         self.transcript_view = QTextEdit()
         self.transcript_view.setReadOnly(True)
+        # Blocks on the page's own dark background, as in the reference; only
+        # the block that is playing gets a lighter background.
+        self.transcript_view.setStyleSheet(
+            f"QTextEdit {{ background-color: {theme.BG_ALT}; border: 1px solid {theme.SURFACE}; }}")
         self.content_splitter.addWidget(self.transcript_view)
 
         self.speaker_frame, speaker_outer = card()
@@ -151,24 +205,8 @@ class TranscribePage(QWidget):
         self.content_splitter.setStretchFactor(1, 1)
         self.content_splitter.setSizes([700, 260])
 
-        speaker_header = QHBoxLayout()
-        speaker_outer.addLayout(speaker_header)
-        speaker_title = QLabel("Rename speakers")
-        speaker_title.setStyleSheet("font-weight: 600;")
-        speaker_header.addWidget(speaker_title)
-        speaker_header.addStretch(1)
-        self.apply_names_btn = QPushButton("Apply")
-        speaker_header.addWidget(self.apply_names_btn)
-
-        self.speaker_scroll = QScrollArea()
-        self.speaker_scroll.setWidgetResizable(True)
-        speaker_outer.addWidget(self.speaker_scroll, 1)
-        self.speaker_entries_widget = QWidget()
-        self.speaker_entries_layout = QVBoxLayout(self.speaker_entries_widget)
-        self.speaker_entries_layout.setContentsMargins(0, 0, 0, 0)
-        self.speaker_entries_layout.setSpacing(4)
-        self.speaker_entries_layout.addStretch(1)
-        self.speaker_scroll.setWidget(self.speaker_entries_widget)
+        self.speaker_list = SpeakerList()
+        speaker_outer.addWidget(self.speaker_list, 1)
 
         # --- Actions ---
         bottom_row = QHBoxLayout()
@@ -281,13 +319,22 @@ class TranscribePage(QWidget):
         self.start_btn.clicked.connect(self.start_transcription)
         if self.model_combo is not None:
             self.model_combo.currentTextChanged.connect(self._update_pipeline_info)
-        self.apply_names_btn.clicked.connect(self._apply_speaker_names)
+        self.speaker_list.renameRequested.connect(self._rename_speaker)
+        self.new_btn.clicked.connect(self._show_settings)
+        self.speaker_list.confirmRequested.connect(self._confirm_speaker)
+        self.speaker_list.playRequested.connect(self._play_speaker)
+        self.timeline.seekRequested.connect(self.playback.play_from)
+        self.playback.positionChanged.connect(self._on_playback_position)
+        # Space toggles play/pause in the transcript; a click plays its block.
+        self.transcript_view.installEventFilter(self)
+        self.transcript_view.viewport().installEventFilter(self)
         self.save_btn.clicked.connect(self._save_transcript)
         self.copy_btn.clicked.connect(self._copy_transcript)
 
         tc = self.window_.transcribe_controller
         tc.progressUpdated.connect(self._on_progress)
         tc.finished.connect(self._on_finished)
+        tc.stepStarted.connect(self._on_step)
 
     # --------------------------------------------------------------- file
     def set_audio_file(self, path: str):
@@ -298,12 +345,13 @@ class TranscribePage(QWidget):
 
     def _browse_file(self):
         start_dir = self.window_.settings.get("output_dir") or "recordings"
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select audio or video file(s)", start_dir,
+        # One file only; several files are merged by the CLI (`-i` repeated).
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select audio or video file", start_dir,
             "Audio & video (*.wav *.mp3 *.m4a *.flac *.ogg *.mkv *.mp4 *.mov *.webm *.avi);;"
             "All files (*.*)")
-        if paths:
-            self._selected_files = paths
+        if path:
+            self._selected_files = [path]
             self._update_file_display()
 
     def _update_file_display(self):
@@ -311,12 +359,9 @@ class TranscribePage(QWidget):
         if not files:
             self.file_label.setText("No file selected")
             self.file_label.setToolTip("")
-        elif len(files) == 1:
+        else:
             self.file_label.setText(files[0])
             self.file_label.setToolTip(files[0])
-        else:
-            self.file_label.setText(f"{len(files)} files selected (will be merged)")
-            self.file_label.setToolTip("\n".join(files))
         self._on_files_changed()
 
     def _on_files_changed(self):
@@ -335,20 +380,23 @@ class TranscribePage(QWidget):
             return
 
         self.start_btn.hide()
-        # Indeterminate progress (no min/max) until the first real percentage
-        # comes in - see _on_progress(). Model/engine load time (whisperx/
-        # torch import, model weights) can take 1-3 minutes, especially on
-        # the first run, DURING which there's no progress value yet; without
-        # this indicator the app looks frozen during that time (this import
-        # deliberately runs in TranscribeController's background thread, not
-        # here synchronously - the GUI stays responsive, but without visual
-        # feedback it still looked like a freeze).
+        # Indeterminate until the first real percentage: model/engine load
+        # time (whisperx/torch import, model weights) can take 1-3 minutes on
+        # the first run, during which there's no progress value yet.
+        self._step = ""
         self.progress_bar.setRange(0, 0)
         self.progress_bar.show()
+        self.timeline.hide()
+        self.realtime_label.hide()
         self.status_label.show()
         self.status_label.setStyleSheet(f"color: {theme.ACCENT};")
         self.status_label.setText("Initializing transcription engine... (can take 1-2 minutes on first run)")
         self.transcript_view.clear()
+        self._turns, self._playing_turn = [], None
+        self.playback.unload()
+        self.timeline.set_seekable(False)
+        self.timeline.set_playhead(None)
+        self.speaker_frame.hide()
         self.save_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
 
@@ -375,16 +423,7 @@ class TranscribePage(QWidget):
             device=device,
         )
 
-        # With multiple files: transcribe_multi() (see transcriber.py)
-        # transcribes them in sequence and merges the results into one
-        # continuous transcript (timestamps shifted, per-file speaker label
-        # disambiguation - see its docstring). With exactly one file, still
-        # deliberately the normal single-file path, so behavior/labels stay
-        # unchanged from before this feature existed.
-        if len(files) == 1:
-            self.window_.transcribe_controller.start(audio_path=files[0], **common_kwargs)
-        else:
-            self.window_.transcribe_controller.start_multi(audio_paths=files, **common_kwargs)
+        self.window_.transcribe_controller.start(audio_path=files[0], **common_kwargs)
 
     @staticmethod
     def _parse_int(text):
@@ -393,17 +432,17 @@ class TranscribePage(QWidget):
         except (TypeError, ValueError):
             return None
 
+    def _on_step(self, step):
+        self._step = STEP_NAMES.get(step, "")
+
     def _on_progress(self, pct, message):
         if self.progress_bar.maximum() == 0:
-            # First real progress value - switch from the indeterminate
-            # "loading bar" (see start_transcription()) to a normal percentage.
             self.progress_bar.setRange(0, 1000)
         self.progress_bar.setValue(int(pct * 1000))
-        self.status_label.setText(message)
+        self.status_label.setText(f"{self._step}: {message}" if self._step else message)
 
     def _on_finished(self, result, error):
         self.progress_bar.hide()
-        self.progress_bar.setRange(0, 1000)
         self.start_btn.show()
 
         if error:
@@ -414,61 +453,127 @@ class TranscribePage(QWidget):
         self.status_label.setStyleSheet(f"color: {theme.SUCCESS};")
         self.status_label.setText("Transcription complete!")
         self._transcription_result = result
+        self._speaker_view = SpeakerView(result, theme.SPEAKER_COLOR_PALETTE)
         self.save_btn.setEnabled(True)
         self.copy_btn.setEnabled(True)
         self._render_transcript()
-        self._populate_speaker_entries()
+        self._populate_speaker_list()
+        self._show_result_header()
+        self.realtime_label.setText(realtime_line(result))
+        self.realtime_label.setVisible(bool(self.realtime_label.text()))
+        if self._selected_files:
+            self.playback.load(self._selected_files[0], result.get("duration") or 0.0)
+            self.timeline.set_seekable(True)
+
+    # ------------------------------------------------------------- header
+    def _show_result_header(self):
+        """Shrinks the settings card to: file name · N speakers · length."""
+        name = os.path.basename(self._selected_files[0]) if self._selected_files else ""
+        count = len(self._speaker_view.speakers())
+        parts = [name, f"{count} speaker{'s' if count != 1 else ''}",
+                 format_time_short(self._transcription_result.get("duration") or 0.0)]
+        self.result_summary.setText("  ·  ".join(p for p in parts if p))
+        self.result_summary.setToolTip(self._selected_files[0] if self._selected_files else "")
+        self.opts_card.hide()
+        self.start_btn.hide()
+        self.status_label.hide()
+        self.result_header.show()
+
+    def _show_settings(self):
+        """"New transcription": brings the settings card back; the last
+        result stays visible until the next one starts."""
+        self.result_header.hide()
+        self.opts_card.show()
+        self.start_btn.show()
 
     # ------------------------------------------------------------- render
     def _render_transcript(self):
-        """Rebuilds the transcript text entirely from self._transcription_result.
-        Deliberately no targeted text replacement on rename - the result dict
-        is the single source of truth here, the text field is a pure
-        read-only display."""
+        """Rebuilds Timeline and transcript entirely from
+        self._transcription_result. Deliberately no targeted text replacement
+        on rename - the result dict is the single source of truth here, both
+        are pure read-only displays."""
         result = self._transcription_result
         if not result:
             return
-        speaker_id_map = result.get("speaker_id_map") or {}
-        label_to_raw_id = {label: raw_id for raw_id, label in speaker_id_map.items()}
 
-        labels = sorted({
-            seg.get("speaker") for seg in result.get("segments", [])
-            if seg.get("speaker")
-        })
-        self._speaker_colors = {
-            label_to_raw_id.get(label, label): theme.SPEAKER_COLOR_PALETTE[i % len(theme.SPEAKER_COLOR_PALETTE)]
-            for i, label in enumerate(labels)
-        }
+        view = self._speaker_view
+        # The pipeline says why there are no speakers (no token, failed, off).
+        note = "" if view.speakers() else result.get("speakers_missing") or "No speakers identified"
+        self.timeline.set_timeline(timeline_from_result(result, view, theme.TEXT_MUTED, note))
+        self.timeline.show()
+        self.transcript_view.setHtml(transcript_html(result, view))
+        self._turns = speaker_turns(result.get("segments", []))
+        # setHtml() built a new document; the highlight went with the old one.
+        playing, self._playing_turn = self._playing_turn, None
+        self._highlight_turn(playing, scroll=False)
 
-        self.transcript_view.clear()
-        cursor = self.transcript_view.textCursor()
-        default_fmt = QTextCharFormat()
-        default_fmt.setForeground(QColor(theme.TEXT))
+    # ----------------------------------------------------------- playback
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt override
+        if (obj is self.transcript_view and event.type() == QEvent.KeyPress
+                and event.key() == Qt.Key_Space and self.playback.is_loaded()):
+            self.playback.toggle()
+            return True
+        if (obj is self.transcript_view.viewport() and event.type() == QEvent.MouseButtonRelease
+                and event.button() == Qt.LeftButton
+                and not self.transcript_view.textCursor().hasSelection()):
+            self._play_block_at(event.position().toPoint())
+        return super().eventFilter(obj, event)
 
-        for seg in result.get("segments", []):
-            start = format_time_short(seg.get("start", 0))
-            end = format_time_short(seg.get("end", 0))
-            text = seg.get("text", "").strip()
-            speaker = seg.get("speaker", "")
+    def _transcript_table(self):
+        frames = self.transcript_view.document().rootFrame().childFrames()
+        return frames[0] if frames else None
 
-            cursor.movePosition(QTextCursor.End)
-            cursor.setCharFormat(default_fmt)
-            cursor.insertText(f"[{start} - {end}] ")
+    def _play_block_at(self, pos):
+        """A click in the transcript plays the block under it from its start."""
+        table = self._transcript_table()
+        if table is None or not self._turns:
+            return
+        position = self.transcript_view.cursorForPosition(pos).position()
+        # Checked first: QTextTable.cellAt() crashes on a position outside it.
+        if not table.firstPosition() <= position <= table.lastPosition():
+            return
+        cell = table.cellAt(position)
+        if not cell.isValid():
+            return
+        index = turn_of_row(cell.row())
+        if index < len(self._turns):
+            self.playback.play_from(self._turns[index].start)
 
-            if speaker:
-                raw_id = label_to_raw_id.get(speaker, speaker)
-                color = self._speaker_colors.get(raw_id, theme.TEXT)
-                speaker_fmt = QTextCharFormat()
-                speaker_fmt.setForeground(QColor(color))
-                cursor.setCharFormat(speaker_fmt)
-                cursor.insertText(f"{speaker}: ")
-                cursor.setCharFormat(default_fmt)
-                cursor.insertText(f"{text}\n")
-            else:
-                cursor.insertText(f"{text}\n")
+    def _play_speaker(self, label):
+        turn = longest_turn(self._turns, label)
+        if turn is not None:
+            self.playback.play_from(turn.start, until=turn.end)
+
+    def _on_playback_position(self, seconds):
+        self.timeline.set_playhead(seconds)
+        index = turn_at(self._turns, seconds)
+        if index != self._playing_turn:
+            self._highlight_turn(index, scroll=True)
+
+    def _highlight_turn(self, index, scroll):
+        """Highlights the block of turn `index` (None: none) through the cell
+        backgrounds of its table row; the colour bar keeps its colour."""
+        table = self._transcript_table()
+        if table is None:
+            self._playing_turn = None
+            return
+        for turn, background in ((self._playing_turn, QBrush()),
+                                 (index, QBrush(QColor(theme.SURFACE_ALT)))):
+            if turn is None or row_of_turn(turn) >= table.rows():
+                continue
+            for column in range(1, table.columns()):
+                cell = table.cellAt(row_of_turn(turn), column)
+                fmt = cell.format().toTableCellFormat()
+                fmt.setBackground(background)
+                cell.setFormat(fmt)
+        self._playing_turn = index
+        if scroll and index is not None and row_of_turn(index) < table.rows():
+            cursor = table.cellAt(row_of_turn(index), table.columns() - 1).firstCursorPosition()
+            self.transcript_view.setTextCursor(cursor)
+            self.transcript_view.ensureCursorVisible()
 
     def _copy_transcript(self):
-        text = self.transcript_view.toPlainText().strip()
+        text = transcript_text(self._transcription_result) if self._transcription_result else ""
         if text:
             QApplication.clipboard().setText(text)
             self.status_label.show()
@@ -478,135 +583,50 @@ class TranscribePage(QWidget):
     def _save_transcript(self):
         if not self._transcription_result:
             return
-        self._apply_speaker_names()
 
         from voxscribe.transcriber import save_transcript
         formats = [fmt for fmt, cb in self.format_checks.items() if cb.isChecked()] or ["txt"]
         first_file = self._selected_files[0] if self._selected_files else "transcript"
         base = os.path.splitext(first_file)[0]
-        if len(self._selected_files) > 1:
-            base += "_combined"
         saved = save_transcript(self._transcription_result, base, formats=formats)
         if saved:
             self.status_label.show()
             self.status_label.setStyleSheet(f"color: {theme.SUCCESS};")
             self.status_label.setText(f"Saved: {', '.join(saved)}")
 
-    # ------------------------------------------------------ speaker rename
-    def _populate_speaker_entries(self):
-        while self.speaker_entries_layout.count() > 1:
-            item = self.speaker_entries_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._speaker_entries = {}
-        self._speaker_remember_checks = {}
-
-        result = self._transcription_result
-        if not result:
+    # -------------------------------------------------------- speaker list
+    def _populate_speaker_list(self):
+        view = self._speaker_view
+        if view is None or not view.speakers():
             self.speaker_frame.hide()
             return
-
-        speaker_id_map = result.get("speaker_id_map")
-        embeddings = result.get("speaker_embeddings") or {}
-
-        if speaker_id_map:
-            rows = sorted(speaker_id_map.items(), key=lambda kv: kv[1])
-        else:
-            labels = sorted({
-                seg.get("speaker") for seg in result.get("segments", [])
-                if seg.get("speaker")
-            })
-            rows = [(label, label) for label in labels]
-
-        if not rows:
-            self.speaker_frame.hide()
-            return
-
-        # Each row: label + "remember" checkbox on top, input field below
-        # (full width) - fits the narrow column next to the transcript this
-        # way (instead of one wide row with label+input+checkbox side by side).
-        for raw_id, current_label in rows:
-            row_widget = QWidget()
-            row_layout = QVBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 6)
-            row_layout.setSpacing(2)
-
-            top_row = QHBoxLayout()
-            row_layout.addLayout(top_row)
-
-            color = self._speaker_colors.get(raw_id, theme.TEXT)
-            lbl = QLabel(current_label)
-            lbl.setStyleSheet(f"color: {color};")
-            top_row.addWidget(lbl)
-            top_row.addStretch(1)
-
-            if raw_id in embeddings:
-                remember_check = QCheckBox("remember")
-                remember_check.setChecked(True)
-                top_row.addWidget(remember_check)
-                self._speaker_remember_checks[raw_id] = remember_check
-
-            entry = QLineEdit()
-            entry.setPlaceholderText("Enter name")
-            if raw_id != current_label:
-                entry.setText(current_label)
-            row_layout.addWidget(entry)
-            self._speaker_entries[raw_id] = entry
-
-            self.speaker_entries_layout.insertWidget(
-                self.speaker_entries_layout.count() - 1, row_widget)
-
+        self.speaker_list.show_view(view)
         self.speaker_frame.show()
 
-    def _get_speaker_mapping(self):
-        mapping = {}
-        for raw_id, entry in self._speaker_entries.items():
-            name = entry.text().strip()
-            if name:
-                mapping[raw_id] = name
-        return mapping
+    def _rename_speaker(self, label, name):
+        """Applies a name typed in the speaker list: relabels the result (a
+        name another speaker already has merges the two, see
+        SpeakerView.rename()), remembers the voice unless it is too short or
+        has no embedding, and re-renders Timeline, transcript and list right away."""
+        name = name.strip()
+        if name and name != label:
+            self._enroll(self._speaker_view.apply_name(label, name))
+            self._render_transcript()
+        self._populate_speaker_list()
 
-    def _apply_speaker_names(self):
-        """The single place that applies speaker renames - writes to
-        result['segments']/['word_segments']/['speaker_id_map'] and
-        optionally remembers the voice in speaker_profiles. The full
-        transcript text is then re-rendered (see _render_transcript)."""
-        mapping = self._get_speaker_mapping()
-        if not mapping or not self._transcription_result:
-            return
+    def _confirm_speaker(self, label):
+        """The check mark of a Tentative match: "Jonas?" becomes "Jonas"
+        and the voice is remembered like for a typed name."""
+        self._enroll(self._speaker_view.confirm(label))
+        self._render_transcript()
+        self._populate_speaker_list()
 
+    @staticmethod
+    def _enroll(enrollments):
         import voxscribe.speaker_profiles as speaker_profiles
 
-        result = self._transcription_result
-        speaker_id_map = result.setdefault("speaker_id_map", {})
-        embeddings = result.get("speaker_embeddings") or {}
-
-        for raw_id, new_name in mapping.items():
-            old_label = speaker_id_map.get(raw_id, raw_id)
-            if old_label == new_name:
-                continue
-
-            for seg in result.get("segments", []):
-                if seg.get("speaker") == old_label:
-                    seg["speaker"] = new_name
-                for word in seg.get("words", []) or []:
-                    if word.get("speaker") == old_label:
-                        word["speaker"] = new_name
-            for word in result.get("word_segments", []) or []:
-                if word.get("speaker") == old_label:
-                    word["speaker"] = new_name
-
-            speaker_id_map[raw_id] = new_name
-
-            remember_check = self._speaker_remember_checks.get(raw_id)
-            if remember_check is not None and remember_check.isChecked() and raw_id in embeddings:
-                speaker_profiles.enroll_speaker(new_name, embeddings[raw_id])
-
-        self._render_transcript()
-        self._populate_speaker_entries()
-        self.status_label.show()
-        self.status_label.setStyleSheet(f"color: {theme.SUCCESS};")
-        self.status_label.setText("Speaker names applied!")
+        for name, embedding in enrollments:
+            speaker_profiles.enroll_speaker(name, embedding)
 
     def on_page_shown(self):
         self._refresh_model_choices()

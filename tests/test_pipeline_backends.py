@@ -83,3 +83,160 @@ def test_other_backend_errors_propagate(registry, wav):
 
     with pytest.raises(ValueError, match="boom"):
         t.transcribe(wav, model_size="fake:1", diarize=False, device="cpu")
+
+
+class StreamingBackend(FakeBackend):
+    """Streams two segments as it goes, and needs the alignment step."""
+    skips_alignment = False
+
+    def transcribe(self, request):
+        segments = [{"start": 0.0, "end": 0.4, "text": "hello"},
+                    {"start": 0.5, "end": 0.9, "text": "there"}]
+        for seg in segments:
+            request.on_segments([dict(seg)])
+        return {"segments": segments, "language": "en"}
+
+
+@pytest.fixture
+def fake_models(monkeypatch):
+    """Alignment and speaker identification without any model."""
+    def align(result, audio, device, model_dir, cache_only, progress_callback=None):
+        return dict(result, segments=[dict(s, words=[]) for s in result["segments"]])
+
+    def diarize(result, audio, device, hf_token, min_speakers, max_speakers, prog):
+        segments = [dict(s, speaker=f"SPEAKER_0{i}") for i, s in enumerate(result["segments"])]
+        return dict(result, segments=segments), {}
+
+    monkeypatch.setattr(pipeline, "align_by_language", align)
+    monkeypatch.setattr(pipeline, "run_diarization", diarize)
+    monkeypatch.setattr(pipeline, "split_by_track", lambda result, source: set())
+    monkeypatch.setattr(pipeline, "label_known_speakers", lambda result, emb, split: None)
+
+
+def test_events_arrive_in_step_order(registry, wav, fake_models):
+    registry.register("fake:", StreamingBackend)
+    events = []
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu",
+                          on_event=lambda kind, data: events.append((kind, data)))
+
+    assert [kind if kind != "step" else data for kind, data in events] == [
+        "transcription", "segments", "segments",
+        "alignment", "aligned",
+        "speaker_identification", "speaker_turns",
+    ]
+    assert [seg["text"] for _, segs in events[1:3] for seg in segs] == ["hello", "there"]
+    assert all("words" in seg for seg in events[4][1])
+    assert [seg["speaker"] for seg in events[6][1]] == ["SPEAKER_00", "SPEAKER_01"]
+    assert set(result["step_times"]) == {"transcription", "alignment", "speaker_identification"}
+    assert all(seconds >= 0 for seconds in result["step_times"].values())
+    assert result["total_time"] >= sum(result["step_times"].values())
+
+
+def test_skipped_steps_are_not_announced_or_timed(registry, wav):
+    registry.register("fake:", FakeBackend)  # word timestamps already there, no streaming
+    events = []
+
+    result = t.transcribe(wav, model_size="fake:1", diarize=False, device="cpu",
+                          on_event=lambda kind, data: events.append((kind, data)))
+
+    assert [kind for kind, _ in events] == ["step", "aligned"]
+    assert events[0][1] == "transcription"
+    assert [seg["text"] for seg in events[1][1]] == ["hi"]
+    assert set(result["step_times"]) == {"transcription"}
+
+
+# --- why there are no speakers (the Timeline's note, #49) --------------------
+
+def test_no_token_says_why_speakers_are_missing(registry, wav, fake_models):
+    registry.register("fake:", FakeBackend)
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token=None, device="cpu")
+
+    assert "token" in result["speakers_missing"].lower()
+
+
+def test_disabled_speaker_identification_says_so(registry, wav):
+    registry.register("fake:", FakeBackend)
+
+    result = t.transcribe(wav, model_size="fake:1", diarize=False, device="cpu")
+
+    assert "off" in result["speakers_missing"].lower()
+
+
+def test_failed_speaker_identification_keeps_the_transcript(registry, wav, fake_models,
+                                                           monkeypatch):
+    registry.register("fake:", FakeBackend)
+
+    def broken(*args):
+        raise RuntimeError("license not accepted")
+
+    monkeypatch.setattr(pipeline, "run_diarization", broken)
+    events = []
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu",
+                          on_event=lambda kind, data: events.append(kind))
+
+    assert [seg["text"] for seg in result["segments"]] == ["hi"]
+    assert "license not accepted" in result["speakers_missing"]
+    assert "speaker_turns" not in events
+
+
+def test_failed_speaker_identification_is_still_timed(registry, wav, fake_models, monkeypatch):
+    registry.register("fake:", FakeBackend)
+
+    def broken(*args):
+        raise RuntimeError("license not accepted")
+
+    monkeypatch.setattr(pipeline, "run_diarization", broken)
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu")
+
+    assert "speaker_identification" in result["step_times"]
+
+
+def test_speaker_identification_that_finds_nobody_is_still_timed(registry, wav, fake_models,
+                                                                 monkeypatch):
+    registry.register("fake:", FakeBackend)
+    monkeypatch.setattr(pipeline, "run_diarization", lambda result, *a: (result, {}))
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu")
+
+    assert result["speakers_missing"] == "No speakers identified"
+    assert "speaker_identification" in result["step_times"]
+
+
+def test_aligned_event_is_not_changed_by_the_later_steps(registry, wav, fake_models,
+                                                         monkeypatch):
+    registry.register("fake:", StreamingBackend)
+
+    def align(result, audio, device, model_dir, cache_only, progress_callback=None):
+        return dict(result, segments=[dict(s, words=[{"word": s["text"], "start": s["start"],
+                                                      "end": s["end"]}])
+                                      for s in result["segments"]])
+
+    def diarize_in_place(result, *args):
+        for seg in result["segments"]:
+            seg["speaker"] = "SPEAKER_00"
+            for word in seg["words"]:
+                word["speaker"] = "SPEAKER_00"
+            seg["words"].append({"word": "extra"})
+        return result, {}
+
+    monkeypatch.setattr(pipeline, "align_by_language", align)
+    monkeypatch.setattr(pipeline, "run_diarization", diarize_in_place)
+    events = {}
+
+    t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu",
+                 on_event=lambda kind, data: events.setdefault(kind, data))
+
+    assert [[w["word"] for w in seg["words"]] for seg in events["aligned"]] == [["hello"], ["there"]]
+    assert all("speaker" not in w for seg in events["aligned"] for w in seg["words"])
+
+
+def test_identified_speakers_leave_no_reason(registry, wav, fake_models):
+    registry.register("fake:", FakeBackend)
+
+    result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu")
+
+    assert "speakers_missing" not in result

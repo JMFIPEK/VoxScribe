@@ -4,18 +4,22 @@ transcribe() only orchestrates; each stage is a named step below. Nothing
 here imports torch or whisperx at module load.
 """
 
+import copy
 import os
 import time
 
 from voxscribe.transcription import backends  # noqa: F401  (registers the built-in Backends)
 from voxscribe.transcription.align import align_by_language
 from voxscribe.transcription.audio import SAMPLE_RATE, AudioSource
-from voxscribe.transcription.backend import Backend, FallbackRequested, TranscribeRequest
+from voxscribe.transcription.backend import (
+    STEP_ALIGNMENT, STEP_SPEAKER_IDENTIFICATION, STEP_TRANSCRIPTION, Backend, FallbackRequested,
+    TranscribeRequest)
 from voxscribe.transcription.devices import resolve_device
 from voxscribe.transcription.diarize import run_diarization
 from voxscribe.transcription.model_ids import default_local_model_size
 from voxscribe.transcription.registry import default_registry
-from voxscribe.transcription.speakers import append_file_result, label_known_speakers, split_by_track
+from voxscribe.transcription.speakers import (
+    append_file_result, label_known_speakers, merge_stray_speakers, split_by_track)
 from voxscribe.paths import get_bundled_models_dir
 
 # Must be set before the first MPS op: pyannote/wav2vec2 use a few ops that
@@ -79,21 +83,34 @@ def _step_align(backend: Backend, result: dict, audio, torch_device: str, prog) 
 
 def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_device: str,
                             hf_token: str | None, min_speakers: int | None,
-                            max_speakers: int | None, prog) -> dict:
+                            max_speakers: int | None, prog) -> tuple[dict, str | None]:
     """Step 3 (progress 65-100%): who speaks when - diarization, the
-    microphone/system track split, then voice-print recognition."""
+    microphone/system track split, the Stray speaker merge, then voice-print
+    recognition. Returns (result, why there are no speakers or None); a
+    failure here keeps the transcript without speakers instead of losing it."""
     if not hf_token:
         print("3/3  Diarization skipped (no HF_TOKEN set)")
         print("     Set HF_TOKEN in .env for speaker recognition")
         prog(1.0, "Done (diarization skipped - no token)")
-        return result
+        return result, "Speaker identification skipped: no HuggingFace token set"
 
     print("3/3  Running speaker diarization...")
     t4 = time.time()
 
-    result, speaker_embeddings = run_diarization(
-        result, audio_source.load(), torch_device, hf_token, min_speakers, max_speakers, prog)
+    try:
+        diarized, speaker_embeddings = run_diarization(
+            result, audio_source.load(), torch_device, hf_token, min_speakers, max_speakers, prog)
+    except Exception as e:  # noqa: BLE001 - the transcript is still worth keeping
+        print(f"     [WARNING] Diarization failed: {e}")
+        for seg in result.get("segments", []):
+            seg.pop("speaker", None)
+            for word in seg.get("words", []):
+                word.pop("speaker", None)
+        return result, f"Speaker identification failed: {e}"
+    result = diarized
     split_speakers = split_by_track(result, audio_source)
+    for stray in merge_stray_speakers(result, speaker_embeddings):
+        split_speakers.pop(stray, None)
     label_known_speakers(result, speaker_embeddings, split_speakers)
 
     t5 = time.time()
@@ -102,7 +119,7 @@ def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_devic
     speakers = {seg["speaker"] for seg in result.get("segments", []) if "speaker" in seg}
     print(f"     {len(speakers)} speakers detected: {', '.join(sorted(speakers))}")
     prog(0.98, f"Diarization done - {len(speakers)} speakers ({t5 - t4:.0f}s)")
-    return result
+    return result, None if speakers else "No speakers identified"
 
 
 def transcribe(
@@ -118,6 +135,7 @@ def transcribe(
     on_progress=None,
     api_key: str | None = None,
     api_base_url: str | None = None,
+    on_event=None,
 ) -> dict:
     """Runs the full WhisperX pipeline.
 
@@ -153,9 +171,23 @@ def transcribe(
             ad-hoc use without a saved provider)
         api_base_url: Override the configured provider's base URL (optional,
             same purpose as api_key)
+        on_event: Optional `on_event(kind, data)` for the Timeline, besides
+            on_progress, in this order:
+            - ("step", name) when a step starts: "transcription", "alignment",
+              "speaker_identification" (skipped steps aren't announced; a
+              second "transcription" means the Provider failed and the local
+              fallback starts over);
+            - ("segments", [segment, ...]) new text segments as the Backend
+              produces them - Providers per chunk, Parakeet per segment;
+              local WhisperX, OpenVINO and Apple only report the percentage;
+            - ("aligned", segments) once segments have word timestamps (also
+              when the Backend already had them and alignment was skipped);
+            - ("speaker_turns", segments) the final segments with "speaker".
 
     Returns:
-        Dict with "segments", "language", and speaker labels if applicable
+        Dict with "segments", "language", and speaker labels if applicable,
+        plus "step_times" ({step name: wall seconds}, model loading included,
+        only steps that ran) and "total_time" (seconds)
     """
     device = resolve_device(device)
     backend = default_registry.resolve(model_size)
@@ -171,12 +203,21 @@ def transcribe(
         if on_progress:
             on_progress(pct, msg)
 
+    def emit(kind, data):
+        # Deep copies: the GUI thread reads them later, while this thread's
+        # next steps keep editing the segments and their word lists in place.
+        if on_event:
+            on_event(kind, copy.deepcopy(data))
+
+    step_times = {}
     t0 = time.time()
+    emit("step", STEP_TRANSCRIPTION)
     audio_source = AudioSource(audio_path)
     request = TranscribeRequest(
         audio_path=audio_path, audio=audio_source, language=language, model_id=model_size,
         progress=prog, batch_size=batch_size, device=device,
         api_key=api_key, api_base_url=api_base_url,
+        on_segments=lambda segments: emit("segments", segments),
     )
     try:
         result = _step_transcribe(backend, request, t0)
@@ -189,17 +230,35 @@ def transcribe(
             audio_path, language=language, model_size=fallback_model, diarize=diarize,
             hf_token=hf_token, min_speakers=min_speakers, max_speakers=max_speakers,
             batch_size=batch_size, device=device, on_progress=on_progress,
-            api_key=api_key, api_base_url=api_base_url,
+            api_key=api_key, api_base_url=api_base_url, on_event=on_event,
         )
     audio = audio_source.load()
+    step_times[STEP_TRANSCRIPTION] = time.time() - t0
 
+    if not backend.skips_alignment:
+        emit("step", STEP_ALIGNMENT)
+    t_step = time.time()
     result = _step_align(backend, result, audio, device, prog)
+    if not backend.skips_alignment:
+        step_times[STEP_ALIGNMENT] = time.time() - t_step
+    emit("aligned", result["segments"])
 
+    speakers_missing = None
     if diarize:
-        result = _step_identify_speakers(
+        identifies = bool(hf_token)  # without a token the step only reports it's skipped
+        if identifies:
+            emit("step", STEP_SPEAKER_IDENTIFICATION)
+        t_step = time.time()
+        result, speakers_missing = _step_identify_speakers(
             result, audio_source, device, hf_token, min_speakers, max_speakers, prog)
+        if identifies:
+            # Timed also when it failed or found nobody: the total includes it.
+            step_times[STEP_SPEAKER_IDENTIFICATION] = time.time() - t_step
+        if identifies and not speakers_missing:
+            emit("speaker_turns", result["segments"])
     else:
         print("3/3  Diarization disabled")
+        speakers_missing = "Speaker identification is turned off"
 
     total = time.time() - t0
     prog(1.0, f"Done! (total: {total:.0f}s)")
@@ -209,6 +268,12 @@ def transcribe(
     # subsequent files in the combined transcript without decoding the audio
     # file a second time.
     result["duration"] = len(audio) / SAMPLE_RATE
+    # For the "x realtime" figures (duration / step time).
+    result["step_times"] = step_times
+    result["total_time"] = total
+    # For the Timeline's note: why it has no Speaker lanes (only when it has none).
+    if speakers_missing:
+        result["speakers_missing"] = speakers_missing
 
     return result
 
@@ -229,7 +294,7 @@ def transcribe_multi(
 ) -> dict:
     """Transcribes multiple audio/video files in sequence (via `transcribe()`,
     unchanged) and merges the results into one continuous transcript - for the
-    multi-file selection in the Transcription tab (qt_app/pages/transcribe_page.py).
+    CLI's repeated `-i` (`python main.py transcribe -i a.wav -i b.wav`).
 
     Each file's timestamps are shifted by the cumulative duration of the
     preceding files, so the combined transcript has one continuous timeline

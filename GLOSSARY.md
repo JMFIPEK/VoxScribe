@@ -63,3 +63,23 @@ _Avoid_: Speaker ID, raw speaker
 **Speaker label**:
 The name currently shown for a speaker in a transcript, either a Diarization ID or a recognized person's name.
 _Avoid_: Speaker name, speaker ID
+
+**Tentative match**:
+A known person whose voice print is close to a speaker's but not close enough to name them for certain; shown as the name with a question mark until the user confirms or replaces it.
+_Avoid_: Suggestion, guess, maybe-match
+
+**Stray speaker**:
+A Diarization ID that holds only a few seconds of speech, nearly always a few words of someone who is already another speaker; its words are given to the neighbouring speaker.
+_Avoid_: Phantom speaker, ghost speaker
+
+**Timeline**:
+The strip above a transcript that shows when each speaker talks across the whole recording, and that fills in step by step while the transcription runs.
+_Avoid_: Progress bar, waveform, track
+
+**Speaker lane**:
+One row of the Timeline, showing when one Speaker label talks; the speakers with the most speaking time get a lane each, all others share the Others lane.
+_Avoid_: Track (a track is a recorded channel), row
+
+**Others**:
+The shared Speaker lane for every speaker outside those with the most speaking time.
+_Avoid_: Rest, miscellaneous, unknown speakers
