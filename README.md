@@ -51,6 +51,8 @@ uv sync
 
 Use the remote you cloned from in place of `origin` if it's named differently. Afterwards Settings → Info shows the Release, e.g. `v1.0.0`.
 
+From v1.1.0 on, an install offers newer Releases in the app and installs them on the next start (Windows), so this step is needed only once.
+
 ### macOS / Linux
 
 See [macOS setup](docs/macos.md). Linux is experimental (microphone-only, no system-audio path); `uv sync` is enough there too.
