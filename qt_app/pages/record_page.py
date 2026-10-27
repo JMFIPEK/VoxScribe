@@ -7,6 +7,7 @@ Playback only, Call (both, as separate tracks) and In room (microphone only);
 a Call's Setup is Headset or Loudspeaker.
 """
 
+import functools
 import json
 import sys
 import time
@@ -209,7 +210,10 @@ class RecordPage(QWidget):
         self.refresh_btn = QPushButton()
         self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         self.refresh_btn.setToolTip("Refresh devices")
-        devices_row.addWidget(self.refresh_btn, 0, Qt.AlignVCenter)
+        # As tall as the visible picker rows together (two in a Call), as
+        # narrow as its icon.
+        self.refresh_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        devices_row.addWidget(self.refresh_btn)
 
         self.device_warning = QLabel("")
         self.device_warning.setWordWrap(True)
@@ -455,24 +459,24 @@ class RecordPage(QWidget):
                 self._set_status("The selected device is no longer connected - "
                                  "the device list has been refreshed, please check it.", theme.DANGER)
                 return
-        self._recording_dir = self.window_.settings.get("output_dir") or "recordings"
-        self._recording_mode = self._mode
-        self._recording_started = datetime.now()
-        output_path = self._output_path_at_stop
+        # Where the recording is saved: the folder, mode and minute of Start,
+        # the Recording title at Stop - the recorder controller asks then.
+        path_for_title = functools.partial(
+            recording_names.recording_path,
+            self.window_.settings.get("output_dir") or "recordings",
+            mode=self._mode, started=datetime.now())
+
+        def path_at_stop():
+            return path_for_title(self.title_edit.text())
+
         rc = self.window_.recorder_controller
         if self._mode == rm.MODE_CALL:
-            rc.start(output_path, rm.source_for_mode(self._mode), mic_index,
+            rc.start(path_at_stop, rm.source_for_mode(self._mode), mic_index,
                      loopback_index=playback_index, setup=self._setup)
         elif self._mode == rm.MODE_PLAYBACK:
-            rc.start(output_path, rm.source_for_mode(self._mode), playback_index)
+            rc.start(path_at_stop, rm.source_for_mode(self._mode), playback_index)
         else:
-            rc.start(output_path, rm.source_for_mode(self._mode), mic_index)
-
-    def _output_path_at_stop(self) -> str:
-        """Where the recording is saved: the Recording title at Stop, the
-        minute of Start. The recorder controller asks at Stop."""
-        return recording_names.recording_path(self._recording_dir, self.title_edit.text(),
-                                              self._recording_mode, self._recording_started)
+            rc.start(path_at_stop, rm.source_for_mode(self._mode), mic_index)
 
     def _set_controls_enabled(self, enabled):
         for btn in (*self.mode_buttons.values(), *self.setup_buttons.values()):
@@ -521,6 +525,8 @@ class RecordPage(QWidget):
         for meter in self._meters.values():
             meter.reset()
         self.record_btn.setEnabled(False)
+        # The file was named at Stop - a title typed now would be lost.
+        self.title_edit.setEnabled(False)
         self.record_btn.setText("  Saving recording...")
         self.saving_bar.show()
         self._set_status(
@@ -534,8 +540,9 @@ class RecordPage(QWidget):
         self.record_btn.setText("  Start recording")
         self.record_btn.setIcon(QIcon(theme.get_icons()["record"]))
         self._set_controls_enabled(True)
-        # The next meeting mustn't get this one's title by accident.
+        # The next recording mustn't get this one's title by accident.
         self.title_edit.clear()
+        self.title_edit.setEnabled(True)
         self.timer_label.setText("00:00")
         for meter in self._meters.values():
             meter.reset()

@@ -1,4 +1,4 @@
-"""Recording names: `YYMMDD_HHMM_<Recording title>.wav` (see GLOSSARY.md).
+"""File names of recordings: `YYMMDD_HHMM_<Recording title>.wav` (see GLOSSARY.md).
 
 Stdlib only - imported by the GUI's Record page and the CLI.
 """

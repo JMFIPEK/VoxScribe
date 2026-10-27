@@ -17,6 +17,7 @@
 | `--setup` | guessed | Call only: `headset` or `loudspeaker` (speakers + room mic/speakerphone). Guessed from the devices if omitted, and stored with the recording |
 | `--device` | default input | Microphone device index (see `devices`) |
 | `--playback-device` | default output | Playback (loopback) device index (Windows) |
+| `--name` | `Playback`, `Meeting` or `Room` after the mode | Recording title, the end of the file name: `recordings/YYMMDD_HHMM_<title>.wav`. Ignored, with a note, when `-o`/`--output` gives the path |
 | `--source` | – | Deprecated alias: `mic` = `--mode room`, `system` = `--mode playback`, `both` = `--mode call` |
 
 ## `transcribe` options
@@ -46,6 +47,9 @@ python main.py record --mode playback
 
 # A call on a headset: playback + the headset's microphone
 python main.py record --mode call --setup headset
+
+# Give the recording a title: recordings/YYMMDD_HHMM_ASAM_WG.wav
+python main.py record --mode call --name "ASAM WG"
 
 # Pick a specific microphone (index from 'devices')
 python main.py record --mode room --device 15

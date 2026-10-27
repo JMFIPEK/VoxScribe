@@ -106,7 +106,7 @@ def _add_mode_arguments(parser):
     parser.add_argument(
         "--name", default=None,
         help=("Recording title, the end of the file name "
-              "(recordings/YYMMDD_HHMM_<name>.wav); default: Playback, Meeting "
+              "(recordings/YYMMDD_HHMM_<title>.wav); default: Playback, Meeting "
               "or Room after the mode. Ignored with --output")
     )
     # Deprecated alias from before Recording modes: mic/system/both.

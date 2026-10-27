@@ -39,9 +39,48 @@ def app():
 
 
 @pytest.fixture
-def page(app, tmp_path, monkeypatch):
-    from PySide6.QtCore import QObject, QSettings, Signal
+def make_page(app, tmp_path, monkeypatch):
+    """Builds a Record page on a window whose recorder controller is
+    `controller`; the clock stands at 14:30:59 on 2026-10-27."""
+    from PySide6.QtCore import QSettings
     from qt_app.pages import record_page
+
+    class FakeWindow:
+        settings = {"output_dir": str(tmp_path)}
+
+        def __init__(self, controller):
+            self.recorder_controller = controller
+            self.sent_to_transcription = []
+
+        def send_to_transcription(self, path):
+            self.sent_to_transcription.append(path)
+
+    # Keep the user's real QSettings (registry) out of it.
+    ini = str(tmp_path / "settings.ini")
+    monkeypatch.setattr(record_page, "QSettings", lambda *a: QSettings(ini, QSettings.IniFormat))
+
+    clock = FakeClock(datetime(2026, 10, 27, 14, 30, 59))
+    monkeypatch.setattr(record_page, "datetime", clock)
+
+    pages = []
+
+    def make(controller):
+        page = record_page.RecordPage(FakeWindow(controller))
+        page.clock = clock
+        page.resize(900, 900)
+        page.show()
+        app.processEvents()
+        pages.append(page)
+        return page
+
+    yield make
+    for page in pages:
+        page.close()
+
+
+@pytest.fixture
+def page(make_page):
+    from PySide6.QtCore import QObject, Signal
 
     class FakeRecorderController(QObject):
         levelUpdated = Signal(str, float)
@@ -60,37 +99,16 @@ def page(app, tmp_path, monkeypatch):
 
         # Like RecorderController: the path callback is asked at Stop (also
         # on window close), and what it says is where the files are saved.
-        def start(self, output_path, source, device_index, loopback_index=None, setup=None):
-            self.output_path = output_path
+        def start(self, path_at_stop, source, device_index, loopback_index=None, setup=None):
+            self.path_at_stop = path_at_stop
             self.is_recording = True
             self.recordingStarted.emit()
 
         def stop(self, wait=False):
             self.is_recording = False
-            self.saved_to = self.output_path()
+            self.saved_to = self.path_at_stop()
 
-    class FakeWindow:
-        recorder_controller = FakeRecorderController()
-        settings = {"output_dir": str(tmp_path)}
-        sent_to_transcription = []
-
-        def send_to_transcription(self, path):
-            self.sent_to_transcription.append(path)
-
-    # Keep the user's real QSettings (registry) out of it.
-    ini = str(tmp_path / "settings.ini")
-    monkeypatch.setattr(record_page, "QSettings", lambda *a: QSettings(ini, QSettings.IniFormat))
-
-    clock = FakeClock(datetime(2026, 10, 27, 14, 30, 59))
-    monkeypatch.setattr(record_page, "datetime", clock)
-
-    page = record_page.RecordPage(FakeWindow())
-    page.clock = clock
-    page.resize(900, 900)
-    page.show()
-    app.processEvents()
-    yield page
-    page.close()
+    return make_page(FakeRecorderController())
 
 
 def _show_mode(page, app, mode):
@@ -129,6 +147,18 @@ def test_refresh_sits_beside_every_visible_picker(page, app, mode):
         assert refresh.top() < rect.bottom() and rect.top() < refresh.bottom()  # ... on its height
     # Not on a row of its own: it never reaches below the last visible picker's row.
     assert refresh.bottom() <= max(_rect_in(page, c).bottom() for c in pickers) + 2
+
+
+def test_refresh_spans_both_pickers_of_a_call_and_stays_narrow(page, app):
+    if "call" not in page.mode_buttons:
+        pytest.skip("Call isn't offered on this OS")
+    _show_mode(page, app, "call")
+    refresh = _rect_in(page, page.refresh_btn)
+    playback = _rect_in(page, page.playback_combo)
+    mic = _rect_in(page, page.mic_combo)
+    assert refresh.top() <= playback.top() + 2
+    assert refresh.bottom() >= mic.bottom() - 2
+    assert refresh.width() <= 2 * playback.height()
 
 
 def test_call_pickers_have_the_same_width(page, app):
@@ -215,10 +245,46 @@ def test_title_is_emptied_after_the_recording_finished(page, app, error):
     assert page.title_edit.text() == ""
 
 
+def test_title_is_locked_while_saving_and_free_again_after(page, app):
+    # The file was named at Stop: text typed while saving would be lost.
+    rc = page.window_.recorder_controller
+    saved = _record(page, app, "call", title_during="ASAM WG")
+    rc.recordingStopping.emit()
+    assert not page.title_edit.isEnabled()
+    rc.recordingFinished.emit(saved, 60.0, None)
+    assert page.title_edit.isEnabled()
+    assert page.title_edit.text() == ""
+
+
 def test_the_final_path_goes_to_transcription(page, app):
     saved = _record(page, app, "call", title_during="ASAM WG")
     page.window_.recorder_controller.recordingFinished.emit(saved, 60.0, None)
     assert page.window_.sent_to_transcription == [saved]
+
+
+def test_closing_the_window_while_recording_names_the_file_from_the_title(make_page, app, tmp_path,
+                                                                        monkeypatch):
+    # MainWindow.closeEvent stops a running recording with wait=True: no
+    # recordingStopping, the controller blocks until the files are written.
+    from qt_app import controllers
+    from qt_app.controllers import RecorderController
+    from tests.fake_capture import FakePyAudio, FakeSource
+    from voxscribe.recorder import AudioRecorder, CaptureSources
+
+    monkeypatch.setattr(controllers, "get_devices", lambda: DEVICES)
+    sources = CaptureSources(platform="win32", pyaudio=FakePyAudio(FakeSource(), FakeSource()))
+    rc = RecorderController(recorder=AudioRecorder(sources))
+    page = make_page(rc)
+    if "room" not in page.mode_buttons:
+        pytest.skip("In room isn't offered on this OS")
+    _show_mode(page, app, "room")
+    page.record_btn.click()
+    assert rc.is_recording
+    page.title_edit.setText("Jour fixe")
+
+    rc.stop(wait=True)
+
+    assert os.path.isfile(tmp_path / "261027_1430_Jour_fixe.wav")
 
 
 def test_controller_saves_where_the_path_callback_says_at_stop(app, tmp_path):
