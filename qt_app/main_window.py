@@ -74,8 +74,9 @@ class MainWindow(QMainWindow):
         column = QVBoxLayout(central)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
-        column.addWidget(self.update_notice)
         column.addWidget(self.tabs, 1)
+        # At the bottom, so it doesn't push the tab bar and page down.
+        column.addWidget(self.update_notice)
         self.setCentralWidget(central)
 
         # The Update button is unavailable while recording or transcribing.

@@ -55,3 +55,8 @@ def test_record_page_rows_never_overlap_under_the_update_notice(window, mode):
             page.playback_row, page.mic_row, page.title_edit, page.record_btn,
             page.status_label, page.auto_transcribe_check]
     assert overlapping(rows) == []
+
+
+def test_the_update_notice_sits_below_the_pages(window):
+    notice, tabs = window.update_notice, window.tabs
+    assert notice.mapTo(window, notice.rect().topLeft()).y() >= tabs.mapTo(window, tabs.rect().bottomLeft()).y()

@@ -32,7 +32,7 @@ class UpdateNotice(QFrame):
         self._report = ""  # how the last Update went, kept in front of a new offer
         self.setObjectName("updateNotice")
         self.setStyleSheet(f"""
-            QFrame#updateNotice {{ background-color: {theme.SURFACE}; border-bottom: 1px solid {theme.BORDER}; }}
+            QFrame#updateNotice {{ background-color: {theme.SURFACE}; border-top: 1px solid {theme.BORDER}; }}
             QFrame#updateNotice QLabel {{ color: {theme.TEXT}; }}
         """)
         row = QHBoxLayout(self)
