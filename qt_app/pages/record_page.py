@@ -36,7 +36,7 @@ from voxscribe import recording_modes as rm
 CHANNEL_LABELS = {"system": "Playback", "mic": "Microphone"}
 
 MODE_LABELS = {
-    rm.MODE_PLAYBACK: "Listen only\nWhat the computer plays",
+    rm.MODE_PLAYBACK: "Playback only\nWhat the computer plays",
     rm.MODE_CALL: "Call\nPlayback + your microphone",
     rm.MODE_ROOM: "In room\nMicrophone only",
 }
@@ -174,6 +174,14 @@ class RecordPage(QWidget):
         device_card, device_layout = card("DEVICES")
         root.addWidget(device_card)
 
+        # Pickers on the left, the icon-only refresh button in its own column
+        # beside every visible picker row - no row of its own, and both
+        # pickers of a Call keep the same width.
+        devices_row = QHBoxLayout()
+        device_layout.addLayout(devices_row)
+        pickers = QVBoxLayout()
+        devices_row.addLayout(pickers, 1)
+
         self.playback_row = QWidget()
         self.playback_row.setProperty("role", "row")
         playback_row = QHBoxLayout(self.playback_row)
@@ -183,7 +191,7 @@ class RecordPage(QWidget):
         playback_row.addWidget(lbl)
         self.playback_combo = QComboBox()
         playback_row.addWidget(self.playback_combo, 1)
-        device_layout.addWidget(self.playback_row)
+        pickers.addWidget(self.playback_row)
 
         self.mic_row = QWidget()
         self.mic_row.setProperty("role", "row")
@@ -194,18 +202,18 @@ class RecordPage(QWidget):
         mic_row.addWidget(lbl)
         self.mic_combo = QComboBox()
         mic_row.addWidget(self.mic_combo, 1)
-        device_layout.addWidget(self.mic_row)
+        pickers.addWidget(self.mic_row)
 
-        refresh_row = QHBoxLayout()
+        self.refresh_btn = QPushButton()
+        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.refresh_btn.setToolTip("Refresh devices")
+        devices_row.addWidget(self.refresh_btn, 0, Qt.AlignVCenter)
+
         self.device_warning = QLabel("")
         self.device_warning.setWordWrap(True)
         self.device_warning.setStyleSheet(f"color: {theme.DANGER};")
         self.device_warning.hide()
-        refresh_row.addWidget(self.device_warning, 1)
-        self.refresh_btn = QPushButton(" Refresh devices")
-        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        refresh_row.addWidget(self.refresh_btn, 0, Qt.AlignRight)
-        device_layout.addLayout(refresh_row)
+        device_layout.addWidget(self.device_warning)
 
         # --- Level + timer ---
         meter_card, meter_layout = card("LEVEL")

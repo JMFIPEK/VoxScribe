@@ -135,7 +135,7 @@ Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
 ## Notes
 
 - On first use, local models download from HuggingFace (~1-3 GB, depending on model). After that, everything runs offline unless using a remote provider.
-- The Record tab offers three **Recording modes**: **Listen only** records whatever plays through your speakers/headphones (Teams/Zoom audio), **Call** records that plus your microphone (as separate tracks, so you and remote speakers are told apart reliably), and **In room** records the microphone only.
+- The Record tab offers three **Recording modes**: **Playback only** records whatever plays through your speakers/headphones (Teams/Zoom audio), **Call** records that plus your microphone (as separate tracks, so you and remote speakers are told apart reliably), and **In room** records the microphone only.
 - For a **Call**, pick the **Setup**: **Headset** (headphones with their own mic) or **Loudspeaker** (speakers with a room mic, mic array or speakerphone). The app preselects it from your devices and warns if a headset's mic doesn't match the headset you're listening on.
 - The GUI stops recording via its button; the CLI stops on **ENTER** or **Ctrl+C**.
 - Transcripts are saved in the `recordings/` folder.
