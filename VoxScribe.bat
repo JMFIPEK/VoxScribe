@@ -79,6 +79,12 @@ REM own taskbar button stays. Its output goes to %USERPROFILE%\.voxscribe\
 REM voxscribe.log (see gui_qt.py). VIRTUAL_ENV lets gpu_setup's `uv pip
 REM install` find this venv, as it would under `uv run`.
 set "VIRTUAL_ENV=%~dp0.venv"
+REM "Install and quit" in the app's Update notice (#55): it started this
+REM launcher only to install the Update, so don't start the app again.
+if defined VOXSCRIBE_NO_START (
+    set "RC=0"
+    goto :done
+)
 start "" ".venv\Scripts\pythonw.exe" gui_qt.py
 set "RC=0"
 
