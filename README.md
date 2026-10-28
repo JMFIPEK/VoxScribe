@@ -1,148 +1,113 @@
 # VoxScribe
 
-Local audio recording and transcription with [WhisperX](https://github.com/m-bain/whisperX). Record a meeting (microphone, system audio, or both), transcribe it with word-accurate timestamps and speaker labels, rename speakers once and have them recognized automatically next time, and export a clean transcript — all from one desktop app, with a CLI available for scripting the same pipeline.
+Record a meeting or call and get a transcript with word-accurate timestamps and speaker names, from one desktop app. Name a speaker once and VoxScribe recognizes their voice in later recordings.
 
-Transcription uses your configured default [provider](docs/providers.md) if one is set up; if that's unreachable, it falls back automatically to the best local model for your hardware/platform. A local model can also be chosen explicitly, in which case the whole pipeline runs 100% locally after a one-time model download.
+Transcription runs either on a **provider** (any OpenAI-compatible transcription service you add, e.g. OpenRouter) or **fully locally** on your computer. Without a provider, or when it's unreachable, VoxScribe uses the best local model for your hardware automatically.
 
 ![VoxScribe — Record tab](docs/images/screenshot.png)
 
-## Features
+**Platforms:** Windows 10/11 (full feature set) · macOS 26+ on Apple Silicon ([macOS setup](docs/macos.md)) · Linux (experimental, microphone only)
 
-- **GUI** (PySide6/Qt) — Record, Transcription, Settings tabs
-- **CLI** — full command-line control as an alternative to the GUI, see [CLI reference](docs/cli-reference.md)
-- **Configurable providers** — add any OpenAI-compatible transcription endpoint (name, URL, API key, model) in Settings; local transcription (Whisper/WhisperX, Apple SpeechAnalyzer, Intel Arc GPU) always stays available as a fallback — see [Providers](docs/providers.md)
-- **Microphone / system-audio / both at once** — full meeting recording (Windows; macOS implemented, system-audio experimental, combined mode not yet verified on real hardware)
-- **Video files as input** — MKV, MP4, MOV, WebM, AVI transcribed directly, no ffmpeg needed
-- **Multi-file transcription** — select several files at once, transcribed in sequence and merged into one continuous transcript
-- **Local GPU acceleration** — CUDA (NVIDIA), Intel Arc GPU via OpenVINO (see [Intel Arc GPU](docs/intel-arc-gpu.md)), or Apple SpeechAnalyzer/Neural Engine on macOS
-- **Speaker diarization & recognition** — color-coded, with voice-print-based automatic recognition across recordings
-- **Word-level timestamps**, automatic language detection, TXT/SRT/JSON export
+> 🤖 **Let an AI agent install it.** Paste this into Claude Code, Codex or a similar coding agent:
+>
+> ```
+> Install VoxScribe on this computer by following https://github.com/JMFIPEK/VoxScribe/blob/main/docs/install-with-agent.md exactly.
+> ```
+>
+> The agent installs everything and then tells you the two things only you can do: paste your HuggingFace token and add a provider (steps 2 and 3 below).
 
-## Install
+## 1. Install (Windows)
 
-### Windows
+**Prerequisites** (once, in PowerShell). Skip whichever you already have:
 
-```bash
-# 1. Get the code
-git clone https://gitlab.kit.edu/kit/ipek/acm/voxscribe.git
+```powershell
+winget install --id Git.Git -e
+```
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Close and reopen PowerShell afterwards so `git` and `uv` are found.
+
+**Get VoxScribe** and switch to the newest Release:
+
+```powershell
+git clone https://github.com/JMFIPEK/VoxScribe.git voxscribe
+```
+
+(KIT internal: `git clone https://gitlab.kit.edu/kit/ipek/acm/voxscribe.git voxscribe`)
+
+```powershell
 cd voxscribe
-# Switch to the newest Release (works in PowerShell and bash; Git's
-# "detached HEAD" note is expected - Releases are tags, not a branch)
+```
+
+```powershell
 git checkout $(git describe --tags --abbrev=0 --match "v*")
-
-# 2. Install uv (if not already installed)
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# 3. Install dependencies (creates .venv automatically, incl. CUDA PyTorch)
-uv sync
 ```
 
-`pyproject.toml` already pins `torch`/`torchaudio`/`torchvision` to the CUDA 12.8 index, so that's enough on a machine with an NVIDIA GPU. For an Intel Arc GPU instead, see [Intel Arc GPU](docs/intel-arc-gpu.md) — handled automatically at runtime either way.
+Git's "detached HEAD" note is expected: Releases are tags, not a branch.
 
-### Existing checkouts on `main`
+**Create the shortcuts and start it:**
 
-Installs cloned before Releases existed sit on the `main` branch, and Settings → Info shows them as "development". To move onto the newest Release once (commit or stash local edits first):
-
-```bash
-git fetch --tags origin
-git checkout $(git describe --tags --abbrev=0 --match "v*" origin/main)
-uv sync
+```powershell
+powershell -ExecutionPolicy Bypass -File Create-Shortcuts.ps1
 ```
 
-Use the remote you cloned from in place of `origin` if it's named differently. Afterwards Settings → Info shows the Release, e.g. `v1.0.0`.
+This puts a **VoxScribe** entry on the Desktop and in the Start menu (to pin it to the taskbar: right-click the Start menu entry → *Pin to taskbar*). Start VoxScribe from there.
 
-From v1.1.0 on, an install offers newer Releases in the app and installs them on the next start (Windows), so this step is needed only once.
+The **first start installs everything** (Python packages incl. PyTorch, several GB) in a console window and takes a few minutes. Later starts open the app directly. On an Intel Arc GPU laptop, the first start may also switch PyTorch to the Intel build once, see [Intel Arc GPU](docs/intel-arc-gpu.md).
 
-### macOS / Linux
+## 2. HuggingFace token (for speaker names)
 
-See [macOS setup](docs/macos.md). Linux is experimental (microphone-only, no system-audio path); `uv sync` is enough there too.
+Without it, transcription works but the transcript has no speakers. It's free:
 
-## HuggingFace token (for speaker diarization)
+1. Create an account at [huggingface.co](https://huggingface.co) and a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → **Create new token** → type **Read** → copy it (`hf_...`).
+2. While logged in, open both model pages and click **Agree and access repository** on each:
+   - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+   - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+3. In VoxScribe, open **Settings**, paste the token into **HuggingFace token**, and click anywhere else. It is saved and used from then on.
 
-1. Create a token: https://huggingface.co/settings/tokens → **Read** access
-2. Accept the model licenses:
-   - https://huggingface.co/pyannote/speaker-diarization-3.1
-   - https://huggingface.co/pyannote/segmentation-3.0
-3. Add it to `.env`:
-   ```
-   HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxx
-   ```
+Step 2 is the one people miss: a token without the two accepted licenses fails at the speaker step.
 
-After the first model download (~3 GB), everything runs fully offline (except when using a remote provider).
+<details>
+<summary>Alternative: put the token in <code>.env</code> yourself</summary>
 
-## Usage
-
-### GUI
-
-```bash
-uv run --no-sync python gui_qt.py
-```
-
-Use `--no-sync` (or `VoxScribe.bat`, which does this for you): a plain `uv run`
-re-syncs the venv first, which on an Intel Arc machine reverts torch to the
-CUDA build and makes the next start re-install the XPU build. Run `uv sync`
-yourself only after pulling dependency changes.
-
-**Shortcuts (Windows):** run `Create-Shortcuts.ps1` once (right-click → *Run with
-PowerShell*) to get a `VoxScribe` entry on the Desktop and in the Start menu; to pin
-it to the taskbar, right-click the Start menu entry → *Pin to taskbar*. They start
-`VoxScribe.bat` (you can also double-click it directly), which syncs the venv only
-when `uv.lock` changed (also on a fresh machine) and then starts the GUI without a
-console window. The GUI's output goes to `%USERPROFILE%\.voxscribe\voxscribe.log`
-(previous session: `voxscribe.log.1`). The shortcuts point back at the repo, so they
-keep working across updates; re-run the script only if you move the folder.
-
-Three tabs: **Record** (source/device, live level, start/stop), **Transcription** (file picker, language/model/diarization, progress, speaker rename, export), **Settings** (providers, HuggingFace token, recording folder, performance). See [Providers](docs/providers.md) for setting up a transcription endpoint.
-
-### CLI
-
-```bash
-uv run --no-sync python main.py devices                      # list audio devices
-uv run --no-sync python main.py record --mode room            # record from microphone
-uv run --no-sync python main.py transcribe -i audio.wav        # transcribe a file
-uv run --no-sync python main.py run --mode call                # record a call + transcribe
-```
-
-Full option reference: [docs/cli-reference.md](docs/cli-reference.md).
-
-## Project structure
+Create a file named `.env` in the VoxScribe folder (next to `VoxScribe.bat`) with this line, then restart VoxScribe:
 
 ```
-├── gui_qt.py                    # GUI entry point (PySide6/Qt) - thin, delegates to qt_app/
-├── main.py                      # CLI entry point - thin, delegates to voxscribe/cli.py
-├── download_models.py            # Thin entry point -> voxscribe/download_models.py
-├── build_exe.py                  # Thin entry point -> voxscribe/build_exe.py
-├── release.py                    # Thin entry point -> voxscribe/release.py (maintainer: cut a Release)
-├── qt_app/                       # GUI code: main_window.py, controllers.py, theme.py, pages/, widgets/
-├── voxscribe/                    # Backend package
-│   ├── cli.py                     # CLI command implementations
-│   ├── recorder.py                # Audio recording (microphone + WASAPI loopback/ScreenCaptureKit + combined)
-│   ├── transcriber.py             # Facade for the transcription API (re-exports from transcription/)
-│   ├── transcription/             # Pipeline: Backends (WhisperX, Provider, OpenVINO, Parakeet, Apple), alignment, diarization, speakers
-│   ├── providers.py               # Persistent transcription-provider configuration
-│   ├── speaker_profiles.py        # Persistent speaker profiles (voice prints) for recognition
-│   ├── hardware_detect.py         # GPU/CPU detection + model recommendation
-│   ├── gpu_setup.py               # Automatic CUDA/XPU torch backend correction (Windows)
-│   ├── updates.py                 # Installed Release (shown in Settings → Info)
-│   ├── release.py                 # Release script: bump version, tag vX.Y.Z, push to origin + public
-│   ├── download_models.py         # Pre-download models for offline/bundled operation
-│   └── build_exe.py               # PyInstaller build for a standalone .exe (Windows)
-├── macos/                        # macOS Swift helpers: SystemAudioCapture.swift, SpeechAnalyzerTranscribe.swift, build.sh, make-app.sh
-├── docs/                          # Detailed docs: providers, Intel Arc GPU, macOS, CLI reference
-├── pyproject.toml                 # Python dependencies (incl. CUDA PyTorch pinning), primary source for `uv`
-├── .env                           # HuggingFace token (not committed!)
-└── recordings/                    # Recordings + transcripts
+HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxx
 ```
 
-## Notes
+The Settings field writes this same file, and the CLI reads it too.
+</details>
 
-- On first use, local models download from HuggingFace (~1-3 GB, depending on model). After that, everything runs offline unless using a remote provider.
-- The Record tab offers three **Recording modes**: **Playback only** records whatever plays through your speakers/headphones (Teams/Zoom audio), **Call** records that plus your microphone (as separate tracks, so you and remote speakers are told apart reliably), and **In room** records the microphone only.
-- For a **Call**, pick the **Setup**: **Headset** (headphones with their own mic) or **Loudspeaker** (speakers with a room mic, mic array or speakerphone). The app preselects it from your devices and warns if a headset's mic doesn't match the headset you're listening on.
-- The GUI stops recording via its button; the CLI stops on **ENTER** or **Ctrl+C**.
-- Transcripts are saved in the `recordings/` folder.
-- **Rename & remember speakers**: after transcription, rename SPEAKER_00 etc. to real names in the GUI. With "remember" checked, the voice is saved as a profile (`~/.voxscribe/speaker_profiles.json`) and recognized automatically in future recordings — this is a heuristic voice match, so occasional misassignments (especially on short/quiet segments) are possible and worth checking before saving.
+## 3. Add a provider (optional, recommended)
 
-## Corporate proxy / SSL
+A provider transcribes on a server: no model download, and fast on any laptop. The audio then leaves your computer for that request. Skip this to transcribe fully locally.
 
-If SSL verification fails behind a corporate firewall, it's automatically disabled (configured in `main.py`). For `pip` installs, you may also need `--trusted-host pypi.org --trusted-host files.pythonhosted.org`.
+1. Get an API key from [OpenRouter](https://openrouter.ai/settings/keys) (or use any other OpenAI-compatible transcription service).
+2. In VoxScribe: **Settings → Providers → Add...**
+3. Pick **Preset: OpenRouter**. Name, base URL and model are filled in. Paste your **API key** and save.
+4. Select the provider and click **Set as default**.
+
+Details, other services and troubleshooting: [Providers](docs/providers.md).
+
+## 4. Record and transcribe
+
+- **Record** tab: choose a **Recording mode**: **Call** (Teams/Zoom: what you hear + your microphone, as separate tracks so you and the remote side are told apart), **Playback only** (what the computer plays) or **In room** (microphone only). For a Call, pick the **Setup**: **Headset** or **Loudspeaker**. VoxScribe preselects it from your devices. Give it a title if you like, then **Start** / **Stop**.
+- **Transcription** tab: pick the recording (or any audio/video file: WAV, MP3, MKV, MP4, MOV, ...), then **Transcribe**. Click a speaker's name to rename them. From 10 s of speech on, their voice is remembered and recognized next time. Export as TXT, SRT or JSON.
+
+Recordings and transcripts are saved in the `recordings/` folder. Voice profiles live in `%USERPROFILE%\.voxscribe\speaker_profiles.json`. Recognition is a heuristic, so check the names before you share a transcript. A name with a question mark ("Jonas?") is a guess you can confirm with one click.
+
+## Updates
+
+When a newer Release is out, VoxScribe shows a notice. Choose **Install and relaunch** (or **Install and quit**). Installs cloned before v1.1.0 or still on the `main` branch move to a Release once by hand: see [Updating](docs/updating.md).
+
+## More
+
+- [macOS setup](docs/macos.md) · [Providers](docs/providers.md) · [Intel Arc GPU](docs/intel-arc-gpu.md) · [Known issues](docs/known-issues.md)
+- [Command line (CLI)](docs/cli-reference.md): record and transcribe from a terminal or script
+- [Development](docs/development.md): running from a terminal, project structure, tests, building the `.exe`
+- Logs: `%USERPROFILE%\.voxscribe\voxscribe.log` (previous session: `voxscribe.log.1`)
+- Behind a corporate proxy, VoxScribe turns off SSL certificate checks for its own downloads automatically.

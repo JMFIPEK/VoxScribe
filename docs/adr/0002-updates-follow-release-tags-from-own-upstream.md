@@ -17,3 +17,4 @@ The repo lives on several remotes (GitLab KIT as `origin`, public GitHub, a priv
 - Only a clean checkout sitting exactly on a Release tag (detached HEAD) is updated. Branches, local edits and commits past the tag are skipped silently, so development checkouts are never touched.
 - Releases must be pushed to every remote users clone from, together with their tag. The release script does this, and the remotes must not drift apart.
 - A failed check (offline, no VPN, no GitLab credentials) is only logged, never shown as an error.
+- The app may start the launcher itself as it quits ("Install and quit" / "Install and relaunch", #55). The launcher still waits until the app has exited before it touches the checkout, so the app never replaces files it is running from.

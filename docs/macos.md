@@ -20,7 +20,8 @@ plain PyPI `torch` with MPS support:
 
 ```bash
 # 1. Get the code
-git clone https://gitlab.kit.edu/kit/ipek/acm/voxscribe.git
+git clone https://github.com/JMFIPEK/VoxScribe.git voxscribe
+# (KIT internal: https://gitlab.kit.edu/kit/ipek/acm/voxscribe.git)
 cd voxscribe
 # Switch to the newest Release (Git's "detached HEAD" note is expected)
 git checkout $(git describe --tags --abbrev=0 --match "v*")
@@ -41,8 +42,11 @@ cd macos
 cd ..
 ```
 
-Then activate the venv with `source .venv/bin/activate` (or use
-`uv run python ...` without activating).
+Then create the Dock app (next section) and start VoxScribe from Spotlight.
+Set up the HuggingFace token and a provider as in the
+[README](../README.md#2-huggingface-token-for-speaker-names) (steps 2 and 3).
+An AI agent can do the steps above for you: see
+[install-with-agent.md](install-with-agent.md).
 
 ## Dock icon (VoxScribe.app)
 

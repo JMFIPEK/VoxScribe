@@ -23,7 +23,7 @@ def last_update_check() -> tuple[str | None, str | None]:
 
 
 class UpdateNotice(QFrame):
-    installRequested = Signal(str)  # the Release to install
+    installRequested = Signal(str, bool)  # the Release to install, relaunch afterwards
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -39,9 +39,12 @@ class UpdateNotice(QFrame):
         row.setContentsMargins(16, 6, 10, 6)
         self.label = QLabel()
         row.addWidget(self.label, 1)
-        self.install_button = QPushButton("Restart and install")
-        self.install_button.clicked.connect(lambda: self.installRequested.emit(self._release))
-        row.addWidget(self.install_button)
+        self.quit_button = QPushButton("Install and quit")
+        self.quit_button.clicked.connect(lambda: self.installRequested.emit(self._release, False))
+        row.addWidget(self.quit_button)
+        self.relaunch_button = QPushButton("Install and relaunch")
+        self.relaunch_button.clicked.connect(lambda: self.installRequested.emit(self._release, True))
+        row.addWidget(self.relaunch_button)
         dismiss = QPushButton("Later")
         dismiss.clicked.connect(self.hide)
         row.addWidget(dismiss)
@@ -49,9 +52,10 @@ class UpdateNotice(QFrame):
 
     def offer(self, release: str):
         self._release = release
-        self.label.setText(f"{self._report}  Update {release} available – restart to install".strip())
-        self.install_button.show()
-        self._refresh_button()
+        self.label.setText(f"{self._report}  Update {release} available".strip())
+        for button in self._install_buttons():
+            button.show()
+        self._refresh_buttons()
         self.show()
 
     def report(self, result: dict):
@@ -63,15 +67,19 @@ class UpdateNotice(QFrame):
             self._report = (f"Update to {result.get('target')} failed, still on "
                             f"{result.get('installed')}. Details are in the log.")
         self.label.setText(self._report)
-        self.install_button.hide()
+        for button in self._install_buttons():
+            button.hide()
         self.show()
 
     def set_busy(self, busy: bool):
         """While recording or transcribing the Update can't be started."""
         self._busy = busy
-        self._refresh_button()
+        self._refresh_buttons()
 
-    def _refresh_button(self):
-        self.install_button.setEnabled(not self._busy and self._release is not None)
-        self.install_button.setToolTip(
-            "Not available while recording or transcribing" if self._busy else "")
+    def _install_buttons(self):
+        return self.quit_button, self.relaunch_button
+
+    def _refresh_buttons(self):
+        for button in self._install_buttons():
+            button.setEnabled(not self._busy and self._release is not None)
+            button.setToolTip("Not available while recording or transcribing" if self._busy else "")

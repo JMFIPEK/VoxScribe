@@ -4,7 +4,7 @@ import os
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QMainWindow, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from qt_app import theme
 from qt_app.title_bar import color_title_bar
@@ -127,13 +127,24 @@ class MainWindow(QMainWindow):
         self._busy[key] = busy
         self.update_notice.set_busy(any(self._busy.values()))
 
-    def _install_update(self, release):
-        """Leaves the marker for the launcher and quits; the launcher
-        installs the Update before starting the app again (spec #15)."""
+    def _install_update(self, release, relaunch):
+        """Leaves the marker, starts the launcher and quits; the launcher
+        installs the Update once the app is gone and starts it again only if
+        relaunch (spec #15, #55). Without a launcher to start, the Update
+        waits for the next start."""
+        import sys
         from voxscribe import updates
         updates.request_update(release)
-        print(f"Update {release} requested - quitting for the launcher to install it")
+        # In a venv, pythonw.exe is a small launcher process around this one,
+        # holding .venv\Scripts\pythonw.exe until this one exits.
+        pids = [os.getpid()] + ([os.getppid()] if sys.prefix != sys.base_prefix else [])
+        if updates.start_launcher(relaunch, pids):
+            print(f"Update {release} requested - the launcher installs it after quitting"
+                  + (" and starts VoxScribe again" if relaunch else ""))
+        else:
+            print(f"Update {release} requested - no launcher to start, installed on the next start")
         self.close()
+        QApplication.instance().quit()
 
     def _add_page(self, key, widget):
         icon_key, label = next((i, lbl) for k, i, lbl in TAB_ITEMS if k == key)

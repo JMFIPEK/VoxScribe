@@ -2,6 +2,7 @@
 and (as its own section at the bottom) the Info content (models/licenses) -
 deliberately not its own tab."""
 
+import os
 import sys
 import threading
 
@@ -211,6 +212,9 @@ class SettingsPage(QWidget):
         self.hf_entry = QLineEdit(self.window_.settings.get("hf_token", ""))
         self.hf_entry.setEchoMode(QLineEdit.Password)
         self.hf_entry.textChanged.connect(lambda v: self.window_.settings.__setitem__("hf_token", v))
+        # Saved to .env (not just kept for this session) once editing ends,
+        # so the token survives a restart and the CLI reads the same one.
+        self.hf_entry.editingFinished.connect(self._save_hf_token)
         grid.addWidget(self.hf_entry, row, 1)
         row += 1
 
@@ -395,6 +399,19 @@ class SettingsPage(QWidget):
         else:
             self.hf_hint_label.setText(
                 "Required for speaker diarization.\nCreate a read token at huggingface.co/settings/tokens")
+
+    def _save_hf_token(self):
+        from voxscribe.env_file import set_env_value
+        token = self.hf_entry.text().strip()
+        try:
+            set_env_value("HF_TOKEN", token)
+        except OSError as e:
+            self.hf_hint_label.setText(f"Could not save the token to .env: {e}")
+            return
+        if token:
+            os.environ["HF_TOKEN"] = token
+        else:
+            os.environ.pop("HF_TOKEN", None)
 
     def _on_batch_size_changed(self, value):
         try:

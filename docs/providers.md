@@ -1,41 +1,61 @@
-# Transcription providers
+# Providers
 
-VoxScribe can transcribe either locally (Whisper/WhisperX, Apple SpeechAnalyzer,
-or the Intel Arc GPU path) or via any remote, OpenAI-compatible
-`/audio/transcriptions` endpoint - a "provider". Providers are configured in
-the app, not hardcoded to any specific vendor.
+A **provider** is a transcription service VoxScribe sends the audio to: any
+server with an OpenAI-compatible `/audio/transcriptions` endpoint. Alignment
+and speaker identification still run on your computer.
 
-## Adding a provider
+Why use one: no model download and fast on any laptop. The catch: the audio
+leaves your computer for that request. Without a provider, VoxScribe
+transcribes fully locally.
 
-In the GUI, go to **Settings → Providers → Add...** and fill in:
+## Set up OpenRouter (example)
 
-- **Name** - a label for your own reference (e.g. "My Whisper server")
-- **Base URL** - the API's base URL (e.g. `https://example.com/api/v1`)
-- **API key** - sent as a Bearer token
-- **Model** - the model name to request (e.g. `whisper-large-v3`)
+1. Create an account at [openrouter.ai](https://openrouter.ai), add credit, and
+   create an API key at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys).
+2. In VoxScribe, open **Settings → Providers → Add...**
+3. **Preset: OpenRouter** fills in name, base URL
+   (`https://openrouter.ai/api/v1`) and model (`openai/whisper-large-v3`).
+4. Paste your **API key** and save.
+5. Select the new provider and click **Set as default**.
 
-The **Preset** dropdown at the top pre-fills name, base URL and model for
-known endpoints (currently [OpenRouter](https://openrouter.ai), with
-`openai/whisper-large-v3`) - you only add your API key. Prefer Whisper models
-on OpenRouter: VoxScribe requests `response_format=verbose_json` for segment
-timestamps, which OpenRouter only returns for Whisper on OpenAI-compatible
-upstreams. Other models still work: VoxScribe detects text-only responses on
-the first request and then sends 30 s chunks instead of ~180 s ones (cut at
-the quietest moment near each boundary), so local alignment only has to place
-words within a short window. If the server also reports no language (the KIT
-Toolbox returns only `{"text": ...}` regardless of `response_format`), it's
-guessed from the returned text, so alignment uses the right language model.
-Timestamps are still slightly less precise than with real server segments.
+**Check it worked:** transcribe a short recording. The status line under the
+progress bar shows *Sending audio to server (OpenRouter)...*. If the provider
+fails (wrong key, no credit, no network), it shows *Provider request failed -
+falling back to ...* instead, VoxScribe finishes with a local model, and the
+reason is in the log (`%USERPROFILE%\.voxscribe\voxscribe.log`).
 
-Mark one provider as the default with **Set as default**. The default
-provider is what `transcriber.default_model_size()` returns when nothing else
-is explicitly chosen - see the [main README](../README.md) for the exact
-fallback behavior.
+## Any other OpenAI-compatible service
 
-## How it works
+**Settings → Providers → Add...**, Preset **Custom**, then:
 
-Provider configuration lives in `~/.voxscribe/providers.json` (see
-`voxscribe/providers.py`), a small local JSON store - one entry per provider:
+| Field | What to enter | Example |
+|---|---|---|
+| Name | Any label | `My Whisper server` |
+| Base URL | The API's base URL, without `/audio/transcriptions` | `https://example.com/api/v1` |
+| API key | Sent as `Authorization: Bearer <key>` | |
+| Model | The model name the server expects | `whisper-large-v3` |
+
+Prefer Whisper models: VoxScribe asks for segment timestamps
+(`response_format=verbose_json`), and Whisper servers return them. Other models
+work too, with slightly less precise timestamps (see Reference below).
+
+## Which provider is used
+
+- The provider marked **default** is used whenever you don't pick a model
+  yourself.
+- In the Transcription tab you can choose any provider or a local model for one
+  transcription.
+- If the provider fails, VoxScribe retries once with the best local model for
+  your hardware.
+
+---
+
+## Reference
+
+### Storage
+
+Providers live in `~/.voxscribe/providers.json` (`voxscribe/providers.py`),
+one entry per provider:
 
 ```json
 {
@@ -46,26 +66,35 @@ Provider configuration lives in `~/.voxscribe/providers.json` (see
 }
 ```
 
-Selecting a provider as the transcription model uses the `server:<provider-id>`
-model_size string (see `transcriber.remote_model_id()`); the CLI's
-`--model server:<provider-id>` flag works the same way.
+The API key is stored in plain text in that file, readable by your user
+account.
 
-For one-off use without saving a provider, the CLI also accepts
-`--api-key`/`--api-base-url` directly, which override any saved provider's
-credentials for that run.
+### Model IDs and the CLI
 
-## Migrating from an older, pre-provider install
+A provider's Model ID is `server:<provider-id>` (`transcriber.remote_model_id()`),
+so the CLI uses `--model server:my-server`. For one-off use without saving a
+provider, `--api-key`/`--api-base-url` override a saved provider's credentials
+for that run. See [CLI reference](cli-reference.md).
 
-Versions of VoxScribe before the provider system used a single hardcoded
-server, configured via two environment variables in `.env`:
+### Servers that return only text
+
+Some servers ignore `response_format=verbose_json` and return only
+`{"text": ...}`: no segments, no language. VoxScribe detects this on the first
+request and then sends 30 s chunks instead of ~180 s ones (cut at the quietest
+moment near each boundary), so local alignment only has to place words within
+a short window. A missing language is guessed from the returned text, so
+alignment uses the right language model. Timestamps are still slightly less
+precise than with real server segments.
+
+### Migrating from a pre-provider install
+
+Versions before the provider system used one server configured in `.env`:
 
 ```
 KIT_TOOLBOX_API_KEY=xxx
 KIT_TOOLBOX_BASE_URL=https://...
 ```
 
-If `~/.voxscribe/providers.json` doesn't exist yet and these variables are
-set, the app automatically creates a provider from them the first time it
-starts (see `providers.migrate_from_env()`), so upgrading doesn't silently
-drop a working setup. This only happens once; after that, manage the
-provider normally in Settings.
+If `~/.voxscribe/providers.json` doesn't exist yet and these are set, the app
+creates a provider from them once at start (`providers.migrate_from_env()`).
+After that, manage it in Settings.
