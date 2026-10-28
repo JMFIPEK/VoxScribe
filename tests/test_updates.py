@@ -1,5 +1,6 @@
 """Installed-version detection (voxscribe.updates) against real Git repos in tmp_path."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -322,3 +323,44 @@ def test_the_launcher_does_not_wait_forever_for_a_hanging_app(tmp_path, monkeypa
 
     # Goes ahead; a sync that still finds locked files rolls back as usual.
     assert applied == ["v1.1.1"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="VoxScribe.app is the macOS launcher")
+@pytest.mark.parametrize("relaunch", [True, False])
+def test_on_macos_the_app_hands_the_update_to_its_app_bundle(tmp_path, monkeypatch, relaunch):
+    # Set by the launcher script inside the bundle (macos/launcher.sh).
+    bundle = tmp_path / "VoxScribe.app"
+    bundle.mkdir()
+    monkeypatch.setenv("VOXSCRIBE_APP_BUNDLE", str(bundle))
+    popen = FakePopen()
+
+    assert updates.start_launcher(relaunch, [11, 22], repo=tmp_path, popen=popen)
+
+    # Through LaunchServices, so the new launcher is VoxScribe again (Dock
+    # name, microphone / screen-recording permissions), not a child of the
+    # quitting app; -n because the old instance is still shutting down.
+    [(args, _kwargs)] = popen.calls
+    expected = ["/usr/bin/open", "-n", str(bundle), "--env", "VOXSCRIBE_WAIT_PIDS=11 22"]
+    if not relaunch:
+        expected += ["--env", "VOXSCRIBE_NO_START=1"]
+    assert args == expected
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="VoxScribe.app is the macOS launcher")
+def test_on_macos_an_app_not_started_from_its_bundle_has_no_launcher(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOXSCRIBE_APP_BUNDLE", raising=False)
+    popen = FakePopen()
+
+    assert not updates.start_launcher(True, [11], repo=tmp_path, popen=popen)
+    assert popen.calls == []
+
+
+def test_the_app_waits_for_a_venv_shim_only_on_windows(monkeypatch):
+    # pythonw.exe in a Windows venv is a shim process around the app; on
+    # macOS .venv/bin/python is a symlink, and the parent is launchd.
+    monkeypatch.setattr(sys, "prefix", "/venv")
+    monkeypatch.setattr(sys, "base_prefix", "/python")
+
+    pids = updates.app_pids()
+
+    assert pids == ([os.getpid(), os.getppid()] if sys.platform == "win32" else [os.getpid()])

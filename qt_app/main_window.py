@@ -74,8 +74,9 @@ class MainWindow(QMainWindow):
         column = QVBoxLayout(central)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
-        column.addWidget(self.update_notice)
         column.addWidget(self.tabs, 1)
+        # At the bottom, so it doesn't push the tab bar and page down.
+        column.addWidget(self.update_notice)
         self.setCentralWidget(central)
 
         # The Update button is unavailable while recording or transcribing.
@@ -132,13 +133,9 @@ class MainWindow(QMainWindow):
         installs the Update once the app is gone and starts it again only if
         relaunch (spec #15, #55). Without a launcher to start, the Update
         waits for the next start."""
-        import sys
         from voxscribe import updates
         updates.request_update(release)
-        # In a venv, pythonw.exe is a small launcher process around this one,
-        # holding .venv\Scripts\pythonw.exe until this one exits.
-        pids = [os.getpid()] + ([os.getppid()] if sys.prefix != sys.base_prefix else [])
-        if updates.start_launcher(relaunch, pids):
+        if updates.start_launcher(relaunch, updates.app_pids()):
             print(f"Update {release} requested - the launcher installs it after quitting"
                   + (" and starts VoxScribe again" if relaunch else ""))
         else:

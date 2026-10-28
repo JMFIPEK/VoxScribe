@@ -199,9 +199,20 @@ def request_update(tag: str, user_dir=None) -> str:
 
 
 LAUNCHER = "VoxScribe.bat"
-# Read by apply-pending (processes to outlive) and VoxScribe.bat (stay closed).
+# Read by apply-pending (processes to outlive) and the launchers (stay closed).
 WAIT_PIDS_ENV = "VOXSCRIBE_WAIT_PIDS"
 NO_START_ENV = "VOXSCRIBE_NO_START"
+# Set by the VoxScribe.app launcher (macos/launcher.sh) for the app it starts.
+APP_BUNDLE_ENV = "VOXSCRIBE_APP_BUNDLE"
+
+
+def app_pids() -> list[int]:
+    """The processes the launcher waits for before it installs: this one,
+    and on Windows the venv's pythonw.exe shim around it, which holds
+    .venv\\Scripts\\pythonw.exe until this one exits. (On macOS
+    .venv/bin/python is a symlink, and the parent is launchd.)"""
+    in_venv = sys.prefix != sys.base_prefix
+    return [os.getpid()] + ([os.getppid()] if sys.platform == "win32" and in_venv else [])
 
 
 def start_launcher(relaunch: bool, wait_pids, repo=None, popen=subprocess.Popen) -> bool:
@@ -209,6 +220,8 @@ def start_launcher(relaunch: bool, wait_pids, repo=None, popen=subprocess.Popen)
     processes in wait_pids (the quitting app) have exited, then starts the
     app again only if relaunch. False if there is no launcher to start: the
     Update then waits for the next start (#55)."""
+    if sys.platform == "darwin":
+        return _start_app_bundle(relaunch, wait_pids, popen)
     base = _base(repo)
     launcher = os.path.join(base, LAUNCHER)
     if sys.platform != "win32" or not os.path.isfile(launcher):
@@ -223,6 +236,24 @@ def start_launcher(relaunch: bool, wait_pids, repo=None, popen=subprocess.Popen)
     # Its own console shows the install's progress after the app is gone.
     popen(["cmd.exe", "/c", launcher], cwd=str(base), env=env,
           creationflags=subprocess.CREATE_NEW_CONSOLE)
+    return True
+
+
+def _start_app_bundle(relaunch, wait_pids, popen) -> bool:
+    """macOS: opens VoxScribe.app again, if the app was started from it.
+    Through LaunchServices (`open`), so the new launcher and the app it
+    starts are VoxScribe again - Dock name, microphone and screen-recording
+    permissions - not a child of the quitting app. `open` starts it with
+    launchd's environment plus the --env values, never this one's flags."""
+    bundle = os.environ.get(APP_BUNDLE_ENV)
+    if not bundle or not os.path.isdir(bundle):
+        return False
+    # -n: the quitting instance is still running.
+    args = ["/usr/bin/open", "-n", bundle,
+            "--env", f"{WAIT_PIDS_ENV}={' '.join(str(pid) for pid in wait_pids)}"]
+    if not relaunch:
+        args += ["--env", f"{NO_START_ENV}=1"]
+    popen(args)
     return True
 
 
