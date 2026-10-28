@@ -139,7 +139,8 @@ def main():
     requests.adapters.HTTPAdapter.send = _patched_send
 
     from dotenv import load_dotenv
-    load_dotenv()
+    from voxscribe.env_file import env_path
+    load_dotenv(env_path())
 
     from qt_app import theme
     if sys.platform == "darwin":

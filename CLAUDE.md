@@ -78,6 +78,7 @@ python release.py 1.1.0
 | `voxscribe/providers.py` | Persistent configuration for remote transcription providers (`~/.voxscribe/providers.json`) — name/base URL/API key/model per provider, one marked default; includes one-time migration from the old single-server env-var config |
 | `voxscribe/hardware_detect.py` | GPU/CPU detection and model recommendations based on VRAM/RAM, including Intel Arc GPU via OpenVINO |
 | `voxscribe/gpu_setup.py` | Windows-only: detects a CUDA/XPU mismatch between the installed `torch` build and the actual GPU present, and automatically reinstalls the correct build (see Key Design Patterns below) |
+| `voxscribe/env_file.py` | Stdlib-only `.env` next to the app (`env_path()` = `paths.get_base_dir()/.env`, also what `gui_qt.py` loads) and `set_env_value()`: the Settings page's HuggingFace token field writes `HF_TOKEN=` there when editing ends (only that line changes; empty removes it), so it survives a restart and the CLI reads the same token |
 | `voxscribe/paths.py` | Stdlib-only base/`bundled_models/` path helpers, so cheap callers don't need to import more than they must |
 | `voxscribe/recording_modes.py` | Stdlib-only Recording modes (`playback`/`call`/`room`, mapped to the recorder's `system`/`both`/`mic` sources) and Call Setups (`headset`/`loudspeaker`), plus the device-name heuristics (`physical_device_key`, `suggest_mic_for_loopback`, `guess_setup`) shared by the Record page and the CLI |
 | `voxscribe/recording_names.py` | Stdlib-only recording file names `YYMMDD_HHMM_<Recording title>.wav` (time = Start pressed): `clean_title()` (whitespace runs → `_`, drops `\ / : * ? " < > |` and control characters, keeps umlauts/case, ≤60 chars, no trailing `_`/`.`; nothing left → mode default), `default_title()` (`Playback`/`Meeting`/`Room`), `recording_stem()`, `recording_path()` (`_2`, `_3`, ... while the stem's `.wav` **or** `.tracks.flac` exists). Used by the CLI (`record`/`run --name`; `-o` wins, `--name` then ignored with a note) and the Record page: a `Title:` line above Start (placeholder = the mode's default, editable while recording, locked while saving, emptied after every recording). Files are only written at Stop, so the page names them then: `RecorderController.start()` takes a path callback (`path_at_stop`), asks it again at stop (GUI thread) and hands the result to `AudioRecorder.stop(output_path)` |
@@ -149,6 +150,8 @@ Output: TXT, SRT, JSON
 ```
 HF_TOKEN=hf_xxx                     # Required for speaker diarization (pyannote models)
 ```
+
+Users normally don't edit this by hand: Settings → HuggingFace token writes the line (`voxscribe/env_file.py`). User-facing install docs: `README.md` (user-first), `docs/install-with-agent.md` (steps + rules for an AI agent doing the install; never touches secrets), `docs/updating.md`, `docs/development.md`.
 
 Remote transcription providers are configured in the GUI (Settings → Providers) or via `voxscribe/providers.py`, not via `.env` — see `docs/providers.md`. The old single-server env vars (`KIT_TOOLBOX_API_KEY`/`KIT_TOOLBOX_BASE_URL`) are still read once, automatically, by `providers.migrate_from_env()` to create a provider from a pre-provider-system install, but aren't the primary configuration path anymore.
 
