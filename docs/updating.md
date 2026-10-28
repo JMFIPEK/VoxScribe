@@ -7,10 +7,15 @@ When a newer Release is published, VoxScribe shows a notice after it starts:
 - **Install and relaunch**: VoxScribe quits, installs the Update and starts again.
 - **Install and quit**: the same, but it doesn't start again afterwards.
 
+This works on Windows (started via the shortcut / `VoxScribe.bat`) and on
+macOS (started via VoxScribe.app; see [macOS setup](macos.md) for when to
+re-run `macos/make-app.sh`). Started any other way, the Update is installed
+the next time you start VoxScribe from the shortcut or the app.
+
 Both buttons are disabled while you record or transcribe. If the Update fails,
 the previous Release is restored, and the app tells you so on its next start
-(details in `%USERPROFILE%\.voxscribe\voxscribe.log`). Settings → Info shows
-the installed Release, e.g. `v1.1.1`.
+(details in `~/.voxscribe/voxscribe.log`). Settings → Info shows the installed
+Release, e.g. `v1.1.1`.
 
 ## Installs on `main` or older than v1.1.0: once by hand
 
