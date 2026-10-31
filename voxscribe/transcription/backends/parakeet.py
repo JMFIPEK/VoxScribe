@@ -86,7 +86,7 @@ class ParakeetBackend:
         print("1/3  Transcribing via Parakeet (ONNX Runtime)...")
         request.progress(0.0, "Loading audio...")
         audio = request.audio.load()
-        request.progress(0.05, "Loading Parakeet model...")
+        request.progress(0.05, "Loading Parakeet model... (first use downloads ~640 MB)")
 
         def _progress(frac):
             request.progress(0.05 + frac * 0.35, f"Transcribing... {frac * 100:.0f}%")

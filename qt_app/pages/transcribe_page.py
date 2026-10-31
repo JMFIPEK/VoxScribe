@@ -27,6 +27,7 @@ from qt_app.constants import (
     FORMATS,
     MODEL_DISPLAY_NAMES,
     OPENVINO_MODEL_PREFIX,
+    PARAKEET_MODEL,
     PARAKEET_MODEL_PREFIX,
     REMOTE_MODEL_PREFIX,
     format_time_short,
@@ -122,13 +123,9 @@ class TranscribePage(QWidget):
         opts_layout.addLayout(opts_row)
 
         if sys.platform == "darwin":
-            # No model choice on macOS: Apple's SpeechAnalyzer (Neural
-            # Engine) is the only transcription engine there, no Whisper
-            # download/inference at all (see transcriber.py::
-            # transcribe_apple() and CLAUDE.md). Language also isn't
-            # user-facing here: transcribe_apple() runs its own German-vs-
-            # English probe (transcriber.py::detect_apple_language()) instead
-            # of needing a manual picker.
+            # No model choice on macOS yet (the dropdown comes with #59):
+            # it always transcribes with Parakeet v3, the local default
+            # there (#60, see default_local_model_size()).
             self.model_combo = None
         else:
             opts_row.addWidget(QLabel("Model:"))
@@ -235,7 +232,7 @@ class TranscribePage(QWidget):
 
     def _current_model_id(self) -> str:
         if self.model_combo is None:
-            return APPLE_SPEECHANALYZER_MODEL
+            return PARAKEET_MODEL
         model_display = self.model_combo.currentText()
         return self._model_ids_by_display.get(model_display, model_display)
 
@@ -409,9 +406,7 @@ class TranscribePage(QWidget):
 
         # Language auto-detect, diarization, and speaker count auto-guessing
         # are no longer user-configurable here - see _update_pipeline_info()'s
-        # docstring for why (macOS: transcriber.detect_apple_language() makes
-        # None a real auto-detect there too, not just a silent English
-        # fallback).
+        # docstring for why.
         common_kwargs = dict(
             language=None,
             model_size=model,

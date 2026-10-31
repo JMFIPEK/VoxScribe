@@ -38,6 +38,10 @@ OPENVINO_MODEL_PREFIX = "openvino:"
 # Must match transcriber.PARAKEET_MODEL_PREFIX (same import-cost reason as above).
 PARAKEET_MODEL_PREFIX = "parakeet:"
 
+# Must match transcriber.PARAKEET_MODEL: the local default on macOS (#60),
+# which the Transcription page uses there while it has no model dropdown.
+PARAKEET_MODEL = "parakeet:tdt-0.6b-v3"
+
 
 def format_time_short(seconds: float) -> str:
     """Formats seconds as MM:SS (or HH:MM:SS for >= 1h)."""

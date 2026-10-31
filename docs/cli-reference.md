@@ -25,7 +25,7 @@
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--language`, `-l` | `auto` | Language (en, de, fr, es, ...) or `auto` for automatic detection |
-| `--model`, `-m` | your default provider, if configured (falls back automatically to the recommended local model on failure) | Whisper model (large-v2, large-v3, medium, base), `openvino:GPU:medium` (Intel Arc GPU, Windows only, see [Intel Arc GPU](intel-arc-gpu.md)), a configured provider (`server:<provider-id>`, see [Providers](providers.md)), or `apple:speechanalyzer` (macOS only) |
+| `--model`, `-m` | your default provider, if configured (falls back automatically to the recommended local model on failure) | Whisper model (large-v2, large-v3, medium, base), `openvino:GPU:medium` (Intel Arc GPU, Windows only, see [Intel Arc GPU](intel-arc-gpu.md)), a configured provider (`server:<provider-id>`, see [Providers](providers.md)), `parakeet:tdt-0.6b-v3` (Parakeet v3, CPU; the local default on macOS), or `apple:speechanalyzer` (macOS only) |
 | `--diarize` / `--no-diarize` | `--diarize` | Speaker diarization on/off |
 | `--min-speakers` | – | Minimum number of speakers |
 | `--max-speakers` | – | Maximum number of speakers |

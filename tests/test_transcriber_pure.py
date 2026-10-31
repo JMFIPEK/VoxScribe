@@ -21,6 +21,27 @@ def test_model_id_builders():
     assert t.APPLE_SPEECHANALYZER_MODEL == "apple:speechanalyzer"
 
 
+def test_default_local_model_on_macos_is_parakeet(monkeypatch):
+    # SpeechAnalyzer drops passages on Call mixes (#58), so Parakeet is the
+    # Mac's local default and Provider fallback (#60).
+    monkeypatch.setattr("sys.platform", "darwin")
+    assert t.default_local_model_size() == t.PARAKEET_MODEL
+
+
+def test_default_local_model_elsewhere_follows_the_hardware(monkeypatch):
+    from voxscribe import hardware_detect
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr(hardware_detect, "recommend_model", lambda: ("medium", "cuda", "6 GB VRAM"))
+    assert t.default_local_model_size() == "medium"
+
+
+def test_gui_model_constants_match_the_transcriber():
+    from qt_app import constants
+    assert constants.PARAKEET_MODEL == t.PARAKEET_MODEL
+    assert constants.PARAKEET_MODEL_PREFIX == t.PARAKEET_MODEL_PREFIX
+    assert constants.APPLE_SPEECHANALYZER_MODEL == t.APPLE_SPEECHANALYZER_MODEL
+
+
 def test_openvino_model_id_roundtrip():
     assert t._parse_openvino_model("openvino:GPU:medium") == ("GPU", "medium")
 
