@@ -48,6 +48,9 @@ python main.py transcribe -i part1.wav -i part2.wav -o recordings/meeting
 # Full pipeline: record + transcribe
 python main.py run --mode call
 
+# Compare transcription models on a recording (see docs/benchmark-with-agent.md)
+python main.py benchmark -i rec.wav -r reference.txt --tracks both
+
 # Start GUI (PySide6)
 python gui_qt.py
 
@@ -69,7 +72,8 @@ python release.py 1.1.0
 
 | File | Purpose |
 |------|---------|
-| `main.py` | CLI entry point with subcommands: `devices`, `record`, `transcribe`, `run` |
+| `main.py` | CLI entry point with subcommands: `devices`, `record`, `transcribe`, `run`, `benchmark` |
+| `voxscribe/benchmark.py` | `main.py benchmark` (#56): runs several Backends (via the registry) on the same recordings and prints one comparison - load time (a 1 s warm-up run, since Backends load inside `transcribe()`), transcription and alignment time, × realtime, word error rate against `--reference` (own word-level edit distance: casefold, punctuation removed, numbers as written), what each Backend returns, its word-timing offset to wav2vec2, the texts. Only the differing steps run (no speaker identification). Default models: the app's local models that are on disk (`model_presence()`, no download unless `--download`) plus every configured Provider. `--tracks mix|separate|both`: a Call's mix as the app transcribes it vs. each track transcribed alone and merged by time (first result on the Mac T4 take: SpeechAnalyzer 10.7 % WER on the mix, 7.4 % separate). Recordings live in `~/.voxscribe/benchmark/` (never in git); how to run it and make references: `docs/benchmark-with-agent.md`; the read script: `docs/benchmark/script.md` |
 | `gui_qt.py` | PySide6 GUI entry point — thin bootstrap (splash, SSL/proxy setup, `gpu_setup` check) that builds `qt_app.main_window.MainWindow`; app logic lives in `qt_app/` |
 | `qt_app/` | PySide6 GUI package: `main_window.py` (top tab bar, `QTabWidget`), `controllers.py` (Qt-signal bridges to `voxscribe/recorder.py`/`voxscribe/transcriber.py` for thread-safe UI updates), `theme.py` (dark QSS stylesheet), `constants.py` (shared language/model/format constants), `pages/` (one file per tab: Record, Transcription, Settings — Info is folded into the bottom of Settings, not its own tab), `speaker_view.py` (`SpeakerView`, pure: speaker colours/ranks/shares, top 5 + Others, renames/merges, Tentative match confirmation, which voice prints to enroll), `timeline_model.py` (`TimelineModel`/`Lane`/`Run`, pure, `timeline_from_result()`), `step_timing.py` (pure: step names and `realtime_line()`, the "× realtime" line), `transcript_view.py` (pure: the transcript as one block per speaker turn, HTML for the read-only `QTextEdit`), `widgets/` (custom widgets: `level_meter.py`, `timeline.py` (paints a `TimelineModel`, click to seek), `speaker_list.py` (one row per speaker by share, renaming in place, Tentative match check mark, play button), `playback_bar.py` (play/pause of the picked file, never the cleaned/balanced mix)), `title_bar.py` (native title bar in the theme's colors: Windows 11 via `DwmSetWindowAttribute`, macOS via the dark color scheme set in `gui_qt.py`; tabs inside the title bar were prototyped in #30 and dropped because Qt then draws the caption itself, badly) |
 | `voxscribe/recorder.py` | Audio recording: PyAudioWPatch (Windows: microphone, WASAPI loopback, or mixed), `sounddevice` (macOS/Linux microphone), experimental ScreenCaptureKit subprocess (macOS system-audio, see `macos/`) |

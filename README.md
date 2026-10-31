@@ -109,5 +109,6 @@ When a newer Release is out, VoxScribe shows a notice. Choose **Install and rela
 - [macOS setup](docs/macos.md) · [Providers](docs/providers.md) · [Intel Arc GPU](docs/intel-arc-gpu.md) · [Known issues](docs/known-issues.md)
 - [Command line (CLI)](docs/cli-reference.md): record and transcribe from a terminal or script
 - [Development](docs/development.md): running from a terminal, project structure, tests, building the `.exe`
+- [Benchmarking models](docs/benchmark-with-agent.md): compare the transcription models on your own recordings (written for an AI agent to follow)
 - Logs: `%USERPROFILE%\.voxscribe\voxscribe.log` (previous session: `voxscribe.log.1`)
 - Behind a corporate proxy, VoxScribe turns off SSL certificate checks for its own downloads automatically.
