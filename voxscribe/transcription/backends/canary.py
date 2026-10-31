@@ -18,46 +18,76 @@ from voxscribe.transcription.model_ids import CANARY_MODEL_PREFIX
 
 # Canary has no language detection: onnx-asr's prompt names the speech
 # language and the output language, and defaults both to English - German
-# speech then comes out *translated* into English. For auto-detect, the
-# first CANARY_PROBE_SECONDS are transcribed once per language here, and the
-# one the model is most confident in (mean token log-probability) is used
-# for the whole recording. Only the study's languages are probed.
-CANARY_PROBE_LANGUAGES = ("de", "en")
-CANARY_PROBE_SECONDS = 30.0
+# speech then comes out *translated* into English. Auto-detect therefore runs
+# one pass per language and keeps, for each speech segment, the version the
+# model is most confident in (mean token log-probability). One language for
+# the whole recording, chosen from its start, translated the other half of a
+# German-then-English meeting (48.7 % WER on such a take, #58). Both passes
+# use the same Silero VAD on the same audio, so their segments match one to
+# one. Only the study's languages are tried.
+CANARY_AUTO_LANGUAGES = ("de", "en")
 
 
-def _mean_logprob(results) -> float | None:
-    logprobs = [lp for r in results for lp in (getattr(r, "logprobs", None) or [])]
-    return float(np.mean(logprobs)) if logprobs else None
+def _mean_logprob(result) -> float:
+    logprobs = getattr(result, "logprobs", None) or []
+    return float(np.mean(logprobs)) if len(logprobs) else float("-inf")
 
 
-def detect_canary_language(asr, audio: np.ndarray) -> str:
-    """The CANARY_PROBE_LANGUAGES entry Canary is most confident in on the
-    first CANARY_PROBE_SECONDS of `audio`; English if none produced text."""
-    probe = audio[:int(CANARY_PROBE_SECONDS * SAMPLE_RATE)]
-    timestamped = asr.with_timestamps()
-    scores = {}
-    for lang in CANARY_PROBE_LANGUAGES:
-        results = list(timestamped.recognize(probe, sample_rate=SAMPLE_RATE, language=lang))
-        score = _mean_logprob(results)
-        if score is not None:
-            scores[lang] = score
-    if not scores:
-        print("     [WARNING] Canary: no speech in the first "
-              f"{CANARY_PROBE_SECONDS:.0f}s to detect the language - assuming 'en'")
-        return "en"
-    best = max(scores, key=scores.get)
-    print("     Canary language probe: " + ", ".join(
-        f"{lang} {score:.3f}" for lang, score in scores.items()) + f" -> '{best}'")
-    return best
+def _recognize_scored(asr, audio: np.ndarray, language: str, on_progress=None) -> list[tuple]:
+    """[(start, end, text, mean log-probability)] for every VAD segment, also
+    the empty ones (so the passes of two languages line up)."""
+    duration = len(audio) / SAMPLE_RATE
+    out = []
+    for seg in asr.with_timestamps().recognize(audio, sample_rate=SAMPLE_RATE, language=language,
+                                               target_language=language, pnc=True):
+        out.append((float(seg.start), float(seg.end), (seg.text or "").strip(), _mean_logprob(seg)))
+        if on_progress and duration > 0:
+            on_progress(min(seg.end / duration, 1.0))
+    return out
+
+
+def _transcribe_per_segment_language(asr, audio: np.ndarray, on_progress=None) -> dict:
+    """Auto-detect: see CANARY_AUTO_LANGUAGES. Returns segments tagged with
+    their own "language" (the alignment step aligns each language with its
+    own model) and, as "language", the one with the most speech."""
+    n = len(CANARY_AUTO_LANGUAGES)
+    passes = {}
+    for k, lang in enumerate(CANARY_AUTO_LANGUAGES):
+        def progress(frac, k=k):
+            if on_progress:
+                on_progress((k + frac) / n)
+        passes[lang] = _recognize_scored(asr, audio, lang, progress)
+
+    first = passes[CANARY_AUTO_LANGUAGES[0]]
+    if any([(s, e) for s, e, _, _ in p] != [(s, e) for s, e, _, _ in first] for p in passes.values()):
+        # Shouldn't happen (same VAD, same audio); then one language overall.
+        best = max(passes, key=lambda lang: np.mean([sc for *_, sc in passes[lang]] or [-1e9]))
+        print(f"     [WARNING] Canary: the language passes cut the audio differently - using '{best}' throughout")
+        chosen = [(seg, best) for seg in passes[best]]
+    else:
+        chosen = []
+        for i in range(len(first)):
+            lang = max(CANARY_AUTO_LANGUAGES, key=lambda l: passes[l][i][3])
+            chosen.append((passes[lang][i], lang))
+
+    segments, speech = [], {lang: 0.0 for lang in CANARY_AUTO_LANGUAGES}
+    for (start, end, text, _), lang in chosen:
+        if text:
+            segments.append({"start": start, "end": end, "text": text, "language": lang})
+            speech[lang] += end - start
+    main = max(speech, key=speech.get) if segments else "en"
+    switches = sum(1 for a, b in zip(segments, segments[1:]) if a["language"] != b["language"])
+    print(f"     Canary languages per segment: " + ", ".join(
+        f"{lang} {sec:.0f}s" for lang, sec in speech.items()) + f" ({switches} switches)")
+    return {"segments": segments, "language": main}
 
 
 def transcribe_canary(audio: np.ndarray, language: str | None, model_size: str,
                       on_progress=None, on_segments=None) -> dict:
     """Transcribes via NVIDIA Canary-1B-v2 (25 European languages) through
     onnx-asr. Speech and output language are both set to `language` (so it
-    transcribes, never translates); auto-detect picks one first, see
-    detect_canary_language()."""
+    transcribes, never translates); without one, each speech segment gets
+    its own language, see CANARY_AUTO_LANGUAGES."""
     variant = model_size[len(CANARY_MODEL_PREFIX):]
     name = CANARY_VARIANTS.get(variant)
     if name is None:
@@ -65,7 +95,11 @@ def transcribe_canary(audio: np.ndarray, language: str | None, model_size: str,
 
     asr = load_vad_asr(name, bundled_model_dir("canary", variant))
     if not language:
-        language = detect_canary_language(asr, audio)
+        result = _transcribe_per_segment_language(asr, audio, on_progress)
+        if on_segments and result["segments"]:
+            on_segments([dict(s) for s in result["segments"]])
+        del asr
+        return result
     try:
         segments = recognize_segments(asr, audio, on_progress, on_segments,
                                       language=language, target_language=language, pnc=True)

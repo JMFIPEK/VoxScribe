@@ -81,8 +81,11 @@ class _FakeCanary:
     """onnx-asr's Canary behind Silero VAD: one segment per call, its text
     naming the language it was asked for; `logprob` per language."""
 
-    def __init__(self, logprob=None):
+    def __init__(self, logprob=None, segments=None):
+        """segments: [(start, end, {language: logprob})] - several speech
+        segments, each with its own confidence per language."""
         self.calls, self.logprob = [], logprob or {}
+        self.segments = segments
 
     def with_vad(self, vad, **kw):
         return self
@@ -96,6 +99,11 @@ class _FakeCanary:
         lang = kw.get("language")
         if lang == "xx":
             raise KeyError("<|xx|>")
+        if self.segments:
+            for i, (start, end, logprobs) in enumerate(self.segments):
+                yield types.SimpleNamespace(start=start, end=end, text=f" segment {i} in {lang} ",
+                                            logprobs=[logprobs[lang]])
+            return
         yield types.SimpleNamespace(start=0.0, end=0.5, text=f" text in {lang} ",
                                     logprobs=[self.logprob.get(lang, -1.0)])
 
@@ -135,15 +143,25 @@ def test_canary_transcribes_in_the_requested_language(tmp_path, monkeypatch):
     assert streamed == [[{"start": 0.0, "end": 0.5, "text": "text in de"}]]
 
 
-def test_canary_auto_detect_probes_each_language_and_keeps_the_most_confident(tmp_path, monkeypatch):
-    model = _FakeCanary(logprob={"de": -0.2, "en": -0.9})
+def test_canary_auto_detect_picks_the_language_per_segment(tmp_path, monkeypatch):
+    """A meeting that switches language: one pass per language, then each
+    speech segment keeps the language Canary was most confident in - one
+    language for the whole recording made it *translate* the other half."""
+    model = _FakeCanary(segments=[(0.0, 0.5, {"de": -0.2, "en": -0.9}),
+                                  (0.6, 2.0, {"de": -1.1, "en": -0.3})])
     _fake_onnx_asr(monkeypatch, model)
-    request, _ = _request(tmp_path, "canary:1b-v2")
+    streamed = []
+    request, _ = _request(tmp_path, "canary:1b-v2", on_segments=streamed.append)
 
     result = default_registry.resolve(request.model_id).transcribe(request)
 
-    assert [kw.get("language") for _, kw in model.calls] == ["de", "en", "de"]
-    assert result["language"] == "de"
+    assert [kw.get("language") for _, kw in model.calls] == ["de", "en"]
+    assert all(kw["target_language"] == kw["language"] for _, kw in model.calls)
+    assert [(s["text"], s["language"]) for s in result["segments"]] == [
+        ("segment 0 in de", "de"), ("segment 1 in en", "en")]
+    assert result["language"] == "en"  # the language with the most speech
+    assert streamed == [[{"start": 0.0, "end": 0.5, "text": "segment 0 in de", "language": "de"},
+                         {"start": 0.6, "end": 2.0, "text": "segment 1 in en", "language": "en"}]]
 
 
 def test_canary_unsupported_language_is_a_plain_error(tmp_path, monkeypatch):

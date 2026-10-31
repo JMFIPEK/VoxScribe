@@ -107,17 +107,20 @@ def default_local_model_size() -> str:
     """Recommended *local* model - used as a fallback whenever a remote
     provider call fails or isn't configured, and anywhere a local model is
     explicitly wanted. Platform-/hardware-dependent:
-    - macOS: NVIDIA Parakeet v3 (onnx-asr, CPU, ~640 MB download on first
-      use). Apple's SpeechAnalyzer stays selectable (`apple:speechanalyzer`)
-      but drops whole passages when two voices alternate, as in a Call mix
-      (benchmark #58: 20 % WER vs. ~7 % for Parakeet, issue #60).
+    - macOS: NVIDIA Canary-1B-v2 (onnx-asr, CPU, int8). In the Mac study
+      (#58) it was the most accurate local model (5.5 % WER vs. 6.7 % for
+      Parakeet, 11.5 % for SpeechAnalyzer) and ~2x faster than Parakeet,
+      also on German-then-English meetings, since auto-detect picks the
+      language per speech segment (backends/canary.py). Parakeet (#60) and
+      Apple's SpeechAnalyzer stay selectable; SpeechAnalyzer drops whole
+      passages when two voices alternate, as in a Call mix.
     - Windows/Linux: whatever hardware_detect.recommend_model() picks - a
       dedicated NVIDIA GPU (CUDA) recommends large-v3/medium/base depending
       on VRAM, an Intel Arc GPU (no CUDA present) recommends the OpenVINO
       model, otherwise it falls back to a RAM-sized CPU model.
     """
     if sys.platform == "darwin":
-        return PARAKEET_MODEL
+        return CANARY_MODEL
     from voxscribe.hardware_detect import recommend_model
     model_size, _device, _reason = recommend_model()
     return model_size

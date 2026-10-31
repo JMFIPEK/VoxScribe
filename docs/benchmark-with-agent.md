@@ -69,10 +69,10 @@ an upload at 25 MB and gives each request 60 s upstream; VoxScribe's pieces
 retried like any other server error. Never paste the API key into a command,
 a report or the issue.
 
-**Language:** Canary can't detect the language either: without `-l` it
-transcribes the first 30 s once in German and once in English and keeps the
-one it is more confident in (other languages need `-l`). Pass `-l` for
-Canary whenever the language is known. Apple SpeechAnalyzer can't detect the language. For a
+**Language:** Canary can't detect the language itself: without `-l` it
+transcribes the recording once in German and once in English and keeps, per
+speech segment, the version it is more confident in (other languages need
+`-l`). That costs a second pass but handles meetings that switch language. Apple SpeechAnalyzer can't detect the language. For a
 recording that switches language, cut it per language with `--seconds`, or
 run it once per language and compare only the matching part.
 
