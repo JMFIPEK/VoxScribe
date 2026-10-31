@@ -42,7 +42,13 @@ def test_main_window_keeps_its_three_tabs_centered(app, monkeypatch):
         "Record", "Transcription", "⚙  Settings".strip()]
     bar = tabs.tabBar().geometry()
     left, right = bar.left(), tabs.width() - bar.right() - 1
-    assert abs(left - right) <= 2, (left, right)  # centered
+    # Centered as exactly as Qt can: the stylesheet's "alignment: center"
+    # puts the bar at (W - 2 - w) // 2, so the right gap is always 2 px wider
+    # (also for a bare QTabWidget), plus 1 px when W - w is odd and can't be
+    # split evenly. The parity follows the tab text widths, i.e. the font:
+    # 2 px with Segoe UI on Windows, 3 px with the macOS fallback font.
+    odd = (tabs.width() - bar.width()) % 2
+    assert abs(left - right) <= 2 + odd, (left, right)
     window.close()
 
 
