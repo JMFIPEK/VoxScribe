@@ -41,7 +41,7 @@ fi
 # Build the helpers if missing, or rebuild them when their source is newer -
 # an Update's checkout changes the source, and the binaries are gitignored.
 NEED_BUILD=0
-for helper in SpeechAnalyzerTranscribe SystemAudioCapture; do
+for helper in SpeechAnalyzerTranscribe SystemAudioCapture MicCapture; do
     if [ ! -x "macos/$helper" ] || [ "macos/$helper.swift" -nt "macos/$helper" ]; then
         NEED_BUILD=1
     fi

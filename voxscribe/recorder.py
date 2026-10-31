@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from voxscribe.recording_modes import SETUP_LOUDSPEAKER
 from voxscribe.recording_modes import normalize_device_name as _normalize_device_name
 from voxscribe.recording_modes import suggest_mic_for_loopback  # noqa: F401 (re-export)
 from voxscribe.track_assembler import DropDetector, TrackAssembler
@@ -146,6 +147,13 @@ def _macos_system_audio_binary_path() -> str:
     # This file lives in voxscribe/, macos/ is one level up at the project root.
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, "macos", "SystemAudioCapture")
+
+
+def _macos_mic_capture_binary_path() -> str:
+    """Path to the compiled voice-processing microphone helper
+    (macos/MicCapture.swift), used for Loudspeaker Calls on macOS (#54)."""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "macos", "MicCapture")
 
 
 def _get_loopback_device(p: pyaudio.PyAudio, device_index: int | None = None):
@@ -318,6 +326,7 @@ class CaptureSources:
     sounddevice: Any = None   # module-like: query_devices(), InputStream (macOS/Linux)
     popen: Callable = subprocess.Popen  # launches the macOS helper
     helper_path: Callable[[], str] | None = None  # path of macos/SystemAudioCapture
+    mic_helper_path: Callable[[], str] | None = None  # path of macos/MicCapture
 
     def __post_init__(self):
         # The real libraries for the platform asked for - each is only
@@ -328,6 +337,8 @@ class CaptureSources:
             self.sounddevice = sd
         if self.helper_path is None:
             self.helper_path = _macos_system_audio_binary_path
+        if self.mic_helper_path is None:
+            self.mic_helper_path = _macos_mic_capture_binary_path
 
 
 class AudioRecorder:
@@ -458,11 +469,13 @@ class AudioRecorder:
             )
         return None
 
-    def _stream_helper(self, binary: str, on_chunk) -> bytes:
-        """Runs the ScreenCaptureKit helper (macos/SystemAudioCapture) until
-        stop() and passes each chunk of its 16kHz mono int16 PCM to on_chunk.
-        Returns its error output. Raises RuntimeError if it exited with an
-        error.
+    def _stream_helper(self, binary: str, on_chunk, args=(), level_channel: str = "system",
+                       first_chunk: threading.Event | None = None) -> str:
+        """Runs a macOS helper (macos/SystemAudioCapture, or macos/MicCapture
+        with `level_channel` "mic") until stop() and passes each chunk of its
+        16kHz mono int16 PCM to on_chunk; `first_chunk` is set once the first
+        one arrived (or the helper ended). Returns its error output. Raises
+        RuntimeError if it exited with an error.
 
         Tested and debugged on real Apple Silicon hardware (see
         macos/README.md). The helper's stdout is read in a blocking loop; a
@@ -471,8 +484,11 @@ class AudioRecorder:
         immediately instead of closing a resource from another thread while a
         read is still active (the original WASAPI bug this pattern avoids).
         """
-        chunk_bytes = CHUNK * SAMPLE_WIDTH
-        proc = self._sources.popen([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # MicCapture is the Call's time base, so it's read in ~10 ms pieces
+        # like the sounddevice microphone; the system audio in CHUNKs.
+        chunk_bytes = (OUT_RATE // 100 if level_channel == "mic" else CHUNK) * SAMPLE_WIDTH
+        name = os.path.basename(binary)
+        proc = self._sources.popen([binary, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             def _watch_stop():
                 self._stop_event.wait()
@@ -488,8 +504,10 @@ class AudioRecorder:
                 if not data:
                     break
                 on_chunk(data)
+                if first_chunk is not None:
+                    first_chunk.set()
                 if self._on_level:
-                    self._on_level("system", compute_rms(data))
+                    self._on_level(level_channel, compute_rms(data))
 
             try:
                 proc.wait(timeout=3)
@@ -501,12 +519,15 @@ class AudioRecorder:
             # -15/-2 = terminated cleanly via SIGTERM/SIGINT (the expected stop path)
             if proc.returncode not in (0, None, -15, -2):
                 raise RuntimeError(
-                    stderr_output or f"SystemAudioCapture exited with code {proc.returncode}")
+                    stderr_output or f"{name} exited with code {proc.returncode}")
             return stderr_output
         except BaseException:
             if proc.poll() is None:
                 proc.kill()
             raise
+        finally:
+            if first_chunk is not None:
+                first_chunk.set()
 
     def _record_system_macos(self):
         """System-audio recording on macOS via the ScreenCaptureKit helper
@@ -562,6 +583,18 @@ class AudioRecorder:
                 self._on_done(None, 0, str(e))
             return
 
+        mic_binary = None
+        if self._setup == SETUP_LOUDSPEAKER:
+            mic_binary = self._sources.mic_helper_path()
+            if not os.path.isfile(mic_binary):
+                print("[WARNING] macos/MicCapture isn't built (run macos/build.sh): reading "
+                      "the microphone without voice processing, which comes out almost "
+                      "silent while a call app uses the built-in microphone.")
+                mic_binary = None
+        if mic_binary is not None:
+            self._record_loudspeaker_call_macos(binary, mic_binary, mic_info["name"])
+            return
+
         mic_ch = 1
         mic_rate = int(mic_info["default_samplerate"])
         sys_ch = 1
@@ -608,6 +641,52 @@ class AudioRecorder:
                 except Exception:
                     pass
 
+        self._finish_call(assembler)
+
+    def _record_loudspeaker_call_macos(self, binary: str, mic_binary: str, mic_name: str):
+        """A Loudspeaker Call on macOS: the microphone comes from MicCapture,
+        which records with Apple's voice processing. While a call app holds
+        the built-in mic with voice processing (Teams on the MacBook's own
+        speakers and mic), a plain read of it gets an almost silent, gated
+        signal - measured: speech at -60 dB instead of -20 dB (#54). Voice
+        processing also removes most of the Echo already; echo.py stays as
+        the safety net.
+
+        Both helpers stream continuously. The microphone, the time base, is
+        started first and the system audio only once it delivers, so the
+        Playback track can't start ahead of it; the microphone's lead is
+        trimmed as usual (TrackAssembler(playback_is_continuous=True))."""
+        print("Microphone with voice processing (macos/MicCapture).")
+        assembler = TrackAssembler(OUT_RATE, 1, OUT_RATE, 1, playback_is_continuous=True)
+        mic_started = threading.Event()
+        mic_failure: list[Exception] = []
+
+        def run_mic():
+            try:
+                self._stream_helper(mic_binary, lambda data: assembler.add_chunk(MIC, data),
+                                    args=["--device-name", mic_name], level_channel="mic",
+                                    first_chunk=mic_started)
+            except Exception as e:
+                mic_failure.append(e)
+                self._stop_event.set()  # ends the system-audio helper too
+
+        mic_thread = threading.Thread(target=run_mic, daemon=True)
+        mic_thread.start()
+        try:
+            mic_started.wait(timeout=5)
+            if not mic_failure and not self._stop_event.is_set():
+                self._stream_helper(binary, lambda data: assembler.add_chunk(SYSTEM, data))
+        except Exception as e:
+            self._stop_event.set()
+            mic_thread.join(timeout=5)
+            if self._on_done:
+                self._on_done(None, 0, str(e))
+            return
+        mic_thread.join(timeout=5)
+        if mic_failure:
+            if self._on_done:
+                self._on_done(None, 0, str(mic_failure[0]))
+            return
         self._finish_call(assembler)
 
     def _record_single(self):
