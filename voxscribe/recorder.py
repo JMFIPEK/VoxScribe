@@ -285,6 +285,19 @@ def _get_devices_sounddevice(reinit: bool = False):
             "default_output": default_output}
 
 
+def _log_devices(mic: dict | None = None, playback: str | None = None):
+    """One log line naming what a recording records from, so a silent
+    track can be traced to its device afterwards (#54: a Call's Microphone
+    track was empty and nothing said which mic it had used)."""
+    parts = []
+    if mic is not None:
+        rate = mic.get("default_samplerate", mic.get("defaultSampleRate"))
+        parts.append(f"microphone '{mic.get('name', '?')}' ({int(rate or 0)} Hz)")
+    if playback is not None:
+        parts.append(f"playback '{playback}'")
+    print("Recording from: " + ", ".join(parts))
+
+
 def compute_rms(data: bytes) -> float:
     """Computes the RMS level of an audio chunk."""
     samples = np.frombuffer(data, dtype=np.int16)
@@ -406,6 +419,7 @@ class AudioRecorder:
                 info = self._sources.sounddevice.query_devices(kind="input")
             self._channels = 1
             self._sample_rate = int(info["default_samplerate"])
+            _log_devices(mic=info)
 
             def callback(indata, frames, time_info, status):
                 data = indata.tobytes()
@@ -497,6 +511,7 @@ class AudioRecorder:
     def _record_system_macos(self):
         """System-audio recording on macOS via the ScreenCaptureKit helper
         (see _stream_helper())."""
+        _log_devices(playback="all system playback (ScreenCaptureKit)")
         binary = self._helper_path_or_report()
         if binary is None:
             return
@@ -541,6 +556,7 @@ class AudioRecorder:
                 mic_info = self._sources.sounddevice.query_devices(self._device_index)
             else:
                 mic_info = self._sources.sounddevice.query_devices(kind="input")
+            _log_devices(mic=mic_info, playback="all system playback (ScreenCaptureKit)")
         except Exception as e:
             if self._on_done:
                 self._on_done(None, 0, str(e))
@@ -603,6 +619,7 @@ class AudioRecorder:
                 self._channels = loopback["maxInputChannels"]
                 self._sample_rate = int(loopback["defaultSampleRate"])
                 device_idx = loopback["index"]
+                _log_devices(playback=loopback.get("name", "?"))
             else:
                 if self._device_index is not None:
                     info = p.get_device_info_by_index(self._device_index)
@@ -611,6 +628,7 @@ class AudioRecorder:
                 device_idx = info["index"]
                 self._channels = _mic_channels(info)
                 self._sample_rate = int(info["defaultSampleRate"])
+                _log_devices(mic=info)
 
             stream = p.open(
                 format=self._sources.pyaudio.paInt16,
@@ -676,6 +694,7 @@ class AudioRecorder:
             sys_rate = int(loopback["defaultSampleRate"])
             sys_ch = loopback["maxInputChannels"]
             sys_chunk = _chunk_size_for_rate(sys_rate)
+            _log_devices(mic=mic_info, playback=loopback.get("name", "?"))
             assembler = TrackAssembler(mic_rate, mic_ch, sys_rate, sys_ch)
 
             mic_stream = p.open(
