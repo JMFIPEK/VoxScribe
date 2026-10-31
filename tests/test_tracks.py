@@ -211,3 +211,85 @@ def test_a_short_blip_from_the_other_side_does_not_cut_a_segment():
 
     assert [(s["start"], s["end"], s["speaker"]) for s in result["segments"]] == [
         (0, 30, "SPEAKER_00"), (30, 40, "SPEAKER_01")]
+
+
+# --- Speaker labels follow the words in a Call (#61) ------------------------
+
+def _turns_seg(start, end, speaker, turns, word_seconds=0.5):
+    """One long segment labelled `speaker` (whisperx's segment label: the
+    speaker it overlaps most) whose words carry the speaker of their turn:
+    turns = [(start, end, speaker)], as diarization assigns them."""
+    def turn_speaker(t):
+        return next(spk for a, b, spk in turns if a <= t < b)
+    words = [{"start": t, "end": t + word_seconds * 0.8, "word": f"w{t:g}", "speaker": turn_speaker(t)}
+             for t in np.arange(start, end, word_seconds).tolist()]
+    return {"start": start, "end": end, "text": " ".join(w["word"] for w in words),
+            "speaker": speaker, "words": words}
+
+
+def test_a_two_person_call_whose_segments_mix_both_people_keeps_two_speakers():
+    # Local person on the Microphone 0-10 s and 20-30 s, remote person on the
+    # Playback 10-20 s and 30-40 s. The words' speakers are right, but each
+    # long segment holds several turns and is labelled with only one of them.
+    mic, system = _alternating_tracks()
+    turns = [(0, 10, "SPEAKER_00"), (10, 20, "SPEAKER_01"), (20, 30, "SPEAKER_00"), (30, 40, "SPEAKER_01")]
+    result = {"segments": [_turns_seg(0, 15, "SPEAKER_00", turns),
+                           _turns_seg(15, 40, "SPEAKER_01", turns)]}
+    result["word_segments"] = [dict(w) for s in result["segments"] for w in s["words"]]
+
+    assert tracks.split_speakers_by_track(result, mic, system) == {}
+
+    segs = result["segments"]
+    assert [(s["start"], s["speaker"]) for s in segs] == [
+        (0, "SPEAKER_00"), (10.0, "SPEAKER_01"), (15, "SPEAKER_01"),
+        (20.0, "SPEAKER_00"), (30.0, "SPEAKER_01")]
+    assert segs[1]["text"].startswith("w10 ") and segs[3]["text"].startswith("w20 ")
+    assert all(w["speaker"] == s["speaker"] for s in segs for w in s["words"])
+    assert {w["speaker"] for w in result["word_segments"]} == {"SPEAKER_00", "SPEAKER_01"}
+
+
+def test_a_call_with_two_remote_people_keeps_three_speakers():
+    # One local person (Microphone 0-10 s, 20-30 s), two remote people on the
+    # Playback: SPEAKER_01 at 10-20 s, SPEAKER_02 at 30-40 s.
+    mic, system = _alternating_tracks()
+    turns = [(0, 10, "SPEAKER_00"), (10, 20, "SPEAKER_01"), (20, 30, "SPEAKER_00"), (30, 40, "SPEAKER_02")]
+    result = {"segments": [_turns_seg(0, 20, "SPEAKER_00", turns),
+                           _turns_seg(20, 40, "SPEAKER_02", turns)]}
+
+    assert tracks.split_speakers_by_track(result, mic, system) == {}
+    assert [(s["start"], s["speaker"]) for s in result["segments"]] == [
+        (0, "SPEAKER_00"), (10.0, "SPEAKER_01"), (20, "SPEAKER_00"), (30.0, "SPEAKER_02")]
+
+
+def test_a_single_misassigned_word_does_not_cut_a_segment():
+    mic, system = _tracks()
+    seg = _turns_seg(0, 20, "SPEAKER_00", [(0, 9.9, "SPEAKER_00"), (9.9, 10.4, "SPEAKER_01"),
+                                           (10.4, 20, "SPEAKER_00")])
+    result = {"segments": [seg]}
+
+    tracks.split_speakers_by_track(result, mic, system)
+
+    assert [(s["start"], s["end"], s["speaker"]) for s in result["segments"]] == [(0, 20, "SPEAKER_00")]
+
+
+def test_a_segment_labelled_with_none_of_its_words_speakers_is_relabelled():
+    mic, system = _tracks()
+    seg = _turns_seg(20, 30, "SPEAKER_00", [(20, 30, "SPEAKER_01")])
+    result = {"segments": [_seg(0, 20, "SPEAKER_00"), seg]}
+
+    assert tracks.split_speakers_by_track(result, mic, system) == {}
+    assert [s["speaker"] for s in result["segments"]] == ["SPEAKER_00", "SPEAKER_01"]
+
+
+def test_a_sparse_segment_counts_on_the_side_of_its_words():
+    # 4-23.5 s spans mostly Microphone speech (0-20 s) that the Backend didn't
+    # transcribe; its only words lie on the Playback side (21-23 s). By its
+    # span it would count 19.5 s on the Microphone and split SPEAKER_01.
+    mic, system = _tracks()
+    sparse = {"start": 4.0, "end": 23.5, "text": "a b", "speaker": "SPEAKER_01", "words": [
+        {"start": 21.0, "end": 22.0, "word": "a", "speaker": "SPEAKER_01"},
+        {"start": 22.0, "end": 23.0, "word": "b", "speaker": "SPEAKER_01"}]}
+    result = {"segments": [_seg(0, 4, "SPEAKER_00"), sparse, _seg(24, 40, "SPEAKER_01")]}
+
+    assert tracks.split_speakers_by_track(result, mic, system) == {}
+    assert [s["speaker"] for s in result["segments"]] == ["SPEAKER_00", "SPEAKER_01", "SPEAKER_01"]
