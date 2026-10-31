@@ -29,9 +29,9 @@ def test_errors_are_split_into_substitutions_deletions_insertions():
     assert e.rate == pytest.approx(0.25)
 
 
-def test_case_and_punctuation_dont_count_but_numbers_do():
+def test_case_and_punctuation_dont_count_but_different_numbers_do():
     assert b.word_errors("It's 8 o'clock.", "it’s 8 O'CLOCK").rate == 0.0
-    assert b.word_errors("seit 8 Uhr", "seit acht Uhr").substitutions == 1
+    assert b.word_errors("seit acht Uhr", "seit 9 Uhr").substitutions == 1
 
 
 def test_empty_hypothesis_deletes_every_word():
@@ -203,3 +203,25 @@ def test_report_has_a_table_the_texts_and_the_skipped_models(wav):
     assert "| x:1 " in report and "0.0%" in report
     assert "### x:1 (mix)\neins zwei drei" in report
     assert "big (not downloaded)" in report
+
+
+# --- Numbers: written as words or digits count the same (#58) -----------------
+
+@pytest.mark.parametrize("words, digits", [
+    ("seit acht Uhr", "seit 8 Uhr"),
+    ("insgesamt siebenundzwanzig Aufgaben", "insgesamt 27 Aufgaben"),
+    ("zwölf davon", "12 davon"),
+    ("about eighty percent", "about 80%"),
+    ("about eighty percent", "about 80 %"),
+    ("twenty-seven tasks", "27 tasks"),
+    ("ten minutes", "10 minutes"),
+    ("etwa zwanzig Prozent", "etwa 20 %"),
+])
+def test_numbers_as_words_or_digits_are_the_same_word(words, digits):
+    assert b.word_errors(words, digits).rate == 0.0
+
+
+def test_articles_are_not_numbers():
+    # "ein"/"one" stay words: a model writing "1" for "one option" is wrong.
+    assert b.word_errors("one option", "1 option").substitutions == 1
+    assert b.word_errors("ein neues Werkzeug", "1 neues Werkzeug").substitutions == 1

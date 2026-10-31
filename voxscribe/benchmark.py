@@ -44,15 +44,63 @@ LOCAL_MODELS = ["large-v3", "large-v2", "medium", "base",
 
 # --- Word error rate ---------------------------------------------------------
 
-_PUNCTUATION = re.compile(r"[^\w\s']", re.UNICODE)
+_PUNCTUATION = re.compile(r"[^\w\s'%]", re.UNICODE)
+
+# Number words 2..99 in German and English, as digits: a read script writes
+# "acht Uhr", models write "8 Uhr" - the same word. "ein"/"eins"/"one" are
+# left alone: mostly articles, where a model writing "1" is wrong.
+_UNITS_DE = {"zwei": 2, "drei": 3, "vier": 4, "fünf": 5, "sechs": 6, "sieben": 7,
+             "acht": 8, "neun": 9}
+_TEENS_DE = {"zehn": 10, "elf": 11, "zwölf": 12, "dreizehn": 13, "vierzehn": 14,
+             "fünfzehn": 15, "sechzehn": 16, "siebzehn": 17, "achtzehn": 18, "neunzehn": 19}
+_TENS_DE = {"zwanzig": 20, "dreißig": 30, "vierzig": 40, "fünfzig": 50, "sechzig": 60,
+            "siebzig": 70, "achtzig": 80, "neunzig": 90}
+_UNITS_EN = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+             "eight": 8, "nine": 9}
+_TEENS_EN = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+             "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19}
+_TENS_EN = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+            "seventy": 70, "eighty": 80, "ninety": 90}
+_NUMBER_WORDS = {**_UNITS_DE, **_TEENS_DE, **_TENS_DE, **_UNITS_EN, **_TEENS_EN, **_TENS_EN}
+_COMPOUND_DE = re.compile(r"^(ein|zwei|drei|vier|fünf|sechs|sieben|acht|neun)und("
+                          + "|".join(_TENS_DE) + ")$")
+_COMPOUND_EN = re.compile(r"^(" + "|".join(_TENS_EN) + r")-(one|"
+                          + "|".join(_UNITS_EN) + ")$")
+_PERCENT_WORDS = {"percent", "prozent", "%"}
+
+
+def _number_word(word: str) -> str:
+    if word in _NUMBER_WORDS:
+        return str(_NUMBER_WORDS[word])
+    m = _COMPOUND_DE.match(word)
+    if m:
+        unit = 1 if m.group(1) == "ein" else _UNITS_DE[m.group(1)]
+        return str(_TENS_DE[m.group(2)] + unit)
+    m = _COMPOUND_EN.match(word)
+    if m:
+        unit = 1 if m.group(2) == "one" else _UNITS_EN[m.group(2)]
+        return str(_TENS_EN[m.group(1)] + unit)
+    return word
 
 
 def normalize_words(text: str) -> list[str]:
     """Words for comparing: casefolded, punctuation removed (apostrophes
-    kept, "it's" stays one word). Numbers are compared as written - "8 Uhr"
-    and "acht Uhr" differ."""
-    text = _PUNCTUATION.sub(" ", text.casefold().replace("’", "'"))
-    return [w.strip("'") for w in text.split() if w.strip("'")]
+    kept, "it's" stays one word), number words 2-99 in German and English
+    as digits ("acht" = "8", "twenty-seven" = "27"), "%"/"percent"/"Prozent"
+    as one word "%"."""
+    text = text.casefold().replace("’", "'")
+    words = []
+    for raw in re.sub(r"%", " % ", text).split():
+        if re.fullmatch(_COMPOUND_EN, raw.strip(".,!?;:")):
+            words.append(_number_word(raw.strip(".,!?;:")))
+            continue
+        for w in _PUNCTUATION.sub(" ", raw).split():
+            w = w.strip("'")
+            if not w:
+                continue
+            w = _number_word(w)
+            words.append("%" if w in _PERCENT_WORDS else w)
+    return words
 
 
 @dataclass
