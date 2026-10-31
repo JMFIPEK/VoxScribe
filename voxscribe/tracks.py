@@ -5,8 +5,10 @@ else consumes unchanged), plus a 2-channel sidecar `<name>.tracks.flac`
 (channel 0 = microphone, channel 1 = system audio, 16kHz). transcribe() uses
 the sidecar - if present - as a hard constraint for speaker diarization: a
 person speaks either into the local microphone or comes out of the speakers,
-never both. Diarization clusters that clearly span both sides (pyannote
-merged a local and a remote voice) are split apart again.
+never both. Segments are first cut where their words' speaker changes, so
+each turn carries its own speaker; diarization clusters that then still
+clearly span both sides (pyannote merged a local and a remote voice) are
+split apart again.
 
 The sidecar's FLAC comment tag records the Call's Setup ("mode=call;
 setup=headset" or "...setup=loudspeaker", see recording_modes.py); sidecars
@@ -203,26 +205,20 @@ def _segment_side(mic_db: np.ndarray, sys_db: np.ndarray, start: float, end: flo
     return None
 
 
-def _word_runs(seg: dict, mic_db: np.ndarray, sys_db: np.ndarray) -> list[tuple[list[dict], str]]:
-    """The segment's words grouped into runs on one side each, [(words,
-    side)], or [] if the words don't show a side change.
+def _runs(words: list[dict], labels: list[str | None]) -> list[list]:
+    """The words grouped into runs with one label each, [[words, label]].
 
-    Long segments (Apple SpeechAnalyzer returns 10-20 s) can hold both a
-    local and a remote speaker; classifying the whole segment then gives
-    "ambiguous" and keeps the remote words with the local speaker (#36).
-    Ambiguous words and words without timestamps join the run before them
-    (or after, at the start); runs shorter than _MIN_RUN_SECONDS merge into
-    their neighbour."""
-    words = seg.get("words") or []
-    sides = [_segment_side(mic_db, sys_db, w["start"], w.get("end", w["start"]))
-             if "start" in w else None for w in words]
-    known = [side for side in sides if side]
+    Words without a label (ambiguous side, no timestamp, no speaker) join
+    the run before them (or after, at the start); runs shorter than
+    _MIN_RUN_SECONDS merge into their neighbour. [] if no word has a
+    label."""
+    known = [label for label in labels if label]
     if not known:
         return []
     current = known[0]
-    runs: list[list] = []  # [words, side]
-    for w, side in zip(words, sides):
-        current = side or current
+    runs: list[list] = []  # [words, label]
+    for w, label in zip(words, labels):
+        current = label or current
         if runs and runs[-1][1] == current:
             runs[-1][0].append(w)
         else:
@@ -242,14 +238,63 @@ def _word_runs(seg: dict, mic_db: np.ndarray, sys_db: np.ndarray) -> list[tuple[
         else:
             runs[into][0][:0] = runs[short][0]
         del runs[short]
-        merged = [runs[0]]  # neighbours that now share a side
+        merged = [runs[0]]  # neighbours that now share a label
         for run in runs[1:]:
             if run[1] == merged[-1][1]:
                 merged[-1][0].extend(run[0])
             else:
                 merged.append(run)
         runs = merged
-    return [(ws, side) for ws, side in runs] if len(runs) > 1 else []
+    return runs
+
+
+def _word_runs(seg: dict, mic_db: np.ndarray, sys_db: np.ndarray) -> list[tuple[list[dict], str]]:
+    """The segment's words grouped into runs on one side each, [(words,
+    side)]: one run if the words stay on one side, [] if no word has a
+    side.
+
+    Long segments (Apple SpeechAnalyzer returns 10-20 s) can hold both a
+    local and a remote speaker; classifying the whole segment then gives
+    "ambiguous" and keeps the remote words with the local speaker (#36).
+    Their words can also be sparse (a few words over 10 s), so even a
+    segment on one side is classified by its words, not its whole span,
+    which may cover the other side's speech (#61)."""
+    words = seg.get("words") or []
+    sides = [_segment_side(mic_db, sys_db, w["start"], w.get("end", w["start"]))
+             if "start" in w else None for w in words]
+    return [(ws, side) for ws, side in _runs(words, sides)]
+
+
+def cut_at_speaker_changes(result: dict) -> int:
+    """Cuts every segment where its words' diarization speaker changes and
+    gives each piece the speaker of its words (in place); a segment whose
+    words all have another speaker than the segment is relabelled. Returns
+    the number of segments cut.
+
+    whisperx.assign_word_speakers() labels each word with the right
+    speaker, but a segment only with the speaker it overlaps most. Apple
+    SpeechAnalyzer's 10-20 s segments often hold several turns of a Call
+    ("remote - local - remote"), so the segment label was wrong for much
+    of its speech, and the track split then split both people in two (#61).
+    Short runs (< _MIN_RUN_SECONDS) and words without a speaker join their
+    neighbour, so a single misassigned word doesn't cut a segment."""
+    new_segments, cut = [], 0
+    for seg in result.get("segments", []):
+        words = seg.get("words") or []
+        runs = _runs(words, [w.get("speaker") for w in words])
+        if len(runs) > 1:
+            for i, (ws, speaker) in enumerate(runs):
+                piece = _piece(seg, ws, i == 0, i == len(runs) - 1)
+                piece["speaker"] = speaker
+                new_segments.append(piece)
+            cut += 1
+            continue
+        if runs and seg.get("speaker") != runs[0][1]:
+            seg["speaker"] = runs[0][1]
+        new_segments.append(seg)
+    if "segments" in result:
+        result["segments"] = new_segments
+    return cut
 
 
 def _piece(seg: dict, words: list[dict], first: bool, last: bool) -> dict:
@@ -268,15 +313,20 @@ def split_speakers_by_track(result: dict, mic: np.ndarray, system: np.ndarray) -
     microphone and the system side into two speakers (in place).
 
     Operates on raw diarization labels (call before voice-print relabeling).
-    Each speaker keeps its label on the side where it speaks most; its
-    segments on the other side move to a new SPEAKER_NN label. A segment
-    whose words change side is cut at the change, if one of its parts
-    moves; other segments stay as they are. Returns {new_label:
-    original_label} for every split performed.
+    First every segment is cut where its words' speaker changes
+    (cut_at_speaker_changes(), #61), so the side totals below count each
+    person's own speech. Then each speaker keeps its label on the side
+    where it speaks most; its segments on the other side move to a new
+    SPEAKER_NN label. A segment whose words change side is cut at the
+    change, if one of its parts moves; other segments stay as they are.
+    Returns {new_label: original_label} for every split performed.
     """
-    segments = result.get("segments", [])
-    if not segments:
+    if not result.get("segments"):
         return {}
+    cut = cut_at_speaker_changes(result)
+    if cut:
+        print(f"     {cut} segment(s) cut where the speaker changes")
+    segments = result["segments"]
     mic_db, sys_db = _frame_db(mic), _frame_db(system)
 
     # Per segment: [(piece, side)]; a single entry with the segment itself
@@ -286,9 +336,11 @@ def split_speakers_by_track(result: dict, mic: np.ndarray, system: np.ndarray) -
     for seg in segments:
         spk = seg.get("speaker")
         runs = _word_runs(seg, mic_db, sys_db) if spk else []
-        if runs:
+        if len(runs) > 1:
             seg_parts = [(_piece(seg, ws, i == 0, i == len(runs) - 1), side)
                          for i, (ws, side) in enumerate(runs)]
+        elif runs:
+            seg_parts = [(seg, runs[0][1])]
         else:
             side = _segment_side(mic_db, sys_db, seg.get("start", 0.0), seg.get("end", 0.0)) if spk else None
             seg_parts = [(seg, side)]

@@ -10,9 +10,10 @@ STRAY_SPEAKER_MAX_SECONDS = 3.0
 
 
 def split_by_track(result: dict, audio: AudioSource) -> dict[str, str]:
-    """"Microphone + system" recordings: use the separate tracks (see
-    tracks.py) to split speakers that pyannote merged across the
-    local/remote boundary. Runs on raw labels, before voice-print
+    """"Microphone + system" recordings: cut segments where their words'
+    speaker changes, then use the separate tracks (see tracks.py) to split
+    speakers that pyannote merged across the local/remote boundary.
+    Without a sidecar nothing changes. Runs on raw labels, before voice-print
     matching - split-off speakers have no embedding of their own
     and so are simply left unrecognized. The tracks come from the
     pipeline's AudioSource, so a Loudspeaker Call's echo canceller doesn't
