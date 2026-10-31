@@ -216,7 +216,7 @@ def cmd_benchmark(args):
     bench = benchmark.Benchmark()
     print(f"Benchmark: {len(args.input)} recording(s), {len(models)} model(s), "
           f"{'whole files' if not args.seconds else f'first {args.seconds:g} s'}, "
-          f"language {language or 'auto-detect'}, tracks: {args.tracks}")
+          f"language {language or 'auto-detect'}, tracks: {args.tracks}", flush=True)
     recordings, skipped = bench.run(args.input, texts, models, seconds=args.seconds,
                                     language=language, tracks=args.tracks,
                                     download=args.download)

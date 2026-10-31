@@ -266,7 +266,7 @@ class Benchmark:
 
     def __init__(self, registry=None, presence: Callable[[str], str | None] = model_presence,
                  align: Callable | None = None, align_presence=alignment_presence,
-                 device: str | None = None, log: Callable[[str], None] = print):
+                 device: str | None = None, log: Callable[[str], None] | None = None):
         if registry is None:
             from voxscribe.transcription import backends  # noqa: F401 (registers them)
             from voxscribe.transcription.registry import default_registry
@@ -276,7 +276,9 @@ class Benchmark:
         self.align = align or self._wav2vec2_align
         self.align_presence = align_presence
         self._device = device
-        self.log = log
+        # Flushed at once: the run takes minutes, and its output is often a
+        # file or a pipe, where print() would hold it back until the end.
+        self.log = log or (lambda line: print(line, flush=True))
 
     @property
     def device(self) -> str:
