@@ -164,10 +164,15 @@ def _get_loopback_device(p: pyaudio.PyAudio, device_index: int | None = None):
     )
 
 
-def get_devices():
-    """Returns all available audio devices as structured lists."""
+def get_devices(reinit: bool = False):
+    """Returns all available audio devices as structured lists.
+
+    `reinit` (macOS/Linux): restart PortAudio first, which reads the device
+    list and the system defaults only when it starts - without it a device
+    plugged in or an output switched in Control Center stays unseen until the
+    app restarts. Only while nothing records: it closes every open stream."""
     if not IS_WINDOWS:
-        return _get_devices_sounddevice()
+        return _get_devices_sounddevice(reinit)
 
     p = pyaudio.PyAudio()
     microphones = []
@@ -224,12 +229,26 @@ def get_devices():
             "default_loopback": default_loopback}
 
 
-def _get_devices_sounddevice():
+def _get_devices_sounddevice(reinit: bool = False):
     """get_devices() equivalent for macOS/Linux via sounddevice.
 
-    Only returns microphones - system audio (loopback) has no WASAPI
-    equivalent on these platforms and is deliberately not supported here.
+    Returns microphones and, as "default_output", the name of the current
+    output device - not a device to record from: on macOS ScreenCaptureKit
+    records all playback whichever output it goes to, but the name tells the
+    Record page where the sound goes (and which Setup fits).
     """
+    if reinit:
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            print(f"[recorder] Could not re-read audio devices: {e}")
+    default_output = None
+    try:
+        default_output = sd.query_devices(kind="output")["name"]
+    except Exception:
+        pass
+
     microphones = []
     default_input_index = None
     try:
@@ -262,7 +281,8 @@ def _get_devices_sounddevice():
 
     return {"microphones": _dedupe_audio_devices(microphones),
             "loopback": [],
-            "default_loopback": None}
+            "default_loopback": None,
+            "default_output": default_output}
 
 
 def compute_rms(data: bytes) -> float:

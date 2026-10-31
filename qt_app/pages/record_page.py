@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 
 from PySide6.QtCore import QSettings, QSize, Qt, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -54,8 +54,10 @@ SETUP_HINTS = {
                           "the microphone also picks up the remote voices.",
 }
 
-# macOS captures all playback (ScreenCaptureKit), there's no device to pick.
+# macOS captures all playback (ScreenCaptureKit), there's no device to pick;
+# the entry names the output the sound currently goes to, when known.
 _MACOS_PLAYBACK_LABEL = "Entire system playback (no device selection)"
+_MACOS_PLAYBACK_LABEL_WITH_OUTPUT = "All system playback (now: {output})"
 
 # int16 RMS (see recorder.compute_rms()). Measured: an unworn/unused headset
 # mic delivers 0-0.5, a live laptop mic array in a quiet room ~3-5, speech
@@ -121,6 +123,8 @@ class RecordPage(QWidget):
         self._build_ui()
         self._wire()
         self.refresh_devices()
+        if sys.platform == "darwin":
+            QGuiApplication.instance().applicationStateChanged.connect(self._on_application_state_changed)
 
     # ------------------------------------------------------------------ ui
     def _build_ui(self):
@@ -299,7 +303,7 @@ class RecordPage(QWidget):
 
     # --------------------------------------------------------------- wire
     def _wire(self):
-        self.refresh_btn.clicked.connect(self.refresh_devices)
+        self.refresh_btn.clicked.connect(lambda: self.refresh_devices())
         for mode, btn in self.mode_buttons.items():
             btn.clicked.connect(lambda _=False, m=mode: self._on_mode_clicked(m))
         for setup, btn in self.setup_buttons.items():
@@ -358,8 +362,9 @@ class RecordPage(QWidget):
         self._update_device_warning()
 
     # ----------------------------------------------------------- devices
-    def refresh_devices(self):
-        self._all_devices = self.window_.recorder_controller.refresh_devices()
+    def refresh_devices(self, devices=None):
+        """Fills the pickers from `devices` (default: read them now)."""
+        self._all_devices = devices if devices is not None else self.window_.recorder_controller.refresh_devices()
 
         self.mic_combo.blockSignals(True)
         self._mic_map = _fill_device_combo(self.mic_combo, self._all_devices.get("microphones", []))
@@ -367,9 +372,12 @@ class RecordPage(QWidget):
 
         self.playback_combo.blockSignals(True)
         if sys.platform == "darwin":
+            output = self._all_devices.get("default_output")
+            label = (_MACOS_PLAYBACK_LABEL_WITH_OUTPUT.format(output=output) if output
+                     else _MACOS_PLAYBACK_LABEL)
             self.playback_combo.clear()
-            self.playback_combo.addItem(_MACOS_PLAYBACK_LABEL)
-            self._playback_map = {_MACOS_PLAYBACK_LABEL: None}
+            self.playback_combo.addItem(label)
+            self._playback_map = {label: None}
             self.playback_combo.setEnabled(False)
         else:
             self._playback_map = _fill_device_combo(self.playback_combo, self._all_devices.get("loopback", []))
@@ -382,9 +390,23 @@ class RecordPage(QWidget):
 
         self._on_playback_changed()
 
+    def _on_application_state_changed(self, state):
+        """macOS: back from Control Center or System Settings, the sound may
+        go elsewhere now (AirPods connected, speakers picked). Re-read the
+        devices and re-pick Setup and mic only if the output changed, so a
+        mic the user picked survives switching windows."""
+        if state != Qt.ApplicationActive or self.window_.recorder_controller.is_recording:
+            return
+        before = self._all_devices.get("default_output")
+        devices = self.window_.recorder_controller.refresh_devices()
+        if devices.get("default_output") != before:
+            self.refresh_devices(devices)
+
     def _playback_name(self):
         """The selected playback device's full name, as recording_modes'
-        device matching expects it."""
+        device matching expects it (macOS: the current output device)."""
+        if sys.platform == "darwin":
+            return self._all_devices.get("default_output")
         index = self._playback_map.get(self.playback_combo.currentText())
         for d in self._all_devices.get("loopback", []):
             if d["index"] == index:
@@ -392,6 +414,8 @@ class RecordPage(QWidget):
         return None
 
     def _playback_key(self) -> str:
+        if sys.platform == "darwin":
+            return self._all_devices.get("default_output") or self.playback_combo.currentText()
         return self.playback_combo.currentText()
 
     def _on_playback_changed(self, *_):
@@ -423,7 +447,7 @@ class RecordPage(QWidget):
         e.g. listening on one headset while the other, unworn one's mic is
         selected. Non-blocking: the user may know better."""
         warning = ""
-        if self._mode == rm.MODE_CALL and self._setup == rm.SETUP_HEADSET and sys.platform == "win32":
+        if self._mode == rm.MODE_CALL and self._setup == rm.SETUP_HEADSET and sys.platform in ("win32", "darwin"):
             playback = self._playback_name()
             mic_index = self._mic_map.get(self.mic_combo.currentText())
             mic = next((d for d in self._all_devices.get("microphones", []) if d["index"] == mic_index), None)

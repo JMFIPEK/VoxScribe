@@ -95,7 +95,9 @@ def page(make_page):
 
         def refresh_devices(self):
             self.refreshes += 1
-            return DEVICES
+            return self.devices
+
+        devices = DEVICES
 
         # Like RecorderController: the path callback is asked at Stop (also
         # on window close), and what it says is where the files are saved.
@@ -177,6 +179,85 @@ def test_refresh_reloads_devices_and_is_disabled_while_recording(page, app):
 
     rc.recordingStarted.emit()
     assert not page.refresh_btn.isEnabled()
+
+
+# --- macOS: the current output device (issue #54) ------------------------------
+
+MAC_DEVICES = {
+    "microphones": [{"index": 1, "name": "MacBook Pro-Mikrofon"},
+                    {"index": 2, "name": "Jabra Link 390"}],
+    "loopback": [],
+    "default_loopback": None,
+    "default_output": "Jabra Link 390",
+}
+
+
+@pytest.fixture
+def mac_page(page, app, monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    rc = page.window_.recorder_controller
+    rc.devices = dict(MAC_DEVICES)
+    page._settings.setValue("record/setup_by_playback", "{}")
+    page.refresh_devices()
+    _show_mode(page, app, "call")
+    return page
+
+
+def test_mac_playback_entry_names_the_current_output(mac_page):
+    assert mac_page.playback_combo.count() == 1
+    assert "Jabra Link 390" in mac_page.playback_combo.currentText()
+    assert not mac_page.playback_combo.isEnabled()
+
+
+def test_mac_headset_output_preselects_headset_and_its_mic(mac_page):
+    assert mac_page._setup == "headset"
+    assert mac_page.mic_combo.currentText() == "Jabra Link 390"
+
+
+def test_mac_builtin_speakers_preselect_loudspeaker_and_builtin_mic(mac_page):
+    rc = mac_page.window_.recorder_controller
+    rc.devices = dict(MAC_DEVICES, default_output="MacBook Pro-Lautsprecher")
+    mac_page.refresh_devices()
+    assert "MacBook Pro-Lautsprecher" in mac_page.playback_combo.currentText()
+    assert mac_page._setup == "loudspeaker"
+    assert mac_page.mic_combo.currentText() == "MacBook Pro-Mikrofon"
+
+
+def test_mac_without_known_output_keeps_the_plain_entry(mac_page):
+    rc = mac_page.window_.recorder_controller
+    rc.devices = dict(MAC_DEVICES, default_output=None)
+    mac_page.refresh_devices()
+    assert mac_page.playback_combo.currentText() == "Entire system playback (no device selection)"
+
+
+def test_mac_switching_output_elsewhere_updates_the_page_on_return(mac_page):
+    from PySide6.QtCore import Qt
+
+    rc = mac_page.window_.recorder_controller
+    rc.devices = dict(MAC_DEVICES, default_output="MacBook Pro-Lautsprecher")
+    mac_page._on_application_state_changed(Qt.ApplicationActive)
+    assert "MacBook Pro-Lautsprecher" in mac_page.playback_combo.currentText()
+    assert mac_page._setup == "loudspeaker"
+
+
+def test_mac_returning_with_the_same_output_keeps_the_picked_mic(mac_page):
+    from PySide6.QtCore import Qt
+
+    mac_page.mic_combo.setCurrentText("MacBook Pro-Mikrofon")
+    mac_page._on_application_state_changed(Qt.ApplicationActive)
+    assert mac_page.mic_combo.currentText() == "MacBook Pro-Mikrofon"
+
+
+def test_mac_returning_while_recording_reads_no_devices(mac_page):
+    from PySide6.QtCore import Qt
+
+    rc = mac_page.window_.recorder_controller
+    rc.is_recording = True
+    before = rc.refreshes
+    mac_page._on_application_state_changed(Qt.ApplicationActive)
+    assert rc.refreshes == before
 
 
 # --- Recording title (issue #53) ----------------------------------------------
@@ -271,7 +352,7 @@ def test_closing_the_window_while_recording_names_the_file_from_the_title(make_p
     from tests.fake_capture import FakePyAudio, FakeSource
     from voxscribe.recorder import AudioRecorder, CaptureSources
 
-    monkeypatch.setattr(controllers, "get_devices", lambda: DEVICES)
+    monkeypatch.setattr(controllers, "get_devices", lambda reinit=False: DEVICES)
     sources = CaptureSources(platform="win32", pyaudio=FakePyAudio(FakeSource(), FakeSource()))
     rc = RecorderController(recorder=AudioRecorder(sources))
     page = make_page(rc)

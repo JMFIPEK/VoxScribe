@@ -94,3 +94,34 @@ def test_current_device_index_keeps_an_unlisted_index():
 def test_which_modes_record_playback_and_microphone():
     assert [rm.records_playback(m) for m in (rm.MODE_PLAYBACK, rm.MODE_CALL, rm.MODE_ROOM)] == [True, True, False]
     assert [rm.records_mic(m) for m in (rm.MODE_PLAYBACK, rm.MODE_CALL, rm.MODE_ROOM)] == [False, True, True]
+
+
+# --- macOS device names (issue #54): no "(device)" part, and the built-in
+# speakers and mic are two names of one Mac ---------------------------------
+
+MAC_BUILTIN_MIC = {"index": 1, "name": "MacBook Pro-Mikrofon"}
+MAC_JABRA_MIC = {"index": 2, "name": "Jabra Link 390"}
+MAC_AIRPODS_MIC = {"index": 3, "name": "AirPods Pro von Jonas"}
+MAC_TEAMS_MIC = {"index": 4, "name": "Microsoft Teams Audio"}
+MAC_MICS = [MAC_BUILTIN_MIC, MAC_JABRA_MIC, MAC_AIRPODS_MIC, MAC_TEAMS_MIC]
+
+
+@pytest.mark.parametrize("output, mic", [
+    ("Jabra Link 390", MAC_JABRA_MIC),
+    ("AirPods Pro von Jonas", MAC_AIRPODS_MIC),
+])
+def test_mac_headset_output_is_headset_with_its_own_mic(output, mic):
+    assert rm.guess_setup(MAC_MICS, output) == (rm.SETUP_HEADSET, mic)
+
+
+def test_mac_builtin_speakers_are_loudspeaker_with_the_builtin_mic():
+    assert rm.guess_setup(MAC_MICS, "MacBook Pro-Lautsprecher") == (rm.SETUP_LOUDSPEAKER, MAC_BUILTIN_MIC)
+
+
+def test_mac_builtin_speakers_in_english():
+    mics = [{"index": 1, "name": "MacBook Air Microphone"}, MAC_JABRA_MIC]
+    assert rm.guess_setup(mics, "MacBook Air Speakers") == (rm.SETUP_LOUDSPEAKER, mics[0])
+
+
+def test_builtin_speakers_never_match_a_headset_mic():
+    assert not rm.mic_matches_playback(MAC_BUILTIN_MIC["name"], "MacBook Pro-Lautsprecher")
