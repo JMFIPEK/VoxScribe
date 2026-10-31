@@ -12,6 +12,7 @@ Commands:
                           [--setup headset|loudspeaker]
     python main.py transcribe --input audio.wav  Start transcription
     python main.py run --mode call               Record + transcribe
+    python main.py benchmark -i rec.wav -r ref.txt  Compare models (see docs/benchmark-with-agent.md)
 """
 
 import os

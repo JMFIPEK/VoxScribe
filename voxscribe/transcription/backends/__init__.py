@@ -6,9 +6,15 @@ Backend actually selected. Importing this package stays cheap.
 """
 
 from voxscribe.transcription.model_ids import (
-    APPLE_MODEL_PREFIX, OPENVINO_MODEL_PREFIX, PARAKEET_MODEL_PREFIX, REMOTE_MODEL_PREFIX,
+    APPLE_MODEL_PREFIX, CANARY_MODEL_PREFIX, OPENVINO_MODEL_PREFIX, PARAKEET_MODEL_PREFIX,
+    REMOTE_MODEL_PREFIX,
 )
 from voxscribe.transcription.registry import default_registry
+
+
+def _canary():
+    from voxscribe.transcription.backends.canary import CanaryBackend
+    return CanaryBackend()
 
 
 def _parakeet():
@@ -42,3 +48,5 @@ default_registry.register(REMOTE_MODEL_PREFIX, _remote)
 default_registry.register(APPLE_MODEL_PREFIX, _apple)
 default_registry.register(OPENVINO_MODEL_PREFIX, _openvino)
 default_registry.register(PARAKEET_MODEL_PREFIX, _parakeet)
+# Candidate (#57/#58): by Model ID only, not in the GUI.
+default_registry.register(CANARY_MODEL_PREFIX, _canary)

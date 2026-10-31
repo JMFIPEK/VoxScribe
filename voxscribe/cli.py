@@ -184,6 +184,47 @@ def cmd_transcribe(args):
     return result
 
 
+def cmd_benchmark(args):
+    """Compares transcription models on the same recordings (#56), see
+    voxscribe/benchmark.py and docs/benchmark-with-agent.md."""
+    from voxscribe import gpu_setup
+    gpu_setup.ensure_correct_torch_backend()
+
+    from voxscribe import benchmark
+
+    references = args.reference or []
+    if len(references) > len(args.input):
+        print("More --reference than -i: each --reference belongs to the -i at the same position.")
+        sys.exit(1)
+    for path in args.input:
+        if not os.path.isfile(path):
+            print(f"File not found: {path}")
+            sys.exit(1)
+    texts = []
+    for ref in references:
+        if not os.path.isfile(ref):
+            print(f"Reference not found: {ref}")
+            sys.exit(1)
+        with open(ref, encoding="utf-8") as f:
+            texts.append(f.read())
+    texts += [None] * (len(args.input) - len(texts))
+
+    models = ([m.strip() for m in args.models.split(",") if m.strip()]
+              if args.models else benchmark.default_models())
+    language = None if args.language in (None, "auto") else args.language
+
+    bench = benchmark.Benchmark()
+    print(f"Benchmark: {len(args.input)} recording(s), {len(models)} model(s), "
+          f"{'whole files' if not args.seconds else f'first {args.seconds:g} s'}, "
+          f"language {language or 'auto-detect'}, tracks: {args.tracks}", flush=True)
+    recordings, skipped = bench.run(args.input, texts, models, seconds=args.seconds,
+                                    language=language, tracks=args.tracks,
+                                    download=args.download)
+    print()
+    print(benchmark.format_report(recordings, skipped, machine=benchmark.machine_description(),
+                                  device=bench.device))
+
+
 def cmd_run(args):
     """Record + transcribe immediately."""
     # Record first
@@ -274,6 +315,29 @@ def main():
         help="Output format(s), comma-separated: txt, srt, json. Default: txt"
     )
     sub_transcribe.set_defaults(func=cmd_transcribe)
+
+    # --- benchmark ---
+    sub_bench = subparsers.add_parser(
+        "benchmark", help="Compare transcription models on the same recordings",
+        description="Runs several models on the same recordings and compares speed, "
+                    "word error rate (with --reference) and output. See "
+                    "docs/benchmark-with-agent.md.")
+    sub_bench.add_argument("--input", "-i", required=True, action="append",
+                           help="Recording; repeat for several")
+    sub_bench.add_argument("--reference", "-r", action="append", default=None,
+                           help="Reference text file for the -i at the same position")
+    sub_bench.add_argument("--models", "-m", default=None,
+                           help="Comma-separated Model IDs (default: every model on this "
+                                "machine plus the configured Providers)")
+    sub_bench.add_argument("--seconds", type=float, default=120,
+                           help="Only the first N seconds (default 120, 0 = whole file)")
+    sub_bench.add_argument("--language", "-l", default="auto",
+                           help="Language code, or 'auto' (default)")
+    sub_bench.add_argument("--tracks", choices=("mix", "separate", "both"), default="mix",
+                           help="For Calls: the mix (default), each track separately, or both")
+    sub_bench.add_argument("--download", action="store_true",
+                           help="Allow downloading models that aren't on this machine yet")
+    sub_bench.set_defaults(func=cmd_benchmark)
 
     # --- run ---
     sub_run = subparsers.add_parser(

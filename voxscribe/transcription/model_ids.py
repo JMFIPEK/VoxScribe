@@ -16,6 +16,21 @@ def remote_model_id(provider_id: str) -> str:
     return f"{REMOTE_MODEL_PREFIX}{provider_id}"
 
 
+# Benchmark only (#57): "server:<provider-id>#<model>" runs a Provider with
+# another model than the one it stores, so one Provider (e.g. OpenRouter)
+# can compare several models. The app never builds such a Model ID.
+REMOTE_MODEL_OVERRIDE_SEPARATOR = "#"
+
+
+def split_remote_model(model_id: str) -> tuple[str, str | None]:
+    """'server:openrouter#qwen/qwen3-asr-1.7b' -> ('server:openrouter',
+    'qwen/qwen3-asr-1.7b'); anything else -> (model_id, None)."""
+    if is_remote_model(model_id) and REMOTE_MODEL_OVERRIDE_SEPARATOR in model_id:
+        base, model = model_id.split(REMOTE_MODEL_OVERRIDE_SEPARATOR, 1)
+        return base, (model or None)
+    return model_id, None
+
+
 OPENVINO_MODEL_PREFIX = "openvino:"
 
 
@@ -49,6 +64,19 @@ def is_parakeet_model(model_size: str) -> bool:
     return model_size.startswith(PARAKEET_MODEL_PREFIX)
 
 
+# Candidate (#57/#58): reachable by Model ID from the CLI and the benchmark,
+# not offered in the GUI.
+CANARY_MODEL_PREFIX = "canary:"
+
+
+CANARY_MODEL = "canary:1b-v2"
+
+
+def is_canary_model(model_size: str) -> bool:
+    """Checks whether transcription should run via NVIDIA Canary (onnx-asr)."""
+    return model_size.startswith(CANARY_MODEL_PREFIX)
+
+
 APPLE_MODEL_PREFIX = "apple:"
 
 
@@ -79,17 +107,20 @@ def default_local_model_size() -> str:
     """Recommended *local* model - used as a fallback whenever a remote
     provider call fails or isn't configured, and anywhere a local model is
     explicitly wanted. Platform-/hardware-dependent:
-    - macOS: NVIDIA Parakeet v3 (onnx-asr, CPU, ~640 MB download on first
-      use). Apple's SpeechAnalyzer stays selectable (`apple:speechanalyzer`)
-      but drops whole passages when two voices alternate, as in a Call mix
-      (benchmark #58: 20 % WER vs. ~7 % for Parakeet, issue #60).
+    - macOS: NVIDIA Canary-1B-v2 (onnx-asr, CPU, int8). In the Mac study
+      (#58) it was the most accurate local model (5.5 % WER vs. 6.7 % for
+      Parakeet, 11.5 % for SpeechAnalyzer) and ~2x faster than Parakeet,
+      also on German-then-English meetings, since auto-detect picks the
+      language per speech segment (backends/canary.py). Parakeet (#60) and
+      Apple's SpeechAnalyzer stay selectable; SpeechAnalyzer drops whole
+      passages when two voices alternate, as in a Call mix.
     - Windows/Linux: whatever hardware_detect.recommend_model() picks - a
       dedicated NVIDIA GPU (CUDA) recommends large-v3/medium/base depending
       on VRAM, an Intel Arc GPU (no CUDA present) recommends the OpenVINO
       model, otherwise it falls back to a RAM-sized CPU model.
     """
     if sys.platform == "darwin":
-        return PARAKEET_MODEL
+        return CANARY_MODEL
     from voxscribe.hardware_detect import recommend_model
     model_size, _device, _reason = recommend_model()
     return model_size

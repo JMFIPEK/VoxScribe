@@ -8,6 +8,7 @@
 | `record` | Record audio |
 | `transcribe` | Transcribe an audio file |
 | `run` | Record + transcribe immediately |
+| `benchmark` | Compare transcription models on the same recordings, see [Benchmarking models](benchmark-with-agent.md) |
 
 ## `record` / `run` recording options
 
@@ -35,6 +36,18 @@
 | `--api-base-url` | – | Base URL for ad-hoc provider use, overriding a saved provider's URL |
 | `--format`, `-f` | `txt` | Output format(s): txt, srt, json (comma-separated) |
 | `--output`, `-o` | auto | Output path |
+
+## `benchmark` options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--input`, `-i` | – | Recording; repeat for several |
+| `--reference`, `-r` | – | Reference text for the `-i` at the same position (gives the word error rate) |
+| `--models`, `-m` | every model on this machine + your Providers | Comma-separated Model IDs |
+| `--seconds` | `120` | Only the first N seconds; `0` = whole file |
+| `--language`, `-l` | `auto` | Language code or `auto` |
+| `--tracks` | `mix` | For Calls: `mix` (as the app transcribes it), `separate` (each track alone, merged by time) or `both` |
+| `--download` | off | Allow downloading models that aren't on this machine |
 
 ## Examples
 

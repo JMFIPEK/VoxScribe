@@ -9,7 +9,7 @@
 - Xcode Command Line Tools (`xcode-select --install`) - to build the two
   Swift helpers in `macos/`
 - [uv](https://docs.astral.sh/uv/) - recommended
-- No NVIDIA GPU/CUDA needed - local transcription runs Parakeet v3 on the
+- No NVIDIA GPU/CUDA needed - local transcription runs NVIDIA Canary-1B-v2 on the
   CPU, alignment/diarization use MPS (Apple GPU)
 
 ## Install
@@ -87,17 +87,19 @@ the Swift helpers if they are missing or their source changed; output goes to
   SpeechAnalyzer Backend work - both call compiled binaries in `macos/` as a
   subprocess (`macos/SystemAudioCapture`, `macos/MicCapture`, `macos/SpeechAnalyzerTranscribe`),
   which aren't shipped in the repo (see `.gitignore`).
-- Local transcription runs NVIDIA **Parakeet v3** (`parakeet:tdt-0.6b-v3`,
-  onnx-asr on the CPU), also when a Provider fails. The first local
-  transcription downloads it (~640 MB, HuggingFace cache). The Transcription
-  tab's Model dropdown offers the local default, Parakeet v3, Apple
-  SpeechAnalyzer and every configured Provider (preselected: your last pick,
-  else the default Provider, else the local default; #59).
-- Apple's `SpeechAnalyzer` is still available as a Backend
-  (`python main.py transcribe -m apple:speechanalyzer -i ...`), but it is no
-  longer the default: in our benchmark (#58) it dropped whole passages when
-  two voices alternate, as in a Call (20 % WER, German 29 %), Parakeet got
-  ~7 % at 2.7-5.5x realtime on an M2 Pro (#60).
+- Local transcription runs NVIDIA **Canary-1B-v2** (`canary:1b-v2`, onnx-asr
+  on the CPU), also when a Provider fails. The first local transcription
+  downloads it (HuggingFace cache). It detects German and English per
+  passage, so meetings that switch language come out right.
+- **Parakeet v3** (`parakeet:tdt-0.6b-v3`) and Apple's **SpeechAnalyzer**
+  (`apple:speechanalyzer`) are still available. In our Mac benchmark (#58)
+  Canary got 5.5 % word error rate at ~5x realtime, Parakeet 6.7 % at ~3x,
+  SpeechAnalyzer 11.5 % (and 20 % on Calls: it drops whole passages when two
+  voices alternate).
+- The Transcription tab's Model dropdown offers the local default (Canary),
+  Parakeet v3, Apple SpeechAnalyzer and every configured Provider
+  (preselected: your last pick, else the default Provider, else the local
+  default; #59).
 - System-audio recording requires the "Screen & System Audio Recording"
   permission (System Settings → Privacy & Security) for the process running
   VoxScribe (VoxScribe.app, or Terminal when started from there) - macOS

@@ -29,6 +29,9 @@ class TranscribeRequest:
     device: str = "cpu"  # resolved torch device: cuda, xpu, mps or cpu
     api_key: str | None = None  # ad-hoc Provider credentials, see transcribe()
     api_base_url: str | None = None
+    # Overrides a Provider's stored model for this run (the benchmark's
+    # "server:<provider-id>#<model>", see model_ids.split_remote_model()).
+    model: str | None = None
     # Segments ({"start", "end", "text"}, absolute times) as the Backend
     # produces them, for the Timeline; Backends that can't stream don't call it.
     on_segments: Callable[[list[dict]], None] = lambda segments: None

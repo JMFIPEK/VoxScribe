@@ -21,11 +21,12 @@ def test_model_id_builders():
     assert t.APPLE_SPEECHANALYZER_MODEL == "apple:speechanalyzer"
 
 
-def test_default_local_model_on_macos_is_parakeet(monkeypatch):
-    # SpeechAnalyzer drops passages on Call mixes (#58), so Parakeet is the
-    # Mac's local default and Provider fallback (#60).
+def test_default_local_model_on_macos_is_canary(monkeypatch):
+    # The Mac study (#58): Canary-1B-v2 is the most accurate local model and
+    # ~2x faster than Parakeet; SpeechAnalyzer drops passages on Call mixes.
+    from voxscribe.transcription.model_ids import CANARY_MODEL
     monkeypatch.setattr("sys.platform", "darwin")
-    assert t.default_local_model_size() == t.PARAKEET_MODEL
+    assert t.default_local_model_size() == CANARY_MODEL
 
 
 def test_default_local_model_elsewhere_follows_the_hardware(monkeypatch):

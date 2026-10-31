@@ -134,8 +134,9 @@ def test_mac_dropdown_has_the_mac_models_and_the_providers(make_page, providers,
     page = make_page()
     page.apply_hardware_info({"recommended_model": "large-v3"})  # a Whisper size
 
+    # The local default (Canary, #58) first, then the other Mac models.
     assert ids(page) == [
-        default_local_model_size(), "apple:speechanalyzer",
+        default_local_model_size(), "parakeet:tdt-0.6b-v3", "apple:speechanalyzer",
         "server:kit-toolbox", "server:other",
     ]
     # The Mac app now uses the default Provider, not always the local model.
@@ -144,12 +145,12 @@ def test_mac_dropdown_has_the_mac_models_and_the_providers(make_page, providers,
 
 
 def test_mac_without_provider_transcribes_with_the_local_default(make_page, providers, monkeypatch, tmp_path):
-    from voxscribe.transcription.model_ids import PARAKEET_MODEL
+    from voxscribe.transcription.model_ids import CANARY_MODEL
 
     monkeypatch.setattr("sys.platform", "darwin")
     page = make_page()
-    assert page.model_combo.currentData() == PARAKEET_MODEL
-    assert "Parakeet" in page.pipeline_info.text()
+    assert page.model_combo.currentData() == CANARY_MODEL
+    assert "Canary" in page.pipeline_info.text()
 
     pick(page, "apple:speechanalyzer")
     assert "SpeechAnalyzer" in page.pipeline_info.text()
