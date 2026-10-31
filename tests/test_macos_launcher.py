@@ -33,7 +33,7 @@ def launcher(tmp_path):
     home.mkdir()
     fake_tool(repo / ".venv/bin/python", "python", log)
     fake_tool(repo / "macos/build.sh", "build", log)
-    for helper in ("SystemAudioCapture", "SpeechAnalyzerTranscribe"):
+    for helper in ("SystemAudioCapture", "MicCapture", "SpeechAnalyzerTranscribe"):
         (repo / f"macos/{helper}.swift").write_text("// source\n")
         fake_tool(repo / f"macos/{helper}", helper, log)
         # Built after the source was last changed
@@ -111,5 +111,13 @@ def test_swift_helpers_are_rebuilt_when_an_update_changed_their_source(launcher)
     # A checkout gives changed files a fresh mtime; the built helpers are
     # gitignored and would stay on the old source otherwise.
     (launcher.repo / "macos/SystemAudioCapture.swift").write_text("// new source\n")
+
+    assert launcher() == ["build ", "python gui_qt.py"]
+
+
+def test_a_helper_added_by_an_update_gets_built(launcher):
+    # MicCapture came with an Update (#54): an install that predates it has
+    # no binary yet.
+    (launcher.repo / "macos/MicCapture").unlink()
 
     assert launcher() == ["build ", "python gui_qt.py"]

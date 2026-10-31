@@ -35,6 +35,11 @@ _LOUDSPEAKER_DEVICE_HINTS = ("speak", "lautsprecher")
 # A microphone named like this sits in the room, not at the user's mouth
 # ("Mikrofonarray (Intel Smart Sound ...)", "Microphone Array (Realtek ...)").
 _ROOM_MIC_HINTS = ("array",)
+# macOS names a Mac's own speakers and microphone "<Mac>-Lautsprecher" /
+# "<Mac>-Mikrofon" ("<Mac> Speakers" / "<Mac> Microphone" in English): two
+# names with no shared "(device)" part, but one device in the room.
+_BUILTIN_SPEAKER_SUFFIX = re.compile(r"[\s-]+(lautsprecher|speakers?)$")
+_BUILTIN_MIC_SUFFIX = re.compile(r"[\s-]+(mikrofon|microphone)$")
 
 
 def source_for_mode(mode: str) -> str:
@@ -116,7 +121,8 @@ def guess_setup(microphones: list[dict], loopback_name: str | None) -> tuple[str
     well be an unrelated headset's mic)."""
     match = suggest_mic_for_loopback(microphones, loopback_name)
     if match is None:
-        room_mic = next((m for m in microphones if _is_room_mic(m["name"])), None)
+        room_mic = (_builtin_mic_for(microphones, loopback_name)
+                    or next((m for m in microphones if _is_room_mic(m["name"])), None))
         return SETUP_LOUDSPEAKER, room_mic
     device_key = physical_device_key(loopback_name)
     if any(hint in device_key for hint in _LOUDSPEAKER_DEVICE_HINTS):
@@ -141,6 +147,22 @@ def current_device_index(listed: list[dict], fresh: list[dict], index: int | Non
     match = next((d for d in fresh
                   if d["name"] == device["name"] and d.get("host_api") == device.get("host_api")), None)
     return match["index"] if match else None
+
+
+def _builtin_mic_for(microphones: list[dict], speaker_name: str | None) -> dict | None:
+    """The Mac's own microphone for the Mac's own speakers
+    ('MacBook Pro-Lautsprecher' -> 'MacBook Pro-Mikrofon'), else None."""
+    if not speaker_name:
+        return None
+    speaker = normalize_device_name(speaker_name)
+    if not _BUILTIN_SPEAKER_SUFFIX.search(speaker):
+        return None
+    machine = _BUILTIN_SPEAKER_SUFFIX.sub("", speaker)
+    for mic in microphones:
+        name = normalize_device_name(mic["name"])
+        if _BUILTIN_MIC_SUFFIX.search(name) and _BUILTIN_MIC_SUFFIX.sub("", name) == machine:
+            return mic
+    return None
 
 
 def _is_room_mic(name: str) -> bool:
