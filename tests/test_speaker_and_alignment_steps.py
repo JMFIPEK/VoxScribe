@@ -1,6 +1,7 @@
 """Alignment, diarization and speaker-handling steps, with whisperx and the
 voice-print store replaced by fakes (no models)."""
 
+import copy
 import sys
 import types
 
@@ -158,9 +159,16 @@ def test_label_known_speakers_survives_a_broken_profile_store(monkeypatch):
 
 
 def test_split_by_track_without_sidecar_changes_nothing(tmp_path):
-    result = {"segments": [{"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"}]}
+    # Even a long segment whose words change speaker stays whole: cutting at
+    # speaker changes (#61) is part of the track split, Calls only.
+    words = [{"start": float(t), "end": t + 0.8, "word": "x",
+              "speaker": "SPEAKER_00" if t < 5 else "SPEAKER_01"} for t in range(10)]
+    result = {"segments": [{"start": 0.0, "end": 10.0, "text": "x", "speaker": "SPEAKER_00",
+                            "words": words}]}
+    before = copy.deepcopy(result)
 
     assert speakers.split_by_track(result, AudioSource(str(tmp_path / "meeting.wav"))) == {}
+    assert result == before
 
 
 def test_split_by_track_uses_the_sidecar(tmp_path):

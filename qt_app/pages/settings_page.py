@@ -251,9 +251,9 @@ class SettingsPage(QWidget):
         self.hw_summary_label = self._muted("Hardware: checking...")
         root.addWidget(self.hw_summary_label)
         if sys.platform == "darwin":
-            # No local Whisper model choice on macOS (see the matching
-            # comment on self.model_combo in transcribe_page.py) - a
-            # "recommended model size" doesn't make sense here.
+            # The Mac's dropdown offers no Whisper sizes (see
+            # constants.local_models()) - a "recommended model size"
+            # doesn't make sense here.
             self.recommended_model_label = None
         else:
             self.recommended_model_label = self._muted("Recommended model: checking...")

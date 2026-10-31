@@ -96,6 +96,10 @@ the Swift helpers if they are missing or their source changed; output goes to
   Canary got 5.5 % word error rate at ~5x realtime, Parakeet 6.7 % at ~3x,
   SpeechAnalyzer 11.5 % (and 20 % on Calls: it drops whole passages when two
   voices alternate).
+- The Transcription tab's Model dropdown offers the local default (Canary),
+  Parakeet v3, Apple SpeechAnalyzer and every configured Provider
+  (preselected: your last pick, else the default Provider, else the local
+  default; #59).
 - System-audio recording requires the "Screen & System Audio Recording"
   permission (System Settings → Privacy & Security) for the process running
   VoxScribe (VoxScribe.app, or Terminal when started from there) - macOS
