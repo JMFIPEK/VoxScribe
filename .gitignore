@@ -11,4 +11,5 @@ bundled_models/
 !Logo.ico
 macos/SystemAudioCapture
 macos/SpeechAnalyzerTranscribe
+macos/MicCapture
 *.egg-info/

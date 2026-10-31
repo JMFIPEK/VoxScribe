@@ -85,7 +85,7 @@ the Swift helpers if they are missing or their source changed; output goes to
 
 - Without the `macos/build.sh` step, neither system-audio recording nor
   transcription work - both call compiled binaries in `macos/` as a
-  subprocess (`macos/SystemAudioCapture`, `macos/SpeechAnalyzerTranscribe`),
+  subprocess (`macos/SystemAudioCapture`, `macos/MicCapture`, `macos/SpeechAnalyzerTranscribe`),
   which aren't shipped in the repo (see `.gitignore`).
 - Transcription runs via Apple's `SpeechAnalyzer` (Speech framework) instead
   of WhisperX - there is therefore **no model choice** in the GUI on macOS,
@@ -95,6 +95,10 @@ the Swift helpers if they are missing or their source changed; output goes to
   permission (System Settings → Privacy & Security) for the process running
   VoxScribe (VoxScribe.app, or Terminal when started from there) - macOS
   prompts for this on first use.
+- **Call → Loudspeaker** records the microphone with Apple's voice
+  processing (`macos/MicCapture`): while Teams runs a call on the MacBook's
+  own speakers and mic, a normal recording of the mic comes out almost
+  silent. See `macos/README.md`.
 - Speaker diarization (pyannote) works unchanged from Windows/Linux, just
   with MPS instead of CUDA - see the main README's HuggingFace token section,
   still needed here.

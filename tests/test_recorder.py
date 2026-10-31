@@ -36,10 +36,13 @@ def windows_sources(mic=None, loopback=None):
         loopback or FakeSource(rate=48000, channels=2, freq=880, name="Kopfhörer (Fake Headset) [Loopback]")))
 
 
-def macos_sources(helper_binary, mic=None, helper=None):
+def macos_sources(helper_binary, mic=None, helper=None, mic_helper_binary=None, popen=None):
+    """mic_helper_binary: path of macos/MicCapture (default: not built)."""
     return CaptureSources(platform="darwin",
                           sounddevice=FakeSounddevice(mic or FakeSource(rate=48000, channels=1, freq=440)),
-                          popen=helper or FakeHelper(freq=880), helper_path=lambda: helper_binary)
+                          popen=popen or helper or FakeHelper(freq=880), helper_path=lambda: helper_binary,
+                          mic_helper_path=lambda: mic_helper_binary or os.path.join(
+                              os.path.dirname(helper_binary), "MicCapture-not-built"))
 
 
 def record(sources, tmp_path, source, setup=None, seconds=SECONDS, stop_path=None, **start_kwargs):
@@ -287,3 +290,81 @@ def test_macos_call_without_the_helper_reports_how_to_build_it(tmp_path):
     _, _, error, _ = record(macos_sources(str(tmp_path / "missing")), tmp_path, "both", seconds=0.1)
 
     assert "build.sh" in error
+
+
+
+# --- macOS Loudspeaker Calls: microphone through MicCapture (#54) -------------
+# While Teams holds the built-in mic with voice processing, a plain read of
+# the mic gets an almost silent signal; MicCapture asks for voice processing
+# itself.
+
+@pytest.fixture
+def mic_helper_binary(tmp_path):
+    path = tmp_path / "MicCapture"
+    path.write_bytes(b"")
+    return str(path)
+
+
+class TwoHelpers:
+    """popen for both macOS helpers: MicCapture streams 330 Hz, the
+    system-audio helper 880 Hz; remembers the launch order and arguments."""
+
+    def __init__(self, mic_helper_binary, mic=None):
+        self.mic_binary = mic_helper_binary
+        self.mic, self.system = mic or FakeHelper(freq=330), FakeHelper(freq=880)
+        self.launches = []
+
+    def __call__(self, args, stdout=None, stderr=None):
+        self.launches.append(list(args))
+        helper = self.mic if args[0] == self.mic_binary else self.system
+        return helper(args, stdout=stdout, stderr=stderr)
+
+
+def _dominant_hz(track):
+    spectrum = np.abs(np.fft.rfft(track.astype(float)))
+    return np.fft.rfftfreq(len(track), 1 / 16000)[int(np.argmax(spectrum))]
+
+
+def test_macos_loudspeaker_call_records_the_mic_through_mic_capture(tmp_path, helper_binary, mic_helper_binary):
+    helpers = TwoHelpers(mic_helper_binary)
+    sources = macos_sources(helper_binary, mic_helper_binary=mic_helper_binary, popen=helpers)
+    path, duration, error, levels = record(sources, tmp_path, "both", setup="loudspeaker")
+
+    assert error is None
+    sidecar = assert_call_files(path, duration, "loudspeaker")
+    assert abs(_dominant_hz(sidecar[:, 0]) - 330) < 5   # MicCapture, not sounddevice's 440 Hz
+    assert abs(_dominant_hz(sidecar[:, 1]) - 880) < 5
+    assert {"mic", "system"} <= set(levels)
+    # The mic starts first (it is the time base), with the picked device's name.
+    assert helpers.launches[0] == [mic_helper_binary, "--device-name", "Fake device"]
+    assert helpers.launches[1] == [helper_binary]
+    assert [p.returncode for p in helpers.mic.launched + helpers.system.launched] == [-15, -15]
+
+
+def test_macos_headset_call_never_uses_mic_capture(tmp_path, helper_binary, mic_helper_binary):
+    helpers = TwoHelpers(mic_helper_binary)
+    sources = macos_sources(helper_binary, mic_helper_binary=mic_helper_binary, popen=helpers)
+    path, duration, error, _ = record(sources, tmp_path, "both", setup="headset")
+
+    assert error is None
+    assert helpers.launches == [[helper_binary]]
+    sidecar = assert_call_files(path, duration, "headset")
+    assert abs(_dominant_hz(sidecar[:, 0]) - 440) < 5
+
+
+def test_macos_loudspeaker_call_without_mic_capture_reads_the_mic_plainly(tmp_path, helper_binary, capsys):
+    path, duration, error, _ = record(macos_sources(helper_binary), tmp_path, "both", setup="loudspeaker")
+
+    assert error is None
+    sidecar = assert_call_files(path, duration, "loudspeaker")
+    assert abs(_dominant_hz(sidecar[:, 0]) - 440) < 5
+    assert "MicCapture" in capsys.readouterr().out
+
+
+def test_macos_loudspeaker_call_reports_a_mic_capture_crash(tmp_path, helper_binary, mic_helper_binary):
+    helpers = TwoHelpers(mic_helper_binary, mic=FakeHelper(exit_code=1, stderr=b"Error enabling voice processing"))
+    sources = macos_sources(helper_binary, mic_helper_binary=mic_helper_binary, popen=helpers)
+    _, _, error, _ = record(sources, tmp_path, "both", setup="loudspeaker", seconds=0.3)
+
+    assert "Error enabling voice processing" in error
+    assert all(p.returncode is not None for p in helpers.system.launched)

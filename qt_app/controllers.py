@@ -34,7 +34,9 @@ class RecorderController(QObject):
         return self._recorder.is_recording
 
     def refresh_devices(self):
-        return get_devices()
+        # Re-read the system's device list only while nothing records:
+        # restarting PortAudio would close the running streams.
+        return get_devices(reinit=not self.is_recording)
 
     def start(self, path_at_stop: Callable[[], str], source: str, device_index,
               loopback_index=None, setup=None):

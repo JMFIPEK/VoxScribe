@@ -16,6 +16,40 @@ in `recorder.py`). After the fixes, recording works end-to-end: permission
 prompt, real (non-silent) audio data, clean shutdown in ~10ms with no
 orphaned process.
 
+## MicCapture: the microphone for Loudspeaker Calls
+
+`MicCapture.swift` records a microphone with Apple's voice processing
+(AVAudioEngine, the processing Teams/Zoom/FaceTime use) and streams it in
+the same format and protocol (16kHz mono int16 on stdout, SIGTERM to stop).
+`recorder.py` uses it for **Call -> Loudspeaker** only
+(`_record_loudspeaker_call_macos()`); every other mode reads the microphone
+through `sounddevice` as before.
+
+Why (#54, measured on an M2 Pro, macOS 27.2): while Teams runs a call on the
+MacBook's own speakers and mic, it holds the built-in mic with voice
+processing, and macOS then gives every app that reads the mic *without*
+voice processing an almost silent, gated signal: speech at -55 to -65 dB
+instead of -17 to -28 dB, pauses gated down to -100 dB. Teams itself and an
+app that asks for voice processing get a normal signal. With a headset Teams
+uses the headset's mic, so Headset Calls aren't affected.
+
+What changes with it:
+- Apple's echo cancellation already removes most of the remote voices from
+  the mic track (the Mac's own speech through its speakers ~20 dB weaker);
+  `voxscribe/echo.py` stays as the safety net.
+- The mic track runs a constant ~24 ms behind the Playback track (the
+  processing delay; 3.4 ms with a plain read). The Echo canceller estimates
+  the delay anyway.
+- `--device-name "<name>"` picks the input device by its CoreAudio name;
+  unknown names fall back to the default input.
+- It doesn't turn the call app's playback down (`duckingLevel = .min`).
+
+Manual test (Microphone permission for Terminal needed):
+
+```bash
+./MicCapture --device-name "MacBook Pro-Mikrofon" > /tmp/mic.raw   # Ctrl+C to stop
+```
+
 ## Requirements
 
 - macOS 13 (Ventura) or newer
@@ -31,7 +65,7 @@ cd macos
 ./build.sh
 ```
 
-Produces `macos/SystemAudioCapture` - exactly where `recorder.py` looks for it.
+Produces `macos/SystemAudioCapture`, `macos/MicCapture` and `macos/SpeechAnalyzerTranscribe` - exactly where `recorder.py`/the transcriber look for them. The `.app` launcher rebuilds them when one is missing or older than its source.
 
 ## Testing manually (independent of VoxScribe)
 
