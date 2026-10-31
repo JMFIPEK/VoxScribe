@@ -401,6 +401,17 @@ class RecordPage(QWidget):
         devices = self.window_.recorder_controller.refresh_devices()
         if devices.get("default_output") != before:
             self.refresh_devices(devices)
+            return
+        # Same output, but PortAudio has numbered the devices anew: take the
+        # new numbers and keep the picked mic (by name) if it's still there.
+        picked = self.mic_combo.currentText()
+        self._all_devices = devices
+        self.mic_combo.blockSignals(True)
+        self._mic_map = _fill_device_combo(self.mic_combo, devices.get("microphones", []))
+        if picked in self._mic_map:
+            self.mic_combo.setCurrentText(picked)
+        self.mic_combo.blockSignals(False)
+        self._update_device_warning()
 
     def _playback_name(self):
         """The selected playback device's full name, as recording_modes'
@@ -469,16 +480,21 @@ class RecordPage(QWidget):
         playback_index = self._playback_map.get(self.playback_combo.currentText())
         # The listed indices go stale as soon as any device is plugged in or
         # out - re-enumerate and follow the selected devices by name.
-        if sys.platform == "win32":
+        # macOS: the same, since PortAudio is restarted on refresh (#54: a
+        # stale index opened the iPhone's mic instead of the MacBook's).
+        # There's no playback device to follow there.
+        if sys.platform in ("win32", "darwin"):
             fresh = self.window_.recorder_controller.refresh_devices()
             mic_index = rm.current_device_index(
                 self._all_devices.get("microphones", []), fresh.get("microphones", []), mic_index)
-            playback_index = rm.current_device_index(
-                self._all_devices.get("loopback", []), fresh.get("loopback", []), playback_index)
-            has_playback = rm.records_playback(self._mode)
             has_mic = rm.records_mic(self._mode)
-            if (has_playback and playback_index is None and self._playback_map) or \
-                    (has_mic and mic_index is None and self._mic_map):
+            playback_gone = False
+            if sys.platform == "win32":
+                playback_index = rm.current_device_index(
+                    self._all_devices.get("loopback", []), fresh.get("loopback", []), playback_index)
+                playback_gone = (rm.records_playback(self._mode) and playback_index is None
+                                 and bool(self._playback_map))
+            if playback_gone or (has_mic and mic_index is None and self._mic_map):
                 self.refresh_devices()
                 self._set_status("The selected device is no longer connected - "
                                  "the device list has been refreshed, please check it.", theme.DANGER)

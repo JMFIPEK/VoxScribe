@@ -103,6 +103,7 @@ def page(make_page):
         # on window close), and what it says is where the files are saved.
         def start(self, path_at_stop, source, device_index, loopback_index=None, setup=None):
             self.path_at_stop = path_at_stop
+            self.started_with = (source, device_index, loopback_index, setup)
             self.is_recording = True
             self.recordingStarted.emit()
 
@@ -382,3 +383,31 @@ def test_controller_saves_where_the_path_callback_says_at_stop(app, tmp_path):
 
     assert os.path.isfile(tmp_path / "at_stop.wav")
     assert not os.path.exists(tmp_path / "at_start.wav")
+
+
+def test_mac_return_with_renumbered_devices_records_from_the_picked_mic(mac_page, app):
+    """PortAudio numbers devices anew on every restart (here: the iPhone mic
+    showing up) - Start must open the mic picked by name, not the old index
+    (#54: a Loudspeaker Call recorded the wrong, distant mic)."""
+    from PySide6.QtCore import Qt
+
+    mac_page.mic_combo.setCurrentText("MacBook Pro-Mikrofon")
+    rc = mac_page.window_.recorder_controller
+    rc.devices = dict(MAC_DEVICES, microphones=[
+        {"index": 0, "name": "Mikrofon von iPhone"},
+        {"index": 4, "name": "Jabra Link 390"},
+        {"index": 5, "name": "MacBook Pro-Mikrofon"}])
+    mac_page._on_application_state_changed(Qt.ApplicationActive)
+    assert mac_page.mic_combo.currentText() == "MacBook Pro-Mikrofon"
+    mac_page.record_btn.click()
+    assert rc.started_with[1] == 5
+
+
+def test_mac_start_follows_renumbered_mic_without_returning_to_the_app(mac_page, app):
+    mac_page.mic_combo.setCurrentText("MacBook Pro-Mikrofon")
+    rc = mac_page.window_.recorder_controller
+    rc.devices = dict(MAC_DEVICES, microphones=[
+        {"index": 7, "name": "MacBook Pro-Mikrofon"}, {"index": 8, "name": "Jabra Link 390"}])
+    mac_page.record_btn.click()
+    assert rc.is_recording
+    assert rc.started_with[1] == 7
