@@ -16,6 +16,21 @@ def remote_model_id(provider_id: str) -> str:
     return f"{REMOTE_MODEL_PREFIX}{provider_id}"
 
 
+# Benchmark only (#57): "server:<provider-id>#<model>" runs a Provider with
+# another model than the one it stores, so one Provider (e.g. OpenRouter)
+# can compare several models. The app never builds such a Model ID.
+REMOTE_MODEL_OVERRIDE_SEPARATOR = "#"
+
+
+def split_remote_model(model_id: str) -> tuple[str, str | None]:
+    """'server:openrouter#qwen/qwen3-asr-1.7b' -> ('server:openrouter',
+    'qwen/qwen3-asr-1.7b'); anything else -> (model_id, None)."""
+    if is_remote_model(model_id) and REMOTE_MODEL_OVERRIDE_SEPARATOR in model_id:
+        base, model = model_id.split(REMOTE_MODEL_OVERRIDE_SEPARATOR, 1)
+        return base, (model or None)
+    return model_id, None
+
+
 OPENVINO_MODEL_PREFIX = "openvino:"
 
 
@@ -47,6 +62,19 @@ PARAKEET_MODEL = "parakeet:tdt-0.6b-v3"
 def is_parakeet_model(model_size: str) -> bool:
     """Checks whether transcription should run via NVIDIA Parakeet (onnx-asr)."""
     return model_size.startswith(PARAKEET_MODEL_PREFIX)
+
+
+# Candidate (#57/#58): reachable by Model ID from the CLI and the benchmark,
+# not offered in the GUI.
+CANARY_MODEL_PREFIX = "canary:"
+
+
+CANARY_MODEL = "canary:1b-v2"
+
+
+def is_canary_model(model_size: str) -> bool:
+    """Checks whether transcription should run via NVIDIA Canary (onnx-asr)."""
+    return model_size.startswith(CANARY_MODEL_PREFIX)
 
 
 APPLE_MODEL_PREFIX = "apple:"

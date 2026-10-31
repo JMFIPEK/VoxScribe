@@ -77,6 +77,83 @@ def test_parakeet_backend_streams_each_segment(tmp_path, monkeypatch):
     assert [s["text"] for s in result["segments"]] == ["hallo", "welt"]
 
 
+class _FakeCanary:
+    """onnx-asr's Canary behind Silero VAD: one segment per call, its text
+    naming the language it was asked for; `logprob` per language."""
+
+    def __init__(self, logprob=None):
+        self.calls, self.logprob = [], logprob or {}
+
+    def with_vad(self, vad, **kw):
+        return self
+
+    def with_timestamps(self):
+        return self
+
+    def recognize(self, audio, sample_rate, **kw):
+        import types
+        self.calls.append((len(audio) / sample_rate, kw))
+        lang = kw.get("language")
+        if lang == "xx":
+            raise KeyError("<|xx|>")
+        yield types.SimpleNamespace(start=0.0, end=0.5, text=f" text in {lang} ",
+                                    logprobs=[self.logprob.get(lang, -1.0)])
+
+
+def _fake_onnx_asr(monkeypatch, model):
+    import sys
+    import types
+    loaded = []
+    onnx_asr = types.SimpleNamespace(
+        load_model=lambda name, path, **kw: loaded.append((name, kw)) or model,
+        load_vad=lambda *a, **kw: object())
+    monkeypatch.setitem(sys.modules, "onnx_asr", onnx_asr)
+    return loaded
+
+
+def test_canary_backend_is_registered_and_describes_itself():
+    backend = default_registry.resolve("canary:1b-v2")
+
+    assert backend.skips_alignment is False
+    assert backend.describe("canary:1b-v2", "cpu") == (
+        "Device: transcription=Canary (ONNX Runtime, CPU), alignment/diarization=cpu")
+
+
+def test_canary_transcribes_in_the_requested_language(tmp_path, monkeypatch):
+    model = _FakeCanary()
+    loaded = _fake_onnx_asr(monkeypatch, model)
+    streamed = []
+    request, _ = _request(tmp_path, "canary:1b-v2", language="de", on_segments=streamed.append)
+
+    result = default_registry.resolve(request.model_id).transcribe(request)
+
+    assert loaded == [("nemo-canary-1b-v2", {"quantization": "int8"})]
+    # Speech and output language are the same: transcribe, never translate.
+    assert model.calls == [(1.0, {"language": "de", "target_language": "de", "pnc": True})]
+    assert result == {"segments": [{"start": 0.0, "end": 0.5, "text": "text in de"}],
+                      "language": "de"}
+    assert streamed == [[{"start": 0.0, "end": 0.5, "text": "text in de"}]]
+
+
+def test_canary_auto_detect_probes_each_language_and_keeps_the_most_confident(tmp_path, monkeypatch):
+    model = _FakeCanary(logprob={"de": -0.2, "en": -0.9})
+    _fake_onnx_asr(monkeypatch, model)
+    request, _ = _request(tmp_path, "canary:1b-v2")
+
+    result = default_registry.resolve(request.model_id).transcribe(request)
+
+    assert [kw.get("language") for _, kw in model.calls] == ["de", "en", "de"]
+    assert result["language"] == "de"
+
+
+def test_canary_unsupported_language_is_a_plain_error(tmp_path, monkeypatch):
+    _fake_onnx_asr(monkeypatch, _FakeCanary())
+    request, _ = _request(tmp_path, "canary:1b-v2", language="xx")
+
+    with pytest.raises(ValueError, match="does not support the language 'xx'"):
+        default_registry.resolve(request.model_id).transcribe(request)
+
+
 def test_openvino_backend_describes_itself():
     backend = default_registry.resolve("openvino:GPU:medium")
 
@@ -262,6 +339,74 @@ def test_remote_backend_streams_each_chunk(tmp_path, monkeypatch):
     # Each chunk's segments arrive right after its request, in absolute times.
     assert [(n, [(s["start"], s["text"]) for s in segs]) for n, segs in streamed] == [
         (1, [(0.0, "chunk 1")]), (2, [(pytest.approx(26.05), "chunk 2")])]
+
+
+class _FakeResponse:
+    def __init__(self, status, payload=None):
+        self.status_code, self.ok, self._payload = status, status < 400, payload or {}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        import requests
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
+
+
+def _fake_http(monkeypatch, answer):
+    """Patches requests.post; `answer(data)` returns a _FakeResponse."""
+    import requests
+    from voxscribe.transcription.backends import remote
+
+    sent = []
+
+    def post(url, headers, data, files, timeout):
+        sent.append(dict(data))
+        return answer(data)
+
+    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(remote, "_NO_VERBOSE_JSON", set())
+    return sent
+
+
+def test_a_model_override_is_sent_instead_of_the_stored_model(tmp_path, monkeypatch):
+    monkeypatch.setattr("voxscribe.providers.get_provider", lambda pid: PROVIDER)
+    sent = _fake_http(monkeypatch, lambda data: _FakeResponse(
+        200, {"segments": [{"start": 0.0, "end": 1.0, "text": "hallo"}], "language": "de"}))
+
+    request, _ = _request(tmp_path, "server:p1", language="de", model="qwen/qwen3-asr-1.7b")
+    default_registry.resolve(request.model_id).transcribe(request)
+    request, _ = _request(tmp_path, "server:p1", language="de")
+    default_registry.resolve(request.model_id).transcribe(request)
+
+    assert [d["model"] for d in sent] == ["qwen/qwen3-asr-1.7b", "whisper-large"]
+
+
+def test_a_model_rejecting_verbose_json_falls_back_to_json(monkeypatch):
+    from voxscribe.transcription.backends import remote
+
+    sent = _fake_http(monkeypatch, lambda data: _FakeResponse(400) if data["response_format"]
+                      == "verbose_json" else _FakeResponse(200, {"text": "hallo welt"}))
+    audio = np.zeros(40 * 16000, dtype=np.float32)
+
+    result = remote.transcribe_remote(audio, "de", "m", api_key="k", base_url="u")
+
+    # The first chunk tries verbose_json once; every later chunk asks for json.
+    assert [d["response_format"] for d in sent] == ["verbose_json", "json", "json"]
+    assert [s["text"] for s in result["segments"]] == ["hallo welt", "hallo welt"]
+
+
+def test_a_bad_request_for_json_too_is_still_an_error(monkeypatch):
+    import requests
+    from voxscribe.transcription.backends import remote
+
+    _fake_http(monkeypatch, lambda data: _FakeResponse(400))
+
+    with pytest.raises(requests.HTTPError):
+        remote.transcribe_remote(np.zeros(16000, dtype=np.float32), "de", "m",
+                                 api_key="k", base_url="u")
+    assert remote._NO_VERBOSE_JSON == set()
 
 
 def test_transcribe_remote_requires_an_api_key():

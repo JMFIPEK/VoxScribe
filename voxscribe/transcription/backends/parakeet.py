@@ -1,29 +1,13 @@
 """NVIDIA Parakeet TDT 0.6B v3 via onnx-asr on ONNX Runtime (CPU)."""
 
-import os
-
 import numpy as np
 
-from voxscribe.paths import get_bundled_models_dir as _get_bundled_models_dir
-from voxscribe.transcription.audio import SAMPLE_RATE
 from voxscribe.transcription.backend import TranscribeRequest
+from voxscribe.transcription.backends.onnx_asr_common import (
+    PARAKEET_VARIANTS, bundled_model_dir, load_vad_asr, recognize_segments,
+)
 from voxscribe.transcription.language import _guess_language_from_text
 from voxscribe.transcription.model_ids import PARAKEET_MODEL_PREFIX
-
-
-_PARAKEET_ONNX_ASR_NAMES = {"tdt-0.6b-v3": "nemo-parakeet-tdt-0.6b-v3"}
-
-
-def _parakeet_local_dirs(variant: str) -> tuple[str | None, str | None]:
-    """Bundled model/VAD dirs (see download_models.py), or (None, None) to use
-    the HuggingFace cache instead."""
-    bundled = _get_bundled_models_dir()
-    if not bundled:
-        return None, None
-    model_dir = os.path.join(bundled, "parakeet", variant)
-    vad_dir = os.path.join(bundled, "parakeet", "silero-vad")
-    return (model_dir if os.path.isdir(model_dir) else None,
-            vad_dir if os.path.isdir(vad_dir) else None)
 
 
 def transcribe_parakeet(audio: np.ndarray, language: str | None, model_size: str,
@@ -43,35 +27,16 @@ def transcribe_parakeet(audio: np.ndarray, language: str | None, model_size: str
 
     `on_segments([segment])` is called for each segment as it is recognized.
     """
-    import onnx_asr
-
     variant = model_size[len(PARAKEET_MODEL_PREFIX):]
-    name = _PARAKEET_ONNX_ASR_NAMES.get(variant)
+    name = PARAKEET_VARIANTS.get(variant)
     if name is None:
         raise ValueError(f"Unknown Parakeet model: {model_size}")
-    model_dir, vad_dir = _parakeet_local_dirs(variant)
 
-    model = onnx_asr.load_model(name, model_dir, quantization="int8")
-    vad = onnx_asr.load_vad("silero", vad_dir)
-    # min_silence_duration_ms: merge speech separated by short pauses into
-    # longer segments - Parakeet is noticeably more accurate with a full
-    # sentence of context than with the VAD's default ~100ms fragments.
-    asr = model.with_vad(vad, batch_size=4, max_speech_duration_s=25,
-                         min_silence_duration_ms=800)
-
-    duration = len(audio) / SAMPLE_RATE
-    segments = []
-    for seg in asr.recognize(audio, sample_rate=SAMPLE_RATE):
-        text = (seg.text or "").strip()
-        if text:
-            segments.append({"start": float(seg.start), "end": float(seg.end), "text": text})
-            if on_segments:
-                on_segments([dict(segments[-1])])
-        if on_progress and duration > 0:
-            on_progress(min(seg.end / duration, 1.0))
+    asr = load_vad_asr(name, bundled_model_dir("parakeet", variant))
+    segments = recognize_segments(asr, audio, on_progress, on_segments)
 
     detected = language or _guess_language_from_text(" ".join(s["text"] for s in segments))
-    del model, vad, asr
+    del asr
     return {"segments": segments, "language": detected or "en"}
 
 

@@ -45,10 +45,34 @@ python main.py benchmark -i de.wav -r de.txt -i en.wav -r en.txt
 
 Model IDs: `large-v3`, `large-v2`, `medium`, `base` (local Whisper),
 `parakeet:tdt-0.6b-v3`, `apple:speechanalyzer` (macOS 26+),
-`openvino:GPU:medium` (Intel Arc), `server:<provider id>` (a Provider). The
-candidates of #57 add their own once they exist.
+`openvino:GPU:medium` (Intel Arc), `server:<provider id>` (a Provider), and
+the candidates of #57 (not in the app's model list): `canary:1b-v2` (NVIDIA
+Canary-1B-v2 via onnx-asr, CPU, int8; from `istupakov/canary-1b-v2-onnx`,
+fetched with `--download` on first use).
 
-**Language:** Apple SpeechAnalyzer can't detect the language. For a
+**Several models through one Provider:** `server:<provider id>#<model>` runs
+the Provider with `<model>` instead of the one it stores, for this run only
+(the app itself never uses this form). The Provider just has to exist in
+Settings → Providers, with its base URL and API key. For OpenRouter (Provider
+id `openrouter`, base URL `https://openrouter.ai/api/v1`):
+
+```bash
+python main.py benchmark -i T4.wav -r ref.txt -l de -m "server:openrouter#qwen/qwen3-asr-1.7b,server:openrouter#nvidia/nemotron-3.5-transcribe,server:openrouter#mistralai/voxtral-small-24b-2507-stt,server:openrouter#openai/whisper-large-v3"
+```
+
+Models that refuse `response_format=verbose_json` (HTTP 400) are asked again
+with `json`; they then return text only (one segment per piece in the
+"returns" column), and the audio goes
+out in 30 s pieces whose timings come from wav2vec2 alignment. OpenRouter caps
+an upload at 25 MB and gives each request 60 s upstream; VoxScribe's pieces
+(FLAC, 30-180 s) stay well under the size cap, and a timed-out piece is
+retried like any other server error. Never paste the API key into a command,
+a report or the issue.
+
+**Language:** Canary can't detect the language either: without `-l` it
+transcribes the first 30 s once in German and once in English and keeps the
+one it is more confident in (other languages need `-l`). Pass `-l` for
+Canary whenever the language is known. Apple SpeechAnalyzer can't detect the language. For a
 recording that switches language, cut it per language with `--seconds`, or
 run it once per language and compare only the matching part.
 

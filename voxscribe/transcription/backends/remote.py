@@ -52,6 +52,11 @@ def _find_quiet_split(audio: np.ndarray, start: int, nominal_end: int) -> int:
     return search_start + quietest * hop + hop // 2
 
 
+# (endpoint URL, model) pairs that answered verbose_json with HTTP 400 but
+# json with 200: later chunks ask for json right away.
+_NO_VERBOSE_JSON: set[tuple[str, str]] = set()
+
+
 def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
                        api_key: str, base_url: str, timeout: float = 1800.0
                        ) -> tuple[list[dict], str | None, bool]:
@@ -78,12 +83,27 @@ def _post_audio_chunk(chunk: np.ndarray, language: str | None, model_name: str,
 
     url = base_url.rstrip("/") + "/audio/transcriptions"
     headers = {"Authorization": f"Bearer {api_key}"}
-    data = {"model": model_name, "response_format": "verbose_json"}
-    if language:
-        data["language"] = language
-    files = {"file": ("audio.flac", buf, "audio/flac")}
+    model_key = (url, model_name)
+    response_format = "json" if model_key in _NO_VERBOSE_JSON else "verbose_json"
 
-    resp = requests.post(url, headers=headers, data=data, files=files, timeout=timeout)
+    def _send(fmt: str):
+        buf.seek(0)
+        data = {"model": model_name, "response_format": fmt}
+        if language:
+            data["language"] = language
+        files = {"file": ("audio.flac", buf, "audio/flac")}
+        return requests.post(url, headers=headers, data=data, files=files, timeout=timeout)
+
+    resp = _send(response_format)
+    if resp.status_code == 400 and response_format == "verbose_json":
+        # Some models reject verbose_json outright (seen on OpenRouter, see
+        # docs/research/asr-candidates.md §6): ask for plain json, which the
+        # text-only handling below turns into one segment per chunk.
+        retry = _send("json")
+        if retry.ok:
+            print(f"     Model '{model_name}' rejects verbose_json - using json (text only)")
+            _NO_VERBOSE_JSON.add(model_key)
+        resp = retry
     if resp.status_code == 413:
         raise _PayloadTooLarge()
     resp.raise_for_status()
@@ -352,7 +372,7 @@ class RemoteBackend:
                 f"Unknown provider '{provider_id}' - configure it in Settings, "
                 "or pass api_key/api_base_url explicitly."
             )
-        model_name = provider["model"] if provider else (request.model_id or "whisper-1")
+        model_name = request.model or (provider["model"] if provider else (request.model_id or "whisper-1"))
         resolved_api_key = api_key or (provider["api_key"] if provider else None)
         resolved_base_url = api_base_url or (provider["base_url"] if provider else None)
         provider_label = provider["name"] if provider else provider_id

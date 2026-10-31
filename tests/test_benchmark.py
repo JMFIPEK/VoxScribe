@@ -225,3 +225,54 @@ def test_articles_are_not_numbers():
     # "ein"/"one" stay words: a model writing "1" for "one option" is wrong.
     assert b.word_errors("one option", "1 option").substitutions == 1
     assert b.word_errors("ein neues Werkzeug", "1 neues Werkzeug").substitutions == 1
+
+
+# --- One Provider, several models; Canary (#57) ----------------------------------
+
+def test_a_provider_model_override_reaches_the_backend_and_keeps_its_row_name(wav):
+    class Recorder(FakeBackend):
+        def transcribe(self, request):
+            self.calls.append((request.model_id, request.model))
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "x"}], "language": "de"}
+
+    backend = Recorder("p")
+    recs, _ = make_bench({"server:": backend}).run(
+        [wav], [None], ["server:openrouter#qwen/qwen3-asr-1.7b", "server:openrouter"], seconds=0)
+
+    assert [r.model_id for r in recs[0].runs] == [
+        "server:openrouter#qwen/qwen3-asr-1.7b", "server:openrouter"]
+    assert set(backend.calls) == {("server:openrouter", "qwen/qwen3-asr-1.7b"),
+                                  ("server:openrouter", None)}
+
+
+def test_a_model_override_needs_only_the_provider(monkeypatch):
+    monkeypatch.setattr("voxscribe.providers.get_provider",
+                        lambda pid: {"id": pid} if pid == "openrouter" else None)
+
+    assert b.model_presence("server:openrouter#openai/whisper-large-v3") is None
+    assert b.model_presence("server:nope#openai/whisper-large-v3") == "no such Provider"
+
+
+def _no_bundled_models(monkeypatch, tmp_path):
+    from voxscribe.transcription.backends import onnx_asr_common
+    monkeypatch.setattr("voxscribe.paths.get_bundled_models_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(onnx_asr_common, "_get_bundled_models_dir", lambda: str(tmp_path))
+
+
+def test_canary_is_present_once_its_onnx_repo_is_cached(monkeypatch, tmp_path):
+    _no_bundled_models(monkeypatch, tmp_path)
+    cached = set()
+    monkeypatch.setattr(b, "_hf_cached", lambda repo: repo in cached)
+
+    assert b.model_presence("canary:1b-v2") == "not downloaded"
+    cached.add("istupakov/canary-1b-v2-onnx")
+    assert b.model_presence("canary:1b-v2") is None
+    assert b.model_presence("canary:nope") == "unknown Canary model"
+
+
+def test_canary_is_present_when_bundled(monkeypatch, tmp_path):
+    _no_bundled_models(monkeypatch, tmp_path)
+    (tmp_path / "canary" / "1b-v2").mkdir(parents=True)
+    monkeypatch.setattr(b, "_hf_cached", lambda repo: False)
+
+    assert b.model_presence("canary:1b-v2") is None

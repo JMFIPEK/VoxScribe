@@ -39,7 +39,9 @@ TRACK_MODES = ("mix", "separate", "both")
 # Must match the Model IDs the app uses (voxscribe/transcription/model_ids.py,
 # qt_app/constants.py).
 LOCAL_MODELS = ["large-v3", "large-v2", "medium", "base",
-                "openvino:GPU:medium", "parakeet:tdt-0.6b-v3", "apple:speechanalyzer"]
+                "openvino:GPU:medium", "parakeet:tdt-0.6b-v3", "apple:speechanalyzer",
+                # Candidates (#57/#58), not in the GUI.
+                "canary:1b-v2"]
 
 
 # --- Word error rate ---------------------------------------------------------
@@ -191,7 +193,8 @@ def model_presence(model_id: str) -> str | None:
     bundled = get_bundled_models_dir() or ""
     if m.is_remote_model(model_id):
         from voxscribe.providers import get_provider
-        return None if get_provider(model_id[len(m.REMOTE_MODEL_PREFIX):]) else "no such Provider"
+        base, _model = m.split_remote_model(model_id)
+        return None if get_provider(base[len(m.REMOTE_MODEL_PREFIX):]) else "no such Provider"
     if m.is_apple_model(model_id):
         if sys.platform != "darwin":
             return "macOS only"
@@ -203,6 +206,16 @@ def model_presence(model_id: str) -> str | None:
         if os.path.isdir(os.path.join(bundled, "parakeet", variant)):
             return None
         return None if _hf_cached(f"istupakov/parakeet-{variant}-onnx") else "not downloaded"
+    if m.is_canary_model(model_id):
+        from voxscribe.transcription.backends.onnx_asr_common import (
+            CANARY_VARIANTS, ONNX_ASR_REPOS, bundled_model_dir,
+        )
+        variant = model_id[len(m.CANARY_MODEL_PREFIX):]
+        if variant not in CANARY_VARIANTS:
+            return "unknown Canary model"
+        if bundled_model_dir("canary", variant):
+            return None
+        return None if _hf_cached(ONNX_ASR_REPOS[CANARY_VARIANTS[variant]]) else "not downloaded"
     if m.is_openvino_model(model_id):
         from voxscribe.hardware_detect import _bundled_openvino_model_exists, get_openvino_devices
         ov_device, size = m._parse_openvino_model(model_id)
@@ -442,9 +455,11 @@ class Benchmark:
         never retried with a local model."""
         from voxscribe.transcription.audio import AudioSource
         from voxscribe.transcription.backend import FallbackRequested, TranscribeRequest
+        from voxscribe.transcription.model_ids import split_remote_model
+        base_id, model_override = split_remote_model(model_id)
         request = TranscribeRequest(audio_path=path, audio=AudioSource(path), language=language,
-                                    model_id=model_id, progress=lambda pct, msg: None,
-                                    device=self.device)
+                                    model_id=base_id, progress=lambda pct, msg: None,
+                                    device=self.device, model=model_override)
         captured = io.StringIO()
         t0 = time.time()
         try:
