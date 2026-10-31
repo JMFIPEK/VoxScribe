@@ -2,15 +2,15 @@
 
 ## Requirements
 
-- macOS 26 (Tahoe) or newer - SpeechAnalyzer (transcription) and
-  ScreenCaptureKit (system audio) are both macOS-26+ APIs
+- macOS 26 (Tahoe) or newer - ScreenCaptureKit (system audio) and
+  SpeechAnalyzer (optional transcription Backend) are macOS-26+ APIs
 - Apple Silicon (M1 or newer)
 - Python 3.11+
 - Xcode Command Line Tools (`xcode-select --install`) - to build the two
   Swift helpers in `macos/`
 - [uv](https://docs.astral.sh/uv/) - recommended
-- No NVIDIA GPU/CUDA needed - transcription runs on the Neural Engine
-  (SpeechAnalyzer), alignment/diarization use MPS (Apple GPU)
+- No NVIDIA GPU/CUDA needed - local transcription runs Parakeet v3 on the
+  CPU, alignment/diarization use MPS (Apple GPU)
 
 ## Install
 
@@ -36,7 +36,7 @@ xcode-select --install
 # 4. Install dependencies (creates .venv automatically, incl. PySide6)
 uv sync
 
-# 5. Build the Swift helpers (system-audio recording + SpeechAnalyzer transcription)
+# 5. Build the Swift helpers (system-audio recording + SpeechAnalyzer Backend)
 cd macos
 ./build.sh
 cd ..
@@ -83,14 +83,19 @@ the Swift helpers if they are missing or their source changed; output goes to
 
 ## Important notes
 
-- Without the `macos/build.sh` step, neither system-audio recording nor
-  transcription work - both call compiled binaries in `macos/` as a
+- Without the `macos/build.sh` step, neither system-audio recording nor the
+  SpeechAnalyzer Backend work - both call compiled binaries in `macos/` as a
   subprocess (`macos/SystemAudioCapture`, `macos/MicCapture`, `macos/SpeechAnalyzerTranscribe`),
   which aren't shipped in the repo (see `.gitignore`).
-- Transcription runs via Apple's `SpeechAnalyzer` (Speech framework) instead
-  of WhisperX - there is therefore **no model choice** in the GUI on macOS,
-  and `download_models.py`/the GPU memory table in the main README aren't
-  relevant there.
+- Local transcription runs NVIDIA **Parakeet v3** (`parakeet:tdt-0.6b-v3`,
+  onnx-asr on the CPU), also when a Provider fails. The first local
+  transcription downloads it (~640 MB, HuggingFace cache). The GUI has no
+  model choice on macOS yet (#59).
+- Apple's `SpeechAnalyzer` is still available as a Backend
+  (`python main.py transcribe -m apple:speechanalyzer -i ...`), but it is no
+  longer the default: in our benchmark (#58) it dropped whole passages when
+  two voices alternate, as in a Call (20 % WER, German 29 %), Parakeet got
+  ~7 % at 2.7-5.5x realtime on an M2 Pro (#60).
 - System-audio recording requires the "Screen & System Audio Recording"
   permission (System Settings → Privacy & Security) for the process running
   VoxScribe (VoxScribe.app, or Terminal when started from there) - macOS

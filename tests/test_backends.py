@@ -41,7 +41,8 @@ def test_parakeet_backend_maps_progress_into_its_slice(tmp_path, monkeypatch):
     result = default_registry.resolve(request.model_id).transcribe(request)
 
     assert result == {"segments": [], "language": "de"}
-    assert events == [(0.0, "Loading audio..."), (0.05, "Loading Parakeet model..."),
+    assert events == [(0.0, "Loading audio..."),
+                      (0.05, "Loading Parakeet model... (first use downloads ~640 MB)"),
                       (0.225, "Transcribing... 50%")]
 
 
