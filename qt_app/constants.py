@@ -14,6 +14,8 @@ MODEL_DISPLAY_NAMES = {
     "base": "base",
     "openvino:GPU:medium": "medium (Intel Arc GPU)",
     "parakeet:tdt-0.6b-v3": "Parakeet v3 (fast, CPU)",
+    "canary:1b-v2": "Canary 1B v2 (CPU)",
+    "apple:speechanalyzer": "Apple SpeechAnalyzer (fast, less accurate)",
 }
 FORMATS = ["txt", "srt", "json"]
 
@@ -38,9 +40,36 @@ OPENVINO_MODEL_PREFIX = "openvino:"
 # Must match transcriber.PARAKEET_MODEL_PREFIX (same import-cost reason as above).
 PARAKEET_MODEL_PREFIX = "parakeet:"
 
-# Must match transcriber.PARAKEET_MODEL: the local default on macOS (#60),
-# which the Transcription page uses there while it has no model dropdown.
+# Must match transcriber.PARAKEET_MODEL: the local default on macOS (#60).
 PARAKEET_MODEL = "parakeet:tdt-0.6b-v3"
+
+# The local models the Transcription tab's dropdown offers per platform
+# (#59) - the one place to trim them (study #58). Providers come on top.
+# macOS runs no WhisperX/OpenVINO, so it only gets what runs on a Mac.
+_LOCAL_MODELS_BY_PLATFORM = {
+    "darwin": [PARAKEET_MODEL, APPLE_SPEECHANALYZER_MODEL],
+}
+_LOCAL_MODELS_ELSEWHERE = [
+    "large-v3", "large-v2", "medium", "base", "openvino:GPU:medium", PARAKEET_MODEL,
+]
+
+
+def model_display_name(model_id: str) -> str:
+    """The dropdown's name for a local Model ID (the ID itself if unknown)."""
+    return MODEL_DISPLAY_NAMES.get(model_id, model_id)
+
+
+def local_models(platform: str, local_default: str | None = None) -> list[str]:
+    """Local Model IDs the dropdown lists on `platform` (a sys.platform
+    value), in order. `local_default` (default_local_model_size(), where
+    that is cheap to ask) comes first and is added even if the static list
+    lacks it, so a new local default never goes missing from the dropdown."""
+    ids = list(_LOCAL_MODELS_BY_PLATFORM.get(platform, _LOCAL_MODELS_ELSEWHERE))
+    if local_default:
+        if local_default in ids:
+            ids.remove(local_default)
+        ids.insert(0, local_default)
+    return ids
 
 
 def format_time_short(seconds: float) -> str:

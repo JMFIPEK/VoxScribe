@@ -89,8 +89,10 @@ the Swift helpers if they are missing or their source changed; output goes to
   which aren't shipped in the repo (see `.gitignore`).
 - Local transcription runs NVIDIA **Parakeet v3** (`parakeet:tdt-0.6b-v3`,
   onnx-asr on the CPU), also when a Provider fails. The first local
-  transcription downloads it (~640 MB, HuggingFace cache). The GUI has no
-  model choice on macOS yet (#59).
+  transcription downloads it (~640 MB, HuggingFace cache). The Transcription
+  tab's Model dropdown offers the local default, Parakeet v3, Apple
+  SpeechAnalyzer and every configured Provider (preselected: your last pick,
+  else the default Provider, else the local default; #59).
 - Apple's `SpeechAnalyzer` is still available as a Backend
   (`python main.py transcribe -m apple:speechanalyzer -i ...`), but it is no
   longer the default: in our benchmark (#58) it dropped whole passages when

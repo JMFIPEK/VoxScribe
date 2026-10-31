@@ -5,7 +5,7 @@ renaming), playback, export."""
 import os
 import sys
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QSettings, Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,13 +25,16 @@ from qt_app import theme
 from qt_app.constants import (
     APPLE_SPEECHANALYZER_MODEL,
     FORMATS,
-    MODEL_DISPLAY_NAMES,
     OPENVINO_MODEL_PREFIX,
-    PARAKEET_MODEL,
     PARAKEET_MODEL_PREFIX,
     REMOTE_MODEL_PREFIX,
     format_time_short,
+    local_models,
+    model_display_name,
 )
+
+# QSettings key of the Model ID the user last picked in the dropdown (#59).
+MODEL_SETTING = "transcribe/model"
 from qt_app.pages.common import card, page_root
 from qt_app.speaker_view import SpeakerView
 from qt_app.timeline_model import timeline_from_result
@@ -65,7 +68,7 @@ class TranscribePage(QWidget):
         self._turns = []
         self._playing_turn = None
         self._selected_files = []
-        self._model_ids_by_display = {}
+        self._settings = QSettings("VoxScribe", "VoxScribe")
         self._hw_recommended_model = None
         self._build_ui()
         self._wire()
@@ -122,18 +125,15 @@ class TranscribePage(QWidget):
         opts_row = QHBoxLayout()
         opts_layout.addLayout(opts_row)
 
-        if sys.platform == "darwin":
-            # No model choice on macOS yet (the dropdown comes with #59):
-            # it always transcribes with Parakeet v3, the local default
-            # there (#60, see default_local_model_size()).
-            self.model_combo = None
-        else:
-            opts_row.addWidget(QLabel("Model:"))
-            self.model_combo = self._combo([], "")
-            opts_row.addWidget(self.model_combo)
+        # The Mac's local models or the Whisper sizes, plus every Provider
+        # (constants.local_models(), #59); filled by _refresh_model_choices().
+        opts_row.addWidget(QLabel("Model:"))
+        self.model_combo = self._combo([], "")
+        opts_row.addWidget(self.model_combo)
 
         # Hardware recommendation stays right behind the dropdown (short,
-        # only shown when it actually differs from the current pick);
+        # only shown when it actually differs from the current pick; never
+        # on macOS, where it would name a Whisper size that isn't offered);
         # the full transcription/alignment/diarization chain gets its own row
         # below since it's usually too long to share a line without truncating.
         self.recommended_hint = QLabel("")
@@ -228,13 +228,22 @@ class TranscribePage(QWidget):
         """Slot for HardwareInfoController.infoReady (see docstring there -
         avoids the 1-3 minute whisperx/torch import while building the page)."""
         self._hw_recommended_model = None if "error" in info else info.get("recommended_model")
-        self._update_pipeline_info()
+        # Off the Mac the recommendation is the local default, so the
+        # preselection may change with it (a remembered pick still wins).
+        self._refresh_model_choices()
 
     def _current_model_id(self) -> str:
-        if self.model_combo is None:
-            return PARAKEET_MODEL
-        model_display = self.model_combo.currentText()
-        return self._model_ids_by_display.get(model_display, model_display)
+        return self.model_combo.currentData() or ""
+
+    def _local_default(self) -> str | None:
+        """default_local_model_size() without importing torch on the GUI
+        thread: on macOS it's a constant (cheap to ask), elsewhere it is
+        hardware_detect.recommend_model(), which HardwareInfoController
+        already ran in the background (None until it has)."""
+        if sys.platform == "darwin":
+            from voxscribe.transcription.model_ids import default_local_model_size
+            return default_local_model_size()
+        return self._hw_recommended_model
 
     def _update_pipeline_info(self):
         """Compact, always-visible readout of what will actually run for each
@@ -255,6 +264,9 @@ class TranscribePage(QWidget):
             text = "Transcription: Intel Arc GPU (OpenVINO)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
         elif model.startswith(PARAKEET_MODEL_PREFIX):
             text = "Transcription: Parakeet v3 (CPU)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
+        elif model_display_name(model) != model:
+            # A named local model without its own line, e.g. Canary.
+            text = f"Transcription: {model_display_name(model)}  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
         else:
             text = f"Transcription: {model or '…'} (local)  ·  Alignment: wav2vec2  ·  Diarization: pyannote"
 
@@ -262,10 +274,9 @@ class TranscribePage(QWidget):
         self.pipeline_info.setToolTip(text)
 
         recommended_text = ""
-        if self.model_combo is not None and self._hw_recommended_model and self._hw_recommended_model != model:
-            recommended_display = MODEL_DISPLAY_NAMES.get(
-                self._hw_recommended_model, self._hw_recommended_model)
-            recommended_text = f"⚡ recommended: {recommended_display}"
+        # The hint names a Whisper size, which the Mac doesn't offer.
+        if sys.platform != "darwin" and self._hw_recommended_model and self._hw_recommended_model != model:
+            recommended_text = f"⚡ recommended: {model_display_name(self._hw_recommended_model)}"
         self.recommended_hint.setText(recommended_text)
 
     def _combo(self, values, default):
@@ -277,45 +288,49 @@ class TranscribePage(QWidget):
         return combo
 
     def _refresh_model_choices(self):
-        """Rebuilds the model dropdown from the local model list plus every
-        configured provider (see providers.py) - called on page show since
-        providers can change on the Settings page at any time."""
-        if self.model_combo is None:
-            return
+        """Rebuilds the model dropdown from this platform's local models
+        (constants.local_models()) plus every configured provider (see
+        providers.py) - called on page show since providers can change on
+        the Settings page at any time.
+
+        Preselects (#59): the Model ID the user last picked (QSettings
+        `transcribe/model`) if it's still listed, else the default Provider,
+        else the local default; a pick that's gone falls back silently."""
         import voxscribe.providers as providers
 
-        previous = self.model_combo.currentText()
-        self._model_ids_by_display = dict(MODEL_DISPLAY_NAMES)
-        display_names = list(MODEL_DISPLAY_NAMES.values())
+        local_default = self._local_default()
+        items = [(model_display_name(m), m) for m in local_models(sys.platform, local_default)]
+        for p in providers.list_providers():
+            items.append((f"{p['name']} (server)", f"{REMOTE_MODEL_PREFIX}{p['id']}"))
+        ids = [model_id for _display, model_id in items]
 
-        provider_list = providers.list_providers()
         default_provider = providers.get_default_provider()
-        default_display = None
-        for p in provider_list:
-            display = f"{p['name']} (server)"
-            model_id = f"{REMOTE_MODEL_PREFIX}{p['id']}"
-            self._model_ids_by_display[display] = model_id
-            display_names.append(display)
-            if default_provider and p["id"] == default_provider["id"]:
-                default_display = display
+        candidates = [
+            self._settings.value(MODEL_SETTING, "", type=str),
+            f"{REMOTE_MODEL_PREFIX}{default_provider['id']}" if default_provider else "",
+            local_default or "",
+        ]
+        selected = next((c for c in candidates if c and c in ids), ids[0])
 
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
-        self.model_combo.addItems(display_names)
-        if previous in display_names:
-            self.model_combo.setCurrentText(previous)
-        elif default_display:
-            self.model_combo.setCurrentText(default_display)
-        elif display_names:
-            self.model_combo.setCurrentIndex(0)
+        for display, model_id in items:
+            self.model_combo.addItem(display, model_id)
+        self.model_combo.setCurrentIndex(ids.index(selected))
         self.model_combo.blockSignals(False)
+        self._update_pipeline_info()
+
+    def _on_model_picked(self, _index):
+        """The user changed the dropdown: that's their preference (#59).
+        Rebuilds set the selection with signals blocked, so only real picks
+        land here."""
+        self._settings.setValue(MODEL_SETTING, self._current_model_id())
         self._update_pipeline_info()
 
     def _wire(self):
         self.browse_btn.clicked.connect(self._browse_file)
         self.start_btn.clicked.connect(self.start_transcription)
-        if self.model_combo is not None:
-            self.model_combo.currentTextChanged.connect(self._update_pipeline_info)
+        self.model_combo.currentIndexChanged.connect(self._on_model_picked)
         self.speaker_list.renameRequested.connect(self._rename_speaker)
         self.new_btn.clicked.connect(self._show_settings)
         self.speaker_list.confirmRequested.connect(self._confirm_speaker)
