@@ -60,7 +60,7 @@ def run(tmp_path, monkeypatch):
         monkeypatch.setattr(pipeline, "default_registry", reg)
         embeddings = {s["speaker"]: [0.1] for s in segments}
         embeddings.update({spk: [0.2] for spk in extra_embeddings})
-        monkeypatch.setattr(pipeline, "run_diarization", lambda result, *a: (
+        monkeypatch.setattr(pipeline, "run_diarization", lambda result, *a, **k: (
             dict(result, speaker_embeddings=embeddings), embeddings))
         return t.transcribe(path, model_size="fake:1", hf_token="hf_x", device="cpu"), asked
 

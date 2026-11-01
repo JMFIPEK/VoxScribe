@@ -103,7 +103,8 @@ def fake_models(monkeypatch):
     def align(result, audio, device, model_dir, cache_only, progress_callback=None):
         return dict(result, segments=[dict(s, words=[]) for s in result["segments"]])
 
-    def diarize(result, audio, device, hf_token, min_speakers, max_speakers, prog):
+    def diarize(result, audio, device, hf_token, min_speakers, max_speakers, prog,
+                second_opinion=False):
         segments = [dict(s, speaker=f"SPEAKER_0{i}") for i, s in enumerate(result["segments"])]
         return dict(result, segments=segments), {}
 
@@ -168,7 +169,7 @@ def test_failed_speaker_identification_keeps_the_transcript(registry, wav, fake_
                                                            monkeypatch):
     registry.register("fake:", FakeBackend)
 
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise RuntimeError("license not accepted")
 
     monkeypatch.setattr(pipeline, "run_diarization", broken)
@@ -185,7 +186,7 @@ def test_failed_speaker_identification_keeps_the_transcript(registry, wav, fake_
 def test_failed_speaker_identification_is_still_timed(registry, wav, fake_models, monkeypatch):
     registry.register("fake:", FakeBackend)
 
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise RuntimeError("license not accepted")
 
     monkeypatch.setattr(pipeline, "run_diarization", broken)
@@ -198,7 +199,7 @@ def test_failed_speaker_identification_is_still_timed(registry, wav, fake_models
 def test_speaker_identification_that_finds_nobody_is_still_timed(registry, wav, fake_models,
                                                                  monkeypatch):
     registry.register("fake:", FakeBackend)
-    monkeypatch.setattr(pipeline, "run_diarization", lambda result, *a: (result, {}))
+    monkeypatch.setattr(pipeline, "run_diarization", lambda result, *a, **k: (result, {}))
 
     result = t.transcribe(wav, model_size="fake:1", hf_token="hf", device="cpu")
 
@@ -215,7 +216,7 @@ def test_aligned_event_is_not_changed_by_the_later_steps(registry, wav, fake_mod
                                                       "end": s["end"]}])
                                       for s in result["segments"]])
 
-    def diarize_in_place(result, *args):
+    def diarize_in_place(result, *args, **kwargs):
         for seg in result["segments"]:
             seg["speaker"] = "SPEAKER_00"
             for word in seg["words"]:

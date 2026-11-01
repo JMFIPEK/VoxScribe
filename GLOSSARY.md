@@ -72,6 +72,9 @@ _Avoid_: Speaker name, speaker ID
 A known person whose voice print is close to a speaker's but not close enough to name them for certain; shown as the name with a question mark until the user confirms or replaces it.
 _Avoid_: Suggestion, guess, maybe-match
 
+**Sentence voice print**:
+The voice print of one transcript sentence, used to check the diarization step's speakers; where the sentences clearly group into a different number of people, their groups decide who speaks.
+
 **Stray speaker**:
 A Diarization ID that holds only a few seconds of speech, nearly always a few words of someone who is already another speaker; its words are given to the neighbouring speaker.
 _Avoid_: Phantom speaker, ghost speaker

@@ -81,6 +81,19 @@ def _step_align(backend: Backend, result: dict, audio, torch_device: str, prog) 
     return result
 
 
+def _wants_second_opinion(audio_source: AudioSource, min_speakers: int | None,
+                          max_speakers: int | None) -> bool:
+    """Sentence voice prints (#62) only where nothing better settles who
+    speaks: not for a Call (its tracks do, #61), not when the user gave the
+    speaker count."""
+    if min_speakers is not None or max_speakers is not None:
+        return False
+    try:
+        return audio_source.tracks() is None
+    except Exception:  # noqa: BLE001 - an unreadable sidecar is handled by the track split
+        return False
+
+
 def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_device: str,
                             hf_token: str | None, min_speakers: int | None,
                             max_speakers: int | None, prog) -> tuple[dict, str | None]:
@@ -99,7 +112,8 @@ def _step_identify_speakers(result: dict, audio_source: AudioSource, torch_devic
 
     try:
         diarized, speaker_embeddings = run_diarization(
-            result, audio_source.load(), torch_device, hf_token, min_speakers, max_speakers, prog)
+            result, audio_source.load(), torch_device, hf_token, min_speakers, max_speakers, prog,
+            second_opinion=_wants_second_opinion(audio_source, min_speakers, max_speakers))
     except Exception as e:  # noqa: BLE001 - the transcript is still worth keeping
         print(f"     [WARNING] Diarization failed: {e}")
         for seg in result.get("segments", []):
