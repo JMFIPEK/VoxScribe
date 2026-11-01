@@ -23,8 +23,13 @@ def prewarm_diarization() -> None:
 
 
 def run_diarization(result: dict, audio: np.ndarray, torch_device: str, hf_token: str,
-                    min_speakers: int | None, max_speakers: int | None, progress):
+                    min_speakers: int | None, max_speakers: int | None, progress,
+                    second_opinion: bool = False):
     """Runs the diarization model and assigns a speaker to every segment/word.
+
+    With `second_opinion`, sentence voice prints may then overrule pyannote
+    (sentence_voices.py, #62); off for Calls and when the speaker count is
+    given.
 
     `progress(pct, msg)` takes the overall pipeline fraction (this step covers
     0.70-0.92). Returns (result, speaker_embeddings) - embeddings per raw
@@ -69,6 +74,32 @@ def run_diarization(result: dict, audio: np.ndarray, torch_device: str, hf_token
     result = whisperx.assign_word_speakers(
         diarize_segments, result, speaker_embeddings=speaker_embeddings)
 
+    if second_opinion:
+        speaker_embeddings = _second_opinion(
+            result, speaker_embeddings, audio, diarize_model, progress)
+
     del diarize_model
     free_torch_memory(torch_device)
     return result, speaker_embeddings
+
+
+def _second_opinion(result: dict, speaker_embeddings, audio: np.ndarray, diarize_model, progress):
+    """sentence_voices.second_opinion() with the diarization pipeline's own
+    embedding model; any error keeps pyannote's labels (only a warning)."""
+    import torch
+
+    from voxscribe.transcription.sentence_voices import second_opinion
+
+    progress(0.94, "Checking speakers sentence by sentence...")
+    embedding_model = diarize_model.model._embedding
+    sample_rate = 16000
+
+    def embed(start: float, end: float):
+        chunk = audio[int(start * sample_rate):int(end * sample_rate)]
+        return embedding_model(torch.from_numpy(np.ascontiguousarray(chunk))[None, None, :])[0]
+
+    try:
+        return second_opinion(result, speaker_embeddings, embed) or speaker_embeddings
+    except Exception as e:  # noqa: BLE001 - pyannote's labels are still usable
+        print(f"     [WARNING] Sentence voice prints failed: {e}")
+        return speaker_embeddings
